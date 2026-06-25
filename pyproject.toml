@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ear"
+version = "0.1.0"
+description = "EAR -- Enterprise Agentic Runtime: prompts stacked into skills, skills into personas, personas into workflows, workflows into processes, governed by policy, orchestrated by a runtime, driven by reasoning."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "QAFLabIndia" }]
+keywords = ["agentic", "runtime", "dspy", "enterprise", "agents", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+dependencies = [
+    "dspy>=2.5",
+]
+
+[project.optional-dependencies]
+evolve = ["openevolve>=0.2"]
+skillopt = ["skillopt>=0.1"]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/qaflabindia/EAR"
+Repository = "https://github.com/qaflabindia/EAR"
+
+[tool.setuptools.packages.find]
+include = ["ear*"]
