@@ -1,11 +1,10 @@
-"""Tests for the `english/` package.
+"""Tests for the `ear` package.
 
 Two tiers:
 
 * Offline tests exercise every stage's deterministic fallback path (no
   ModelBinding active), so the package is fully testable without any
-  credentials -- mirroring `tests/test_pariksha.py`'s style for the
-  original `ear` package.
+  credentials.
 * Live tests exercise the natural-language reasoning paths (Policy
   judgment, Discoverer relevance ranking, the Reasoner's decision,
   Explainer's prose) against a real Claude model. They are skipped
@@ -21,7 +20,7 @@ import os
 
 import pytest
 
-from english import (
+from ear import (
     Adaptation,
     AdaptationBank,
     Adapter,

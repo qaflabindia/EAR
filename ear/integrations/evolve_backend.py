@@ -1,4 +1,4 @@
-"""Evolve backend -- evolves a Vidya's source code with openevolve.
+"""Evolve backend -- evolves a Skill's source code with openevolve.
 
 Requires the optional 'evolve' extra: `pip install ear[evolve]`.
 """
@@ -7,15 +7,15 @@ from __future__ import annotations
 
 from typing import Any, Callable, Union
 
-from ..vidya import Vidya
+from ..skill import Skill
 
 
 def evolve_skill(
-    skill: Vidya,
+    skill: Skill,
     evaluator: Union[Callable[[str], dict], str],
     iterations: "int | None" = None,
     **run_kwargs: Any,
-) -> Vidya:
+) -> Skill:
     """Evolve `skill.source` (an OpenEvolve `EVOLVE-BLOCK-START`/`-END`
     program) against `evaluator`, then write the best candidate back onto
     the skill.
@@ -25,7 +25,7 @@ def evolve_skill(
     `openevolve.run_evolution` for the full contract.
     """
     if not skill.source:
-        raise ValueError(f"Vidya '{skill.name}' has no source to evolve")
+        raise ValueError(f"Skill '{skill.name}' has no source to evolve")
 
     try:
         from openevolve import run_evolution

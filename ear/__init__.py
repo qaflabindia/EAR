@@ -1,151 +1,83 @@
 """EAR -- Enterprise Agentic Runtime.
 
-Engineering stack:   Prompt  -> Skill -> Persona -> Workflow -> Process -> Policy -> Runtime -> Reasoning
-Philosophical stack: Sankalpa -> Vidya -> Guna   -> Varna    -> Karma   -> Dharma  -> Ksetra  -> Bhuddi
+Every class, field, method parameter and message here is named in plain
+English. The package's judgment-laden pipeline stages (discovery, policy
+enforcement, deliberation, explanation) reason in natural language against
+a live LLM (via DSPy, see `ear/signatures.py`), each with a deterministic,
+dependency-free fallback, so the package stays usable and testable with no
+LLM configured at all.
 
-Manas (the LLM provider binding) is activated by Ksetra to power Bhuddi.
+Stack:   Intent -> Skill -> Persona -> Workflow -> Process -> Policy -> Runtime -> Reasoner
 
-Ksetra runs every cycle through a fully-named pipeline, each stage its own
-class so operations AI runtimes often blur together stay distinct:
+Runtime runs every cycle through a fully-named pipeline, each stage its
+own class so operations AI runtimes often blur together stay distinct:
 
-    Niyamana   -> govern       (enforce Dharma policy gates)
-    Arambha    -> initialize   (activate Manas)
-    Anveshana  -> discover     (find relevant Karma processes)
-    Varana     -> select       (choose among discovered processes)
-    Samyojana  -> compose      (assemble their Varna workflows into a plan)
-    Niyojana   -> schedule     (order the composed plan)
-    Samanvaya  -> orchestrate  (coordinate execution of the plan)
-    Anushthana -> execute      (run the cycle's Kriya action)
-    Kriya      -> perform      (deliberate, decide, validate)
-    Vicara     -> reason       (deliberate via Bhuddi)
-    Nirnaya    -> decide       (commit to one decision)
-    Pariksha   -> validate     (reject a malformed decision)
-    Smarana    -> remember     (recall Smriti context as evidence)
-    Vyakhya    -> explain      (render why a decision was reached)
-    Parishodhana -> audit      (inspect evidence for compliance)
-    Smriti     -> store memory (what happened)
-    Adhyayana  -> learn        (fold the cycle into Anubhava experience)
-    Anukulana  -> adapt        (periodically distill a new Samskara)
+    Governor     -> govern       (enforce Policy gates; LLM-judged, with a safe-eval fallback)
+    Initializer  -> initialize   (activate the ModelBinding)
+    Discoverer   -> discover     (find relevant Processes; LLM-ranked, with a keyword fallback)
+    Selector     -> select       (choose among discovered processes)
+    Composer     -> compose      (assemble their Workflows into a plan)
+    Scheduler    -> schedule     (order the composed plan)
+    Orchestrator -> orchestrate  (coordinate execution of the plan)
+    Executor     -> execute      (run the cycle's Performer action)
+    Performer    -> perform      (deliberate, decide, validate)
+    Deliberator  -> deliberate   (deliberate via the Reasoner)
+    Decider      -> decide       (commit to one decision)
+    Validator    -> validate     (reject a malformed decision)
+    Recaller     -> remember     (recall Memory context as evidence)
+    Explainer    -> explain      (render why a decision was reached; LLM-written, with an f-string fallback)
+    Auditor      -> audit        (inspect evidence for compliance)
+    Memory       -> store memory (what happened)
+    Learner      -> learn        (fold the cycle into Experience)
+    Adapter      -> adapt        (periodically distill a new Adaptation)
 
-Pramana (evidence) and Anubhava (experience aggregated from repeated
-Smriti entries) round out the memory layers Samskara then adapts from.
-Parinama (evolve) and Utkarsha (optimize) are structural, dev-time
-operations on Vidya/Guna -- not part of the per-cycle pipeline.
+Evidence (why) and Experience (pattern aggregated from repeated Memory
+entries) round out the memory layers Adaptation then adapts from.
+Evolver (evolve) and Optimizer (optimize) are structural, dev-time
+operations on Skill/Persona -- not part of the per-cycle pipeline.
 
-Every class above is also importable under its English equivalent (e.g.
-`Runtime` for `Ksetra`, `Policy` for `Dharma`) -- see `ear/english.py`.
-These are aliases, not copies: `Runtime is Ksetra` holds.
+DSPy and GEPA are used deliberately, not on every class: see
+`ear/reasoner.py` and `ear/signatures.py` for where and why.
 """
 
 from __future__ import annotations
 
-from .adhyayana import Adhyayana
-from .anubhava import Anubhava
-from .anukulana import Anukulana
-from .anushthana import Anushthana
-from .anveshana import Anveshana
-from .arambha import Arambha
-from .bhuddi import Bhuddi
-from .dharma import Dharma
-from .english import (
-    Adaptation,
-    AdaptationBank,
-    Adapter,
-    Auditor,
-    Composer,
-    Decider,
-    Deliberator,
-    Discoverer,
-    Evidence,
-    Evolver,
-    Executor,
-    Experience,
-    Explainer,
-    Governor,
-    Initializer,
-    Intent,
-    Learner,
-    Memory,
-    MemoryEntry,
-    ModelBinding,
-    Optimizer,
-    Orchestrator,
-    Performer,
-    Persona,
-    Policy,
-    Process,
-    Reasoner,
-    Recaller,
-    Runtime,
-    Scheduler,
-    Selector,
-    Skill,
-    Validator,
-    Workflow,
-)
-from .guna import Guna
-from .karma import Karma
-from .kriya import Kriya
-from .ksetra import Ksetra
-from .manas import Manas
-from .nirnaya import Nirnaya
-from .niyamana import Niyamana
-from .niyojana import Niyojana
-from .parinama import Parinama
-from .parishodhana import Parishodhana
-from .pariksha import Pariksha
-from .pramana import Pramana
-from .samanvaya import Samanvaya
-from .samskara import Samskara, SamskaraBank
-from .samyojana import Samyojana
-from .sankalpa import Sankalpa
-from .smarana import Smarana
-from .smriti import Smriti, SmritiEntry
-from .utkarsha import Utkarsha
-from .varana import Varana
-from .varna import Varna
-from .vicara import Vicara
-from .vidya import Vidya
-from .vyakhya import Vyakhya
+from .adaptation import Adaptation, AdaptationBank
+from .adapter import Adapter
+from .auditor import Auditor
+from .composer import Composer
+from .decider import Decider
+from .deliberator import Deliberator
+from .discoverer import Discoverer
+from .evidence import Evidence
+from .evolver import Evolver
+from .executor import Executor
+from .experience import Experience
+from .explainer import Explainer
+from .governor import Governor
+from .initializer import Initializer
+from .intent import Intent
+from .learner import Learner
+from .memory import Memory, MemoryEntry
+from .model_binding import ModelBinding
+from .optimizer import Optimizer
+from .orchestrator import Orchestrator
+from .performer import Performer
+from .persona import Persona
+from .policy import Policy
+from .process import Process
+from .reasoner import Reasoner
+from .recaller import Recaller
+from .runtime import Runtime
+from .scheduler import Scheduler
+from .selector import Selector
+from .skill import Skill
+from .validator import Validator
+from .workflow import Workflow
 
 __version__ = "0.1.0"
 
 __all__ = [
-    "Sankalpa",
-    "Vidya",
-    "Guna",
-    "Varna",
-    "Karma",
-    "Dharma",
-    "Ksetra",
-    "Manas",
-    "Pramana",
-    "Smriti",
-    "SmritiEntry",
-    "Anubhava",
-    "Samskara",
-    "SamskaraBank",
-    "Bhuddi",
-    "Niyamana",
-    "Arambha",
-    "Anveshana",
-    "Varana",
-    "Samyojana",
-    "Niyojana",
-    "Samanvaya",
-    "Anushthana",
-    "Kriya",
-    "Vicara",
-    "Nirnaya",
-    "Pariksha",
-    "Smarana",
-    "Vyakhya",
-    "Parishodhana",
-    "Adhyayana",
-    "Anukulana",
-    "Parinama",
-    "Utkarsha",
-    # English-terminology aliases (see ear/english.py) -- same classes, English names.
     "Intent",
     "Skill",
     "Persona",
