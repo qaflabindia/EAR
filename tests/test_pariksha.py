@@ -1,17 +1,33 @@
 from ear import (
+    Adhyayana,
     Anubhava,
+    Anukulana,
+    Anushthana,
+    Anveshana,
+    Arambha,
     Dharma,
     Guna,
     Karma,
+    Kriya,
     Ksetra,
     Manas,
+    Nirnaya,
+    Niyamana,
+    Niyojana,
+    Pariksha,
     Pramana,
+    Samanvaya,
     Samskara,
     SamskaraBank,
+    Samyojana,
     Sankalpa,
+    Smarana,
     Smriti,
+    Varana,
     Varna,
+    Vicara,
     Vidya,
+    Vyakhya,
 )
 
 
@@ -326,3 +342,186 @@ def test_ksetra_default_reasoning_surfaces_anubhava_experience_in_prompt():
 
     prompt = stub.calls[-1]
     assert "Experience (Anubhava)" in prompt
+
+
+def test_niyamana_governs_returns_violated_policies():
+    policy = Dharma(name="PO Approval Policy", rule="purchase_amount <= approval_limit")
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    runtime.add_policy(policy)
+
+    sankalpa = Sankalpa(text="over budget", context={"purchase_amount": 999, "approval_limit": 500})
+    assert Niyamana().govern(runtime, sankalpa) == [policy]
+
+
+def test_arambha_initializes_manas_when_present():
+    stub = _StubLM()
+    manas = Manas(provider="openai", model="gpt-4o-mini", lm=stub)
+    runtime = Ksetra(name="Procurement-Kurukshetra", manas=manas)
+
+    assert Arambha().initialize(runtime) is stub
+
+
+def test_arambha_initialize_without_manas_returns_none():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    assert Arambha().initialize(runtime) is None
+
+
+def test_anveshana_discovers_processes_matching_sankalpa_text():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    runtime.add_process(Karma(name="Create Purchase Order"))
+    runtime.add_process(Karma(name="Cancel Lunch Reservation"))
+
+    matches = Anveshana().discover(runtime, Sankalpa(text="Purchase some laptops"))
+    assert [p.name for p in matches] == ["Create Purchase Order"]
+
+
+def test_anveshana_falls_back_to_all_processes_without_matches():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    process = Karma(name="Create Purchase Order")
+    runtime.add_process(process)
+
+    matches = Anveshana().discover(runtime, Sankalpa(text="zzz"))
+    assert matches == [process]
+
+
+def test_varana_selects_deduplicating_by_name():
+    process_a = Karma(name="Create Purchase Order")
+    process_b = Karma(name="Create Purchase Order")
+    process_c = Karma(name="Cancel Order")
+
+    selected = Varana().select(None, [process_a, process_b, process_c])
+    assert selected == [process_a, process_c]
+
+
+def test_samyojana_composes_workflows_from_selected_processes():
+    workflow = Varna(name="Procurement Workflow")
+    process = Karma(name="Create Purchase Order")
+    process.add_workflow(workflow)
+
+    plan = Samyojana().compose([process])
+    assert plan == [workflow]
+
+
+def test_niyojana_schedule_returns_defensive_copy():
+    workflow = Varna(name="Procurement Workflow")
+    plan = [workflow]
+
+    scheduled = Niyojana().schedule(plan)
+    assert scheduled == plan
+    assert scheduled is not plan
+
+
+def test_vicara_deliberates_via_runtime_reasoner():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    result = Vicara().deliberate(runtime, Sankalpa(text="Create PO for laptops"))
+    assert "Procurement-Kurukshetra" in result
+
+
+def test_nirnaya_decide_rejects_none_deliberation():
+    try:
+        Nirnaya().decide(None)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_nirnaya_decide_passes_through_deliberation():
+    assert Nirnaya().decide("approved") == "approved"
+
+
+def test_pariksha_rejects_blank_decision():
+    try:
+        Pariksha().validate("   ")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_pariksha_validate_passes_through_decision():
+    assert Pariksha().validate("approved") == "approved"
+
+
+def test_kriya_performs_deliberate_decide_validate_chain():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    result = Kriya().perform(runtime, Sankalpa(text="Create PO for laptops"))
+    assert "Procurement-Kurukshetra" in result
+
+
+def test_anushthana_executes_via_kriya():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    result = Anushthana().execute(runtime, Sankalpa(text="Create PO for laptops"))
+    assert "Procurement-Kurukshetra" in result
+
+
+def test_samanvaya_orchestrates_via_anushthana():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    result = Samanvaya().orchestrate(runtime, Sankalpa(text="Create PO for laptops"))
+    assert "Procurement-Kurukshetra" in result
+
+
+def test_smarana_recalls_smriti_context_window():
+    smriti = Smriti(capacity=10)
+    smriti.record("past request", decision="approved")
+
+    recalled = Smarana().recall(smriti, Sankalpa(text="anything"))
+    assert "past request" in recalled
+
+
+def test_vyakhya_explains_decision_from_pramana():
+    explanation = Vyakhya().explain(Pramana(basis="Cleared PO Approval Policy"), "approved")
+    assert explanation == "Cleared PO Approval Policy -> approved"
+
+
+def test_adhyayana_learns_smriti_entry_into_anubhava():
+    smriti = Smriti(capacity=10)
+    entry = smriti.record("a", decision="approved")
+    anubhava = Anubhava()
+
+    Adhyayana().learn(anubhava, entry)
+    assert anubhava.observations == 1
+    assert anubhava.decision_counts == {"approved": 1}
+
+
+def test_anukulana_throttles_adaptation_to_every_n_observations():
+    bank = SamskaraBank()
+    anubhava = Anubhava()
+    anukulana = Anukulana(adapt_every=2)
+    smriti = Smriti(capacity=10)
+
+    anubhava.observe_entry(smriti.record("a", decision="approved"))
+    assert anukulana.adapt(bank, anubhava) is None
+    assert bank.impressions == []
+
+    anubhava.observe_entry(smriti.record("b", decision="approved"))
+    learned = anukulana.adapt(bank, anubhava)
+    assert learned is not None
+    assert bank.impressions == [learned]
+
+
+def test_ksetra_reason_runs_the_full_pipeline_and_records_plan_and_recall():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    runtime.add_policy(Dharma(name="PO Approval Policy", rule="purchase_amount <= approval_limit"))
+    process = Karma(name="Create Purchase Order")
+    process.add_workflow(Varna(name="Procurement Workflow"))
+    runtime.add_process(process)
+
+    runtime.reason(Sankalpa(text="Create Purchase Order for laptops under approved budget"))
+
+    entry = runtime.smriti.working[-1]
+    assert entry.evidence.sources["plan"] == ["Procurement Workflow"]
+    assert "audited" in entry.evidence.sources
+    assert "explanation" in entry.evidence.sources
+    assert runtime.anubhava.observations == 1
+
+
+def test_ksetra_reason_adapts_samskara_every_adapt_every_cycles():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    runtime.anukulana = Anukulana(adapt_every=2)
+
+    runtime.reason(Sankalpa(text="first request"))
+    assert runtime.samskara.impressions == []
+
+    runtime.reason(Sankalpa(text="second request"))
+    assert len(runtime.samskara.impressions) == 1

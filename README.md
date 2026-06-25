@@ -45,6 +45,58 @@ call, folds it into Anubhava, and surfaces all three layers back to Bhuddi
 on the next one, so memory actually compounds across cycles instead of
 resetting each time.
 
+`Ksetra.reason()` itself runs through one further named pipeline of
+runtime operations -- discovery, selection, composition, scheduling,
+orchestration, execution, deliberation, decision, validation, recall,
+explanation, audit, learning and adaptation -- each its own class instead
+of logic folded into one method:
+
+```text
+Discover     → Anveṣaṇa     (अन्वेषण) → find Karma processes relevant to a Sankalpa
+Select       → Varaṇa       (वरण)    → choose among discovered processes
+Compose      → Saṃyojana    (संयोजन)  → assemble their Varna workflows into a plan
+Schedule     → Niyojana     (नियोजन)  → order the composed plan
+Govern       → Niyamana     (नियमन)   → enforce Dharma policy gates
+Initialize   → Ārambha      (आरम्भ)   → activate Manas
+Orchestrate  → Samanvaya    (समन्वय)  → coordinate a cycle's execution end to end
+Execute      → Anuṣṭhāna    (अनुष्ठान) → run the cycle's Kriya action
+Perform      → Kriyā        (क्रिया)   → deliberate, decide, validate
+Reason       → Vicāra       (विचार)   → deliberate via Bhuddi
+Decide       → Nirṇaya      (निर्णय)   → commit to one decision
+Validate     → Parīkṣā      (परीक्षा)  → reject a malformed decision
+Remember     → Smaraṇa      (स्मरण)    → recall Smriti context as evidence
+Store Memory → Smṛti        (स्मृति)   → what happened
+Explain      → Vyākhyā      (व्याख्या) → render why a decision was reached
+Audit        → Pariśodhana  (परिशोधन) → inspect evidence for compliance
+Learn        → Adhyayana    (अध्ययन)  → fold a cycle into Anubhava experience
+Adapt        → Anukūlana    (अनुकूलन) → periodically distill a new Samskara
+Evolve       → Pariṇāma     (परिणाम)  → evolve a Vidya skill's source (openevolve)
+Optimize     → Utkarṣa      (उत्कर्ष)  → refine a Guna skill document (SkillOpt)
+```
+
+Every `reason()` call runs:
+
+```text
+Niyamana → Arambha → Anveshana → Varana → Samyojana → Niyojana → Smarana
+  → Samanvaya [→ Anushthana → Kriya [→ Vicara → Nirnaya → Pariksha]]
+  → Vyakhya → Parishodhana → Smriti → Adhyayana → Anukulana
+```
+
+`Niyamana` raises `PermissionError` and stops the cycle before anything
+else runs if a Dharma policy is violated. `Anukulana` only calls
+`SamskaraBank.learn_from` every `adapt_every` observed cycles (default 5),
+not on every single one, so adaptation doesn't spam one impression per
+call. `Parinama` and `Utkarsha` are structural, dev-time operations on a
+`Vidya` skill or `Guna` persona -- evolving or optimizing code isn't part
+of running it, so they sit outside this per-cycle pipeline and are called
+directly:
+
+```python
+runtime.parinama.evolve(skill, evaluator="path/to/evaluator.py")          # openevolve
+trainer = runtime.utkarsha.optimize(config="skillopt.yaml", adapter=my_env)
+runtime.utkarsha.apply(persona, "skill-name", trainer.train())
+```
+
 ## Install
 
 ```bash
@@ -181,13 +233,32 @@ ear/
   varna.py      Varna     — workflow (a stack of Guna personas)
   karma.py      Karma     — process (a stack of Varna workflows)
   dharma.py     Dharma    — policy (a guarded rule, safely evaluated — no eval/exec)
-  ksetra.py     Ksetra    — runtime (orchestrates Karma processes, enforces Dharma, activates Manas, starts Bhuddi, records Pramana/Smriti/Anubhava)
+  ksetra.py     Ksetra    — runtime (runs every cycle through the full operation pipeline below)
   manas.py      Manas     — LLM provider binding (model, credentials, params -> a DSPy LM)
   pramana.py    Pramana   — evidence for one decision (why), distinct from Smriti (what) and Anubhava (the pattern)
   smriti.py     Smriti    — persistent memory (working + compressed layers; this is the compression step)
   anubhava.py   Anubhava  — experience aggregated from repeated Smriti entries, the missing step before Samskara
   samskara.py   Samskara  — learned adaptations distilled from Anubhava, surfaced back to Bhuddi
   bhuddi.py     Bhuddi    — reasoning (DSPy-backed or raw Manas LM call, fed Smriti/Anubhava/Samskara, with a dependency-free default)
+  niyamana.py   Niyamana    — govern: enforce Dharma policy gates
+  arambha.py    Arambha     — initialize: activate Manas
+  anveshana.py  Anveshana   — discover: find Karma processes relevant to a Sankalpa
+  varana.py     Varana      — select: choose among discovered Karma processes
+  samyojana.py  Samyojana   — compose: assemble selected processes' Varna workflows into a plan
+  niyojana.py   Niyojana    — schedule: order the composed plan
+  samanvaya.py  Samanvaya   — orchestrate: coordinate a cycle's execution end to end
+  anushthana.py Anushthana  — execute: run the cycle's Kriya action
+  kriya.py      Kriya       — perform: chain Vicara -> Nirnaya -> Pariksha
+  vicara.py     Vicara      — reason: deliberate via Bhuddi
+  nirnaya.py    Nirnaya     — decide: commit to one final decision
+  pariksha.py   Pariksha    — validate: reject a malformed decision
+  smarana.py    Smarana     — remember: recall Smriti context as evidence
+  vyakhya.py    Vyakhya     — explain: render why a decision was reached
+  parishodhana.py Parishodhana — audit: inspect evidence for compliance
+  adhyayana.py  Adhyayana   — learn: fold a cycle into Anubhava experience
+  anukulana.py  Anukulana   — adapt: periodically distill a new Samskara
+  parinama.py   Parinama    — evolve: transform a Vidya skill's source (openevolve, dev-time)
+  utkarsha.py   Utkarsha    — optimize: refine a Guna skill document (SkillOpt, dev-time)
   integrations/
     dspy_backend.py      DSPy signature/program → Bhuddi
     evolve_backend.py    openevolve — evolve a Vidya's source against an evaluator
