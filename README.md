@@ -1,6 +1,9 @@
 # EAR — Enterprise Agentic Runtime
 
 EAR is a Python package skeleton for building an enterprise agentic runtime.
+See [`docs/WHITEPAPER.md`](docs/WHITEPAPER.md) for a scholarly treatment of
+the architecture and a regulated-domain case study
+(`examples/credit_risk_guru_ksetra.ipynb`).
 
 Imagine a train: prompts are stacked inside skills, skills are stacked inside
 a persona, a persona is stacked into a workflow, workflows are stacked into
