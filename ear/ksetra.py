@@ -1,6 +1,6 @@
 """Ksetra -- the runtime: the field where processes are orchestrated, policies
-are enforced, Manas (the LLM provider) is activated, and reasoning (Bhuddi)
-is finally started."""
+are enforced, Manas (the LLM provider) is activated, reasoning (Bhuddi) is
+started, and the cycle is committed to Smṛti memory."""
 
 from __future__ import annotations
 
@@ -11,19 +11,23 @@ from .bhuddi import Bhuddi
 from .dharma import Dharma
 from .karma import Karma
 from .manas import Manas
+from .samskara import SamskaraBank
 from .sankalpa import Sankalpa
+from .smriti import Smriti
 
 
 @dataclass
 class Ksetra:
     """A Ksetra is the runtime battlefield: processes orchestrated, policies
-    enforced, Manas activated, reasoning started."""
+    enforced, Manas activated, reasoning started, the outcome remembered."""
 
     name: str
     processes: list[Karma] = field(default_factory=list)
     policies: list[Dharma] = field(default_factory=list)
     reasoner: Bhuddi = field(default_factory=Bhuddi)
     manas: Optional[Manas] = None
+    smriti: Smriti = field(default_factory=Smriti)
+    samskara: SamskaraBank = field(default_factory=SamskaraBank)
 
     def add_process(self, process: Karma) -> "Ksetra":
         self.processes.append(process)
@@ -44,4 +48,6 @@ class Ksetra:
             raise PermissionError(f"Dharma violated: {names}")
         if self.manas is not None:
             self.manas.activate()
-        return self.reasoner.reason(sankalpa, runtime=self)
+        result = self.reasoner.reason(sankalpa, runtime=self)
+        self.smriti.record(sankalpa.text, result, context=sankalpa.context)
+        return result

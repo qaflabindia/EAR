@@ -1,4 +1,16 @@
-from ear import Dharma, Guna, Karma, Ksetra, Manas, Sankalpa, Varna, Vidya
+from ear import (
+    Dharma,
+    Guna,
+    Karma,
+    Ksetra,
+    Manas,
+    Samskara,
+    SamskaraBank,
+    Sankalpa,
+    Smriti,
+    Varna,
+    Vidya,
+)
 
 
 def test_vidya_invoke():
@@ -127,3 +139,94 @@ def test_bhuddi_falls_back_to_default_without_manas_or_program():
     runtime = Ksetra(name="Procurement-Kurukshetra")
     result = runtime.reason(Sankalpa(text="Create PO for laptops"))
     assert result.startswith("[Procurement-Kurukshetra]")
+
+
+def test_smriti_records_and_compresses_on_overflow():
+    smriti = Smriti(capacity=3)
+    for i in range(5):
+        smriti.record(f"intent {i}", decision=f"decision {i}")
+
+    # Capacity 3 with 5 records overflows twice (at the 4th and 5th record),
+    # producing one compressed summary per overflow event.
+    assert len(smriti.working) == 3
+    assert smriti.working[0].sankalpa_text == "intent 2"
+    assert len(smriti.compressed) == 2
+    assert "decision 0" in smriti.compressed[0]
+    assert "decision 1" in smriti.compressed[1]
+
+
+def test_smriti_context_window_includes_both_layers():
+    smriti = Smriti(capacity=1)
+    smriti.record("first", decision="approved")
+    smriti.record("second", decision="rejected")
+
+    window = smriti.context_window()
+    assert "Earlier history (compressed)" in window
+    assert "Recent history" in window
+    assert "second" in window
+
+
+def test_smriti_len_counts_working_and_compressed():
+    smriti = Smriti(capacity=2)
+    for i in range(3):
+        smriti.record(f"intent {i}", decision="ok")
+    assert len(smriti) == 3  # 2 working + 1 compressed summary
+
+
+def test_samskara_bank_learn_from_picks_most_common_decision():
+    smriti = Smriti(capacity=10)
+    smriti.record("a", decision="approved")
+    smriti.record("b", decision="approved")
+    smriti.record("c", decision="rejected")
+
+    bank = SamskaraBank()
+    learned = bank.learn_from(smriti)
+
+    assert learned is not None
+    assert "approved" in learned.insight
+    assert bank.impressions == [learned]
+
+
+def test_samskara_bank_learn_from_empty_memory_returns_none():
+    assert SamskaraBank().learn_from(Smriti()) is None
+
+
+def test_samskara_bank_relevant_to_keyword_overlap():
+    bank = SamskaraBank()
+    bank.add(Samskara(name="escalation-rule", insight="Purchases over budget get escalated"))
+    bank.add(Samskara(name="unrelated", insight="Lunch orders are auto-approved"))
+
+    matches = bank.relevant_to("Create PO over budget for laptops")
+    assert [s.name for s in matches] == ["escalation-rule"]
+
+
+def test_ksetra_records_each_reason_call_into_smriti():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    runtime.reason(Sankalpa(text="first request"))
+    runtime.reason(Sankalpa(text="second request"))
+
+    assert len(runtime.smriti.working) == 2
+    assert runtime.smriti.working[0].sankalpa_text == "first request"
+    assert runtime.smriti.working[1].sankalpa_text == "second request"
+
+
+def test_ksetra_default_reasoning_mentions_remembered_cycles():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    runtime.reason(Sankalpa(text="first request"))
+    result = runtime.reason(Sankalpa(text="second request"))
+    assert "1 remembered cycles" in result
+
+
+def test_manas_reasoning_includes_memory_and_samskara_in_prompt():
+    stub = _StubLM()
+    manas = Manas(provider="openai", model="gpt-4o-mini", lm=stub)
+    runtime = Ksetra(name="Procurement-Kurukshetra", manas=manas)
+    runtime.smriti.record("past request", decision="approved")
+    runtime.samskara.add(Samskara(name="rule", insight="past requests get approved"))
+
+    runtime.reason(Sankalpa(text="new past requests"))
+
+    prompt = stub.calls[0]
+    assert "Memory (Smriti)" in prompt
+    assert "Learned adaptations (Samskara)" in prompt
+    assert "past requests get approved" in prompt

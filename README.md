@@ -30,6 +30,17 @@ through it: Ksetra activates its Manas before handing the Sankalpa to
 Bhuddi, so reasoning runs against a real model instead of the
 dependency-free default.
 
+Smṛti and Saṃskāra are the runtime's memory, wrapped around every cycle:
+
+```text
+Smṛti     → Persistent memory: execution history, evidence, decisions
+Saṃskāra  → Learned adaptations distilled from that memory
+```
+
+Ksetra writes to Smṛti after every `reason()` call and surfaces both layers
+back to Bhuddi on the next one, so memory actually compounds across cycles
+instead of resetting each time.
+
 ## Install
 
 ```bash
@@ -94,6 +105,40 @@ class Decide(dspy.Signature):
 runtime.reasoner = make_reasoner(Decide)
 ```
 
+## Memory: Smṛti and Saṃskāra
+
+Every `Ksetra.reason()` call is recorded into `runtime.smriti`, a two-layer
+memory that keeps context bounded as history grows:
+
+- **`working`** -- the most recent cycles, kept verbatim (bounded by
+  `capacity`, default 20).
+- **`compressed`** -- once `working` overflows, the oldest entries are
+  rolled into one summary string per overflow event. This is the memory
+  compression step. Pass an activated LM (`runtime.manas.lm`) to
+  `smriti.compress(summarizer=...)` for an LLM-written summary instead of
+  the deterministic digest used by default.
+
+```python
+runtime.smriti.capacity = 50          # raise/lower the verbatim window
+runtime.smriti.compress(summarizer=runtime.manas.lm)  # force an early, LLM-written compression
+print(runtime.smriti.context_window())  # compressed history + recent working entries
+```
+
+`runtime.samskara` (a `SamskaraBank`) distills durable lessons out of
+Smṛti -- standing impressions that bias future reasoning rather than raw
+history:
+
+```python
+learned = runtime.samskara.learn_from(runtime.smriti, summarizer=runtime.manas.lm)
+print(learned.insight)
+```
+
+On the next `reason()` call, `Bhuddi` (when running off the raw Manas LM
+path) pulls in both `runtime.smriti.context_window()` and any
+`runtime.samskara.relevant_to(sankalpa.text)` impressions and folds them
+into the prompt, so persistent memory and learned adaptations actually
+influence the next decision.
+
 ## Package layout
 
 ```text
@@ -104,9 +149,11 @@ ear/
   varna.py      Varna     — workflow (a stack of Guna personas)
   karma.py      Karma     — process (a stack of Varna workflows)
   dharma.py     Dharma    — policy (a guarded rule, safely evaluated — no eval/exec)
-  ksetra.py     Ksetra    — runtime (orchestrates Karma processes, enforces Dharma, activates Manas, starts Bhuddi)
+  ksetra.py     Ksetra    — runtime (orchestrates Karma processes, enforces Dharma, activates Manas, starts Bhuddi, records Smriti)
   manas.py      Manas     — LLM provider binding (model, credentials, params -> a DSPy LM)
-  bhuddi.py     Bhuddi    — reasoning (DSPy-backed or raw Manas LM call, with a dependency-free default)
+  smriti.py     Smriti    — persistent memory (working + compressed layers; this is the compression step)
+  samskara.py   Samskara  — learned adaptations distilled from Smriti, surfaced back to Bhuddi
+  bhuddi.py     Bhuddi    — reasoning (DSPy-backed or raw Manas LM call, fed Smriti/Samskara, with a dependency-free default)
   integrations/
     dspy_backend.py      DSPy signature/program → Bhuddi
     evolve_backend.py    openevolve — evolve a Vidya's source against an evaluator

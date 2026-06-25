@@ -46,7 +46,8 @@ class Bhuddi:
         prompt = (
             f"You are Bhuddi, the reasoning layer of the '{runtime_name}' agentic "
             f"runtime. Resolve this Sankalpa (intent) given the active processes: "
-            f"{processes}.\n\nSankalpa: {sankalpa.text}\nContext: {sankalpa.context}"
+            f"{processes}.{Bhuddi._memory_block(sankalpa, runtime)}"
+            f"\n\nSankalpa: {sankalpa.text}\nContext: {sankalpa.context}"
         )
         completions = lm(prompt=prompt)
         return completions[0] if completions else ""
@@ -56,4 +57,23 @@ class Bhuddi:
         process_names = [process.name for process in getattr(runtime, "processes", [])]
         runtime_name = getattr(runtime, "name", "Ksetra")
         processes = ", ".join(process_names) if process_names else "none"
-        return f"[{runtime_name}] resolved Sankalpa '{sankalpa.text}' across processes: {processes}"
+        smriti = getattr(runtime, "smriti", None)
+        memory_note = f", drawing on {len(smriti)} remembered cycles" if smriti and len(smriti) else ""
+        return f"[{runtime_name}] resolved Sankalpa '{sankalpa.text}' across processes: {processes}{memory_note}"
+
+    @staticmethod
+    def _memory_block(sankalpa: Sankalpa, runtime: Any) -> str:
+        """Render Smriti history and any relevant Samskara insights for the
+        prompt -- this is how persistent memory and learned adaptations
+        feed back into reasoning."""
+        block = ""
+        smriti = getattr(runtime, "smriti", None)
+        if smriti is not None and len(smriti):
+            block += f"\n\nMemory (Smriti):\n{smriti.context_window()}"
+        samskara = getattr(runtime, "samskara", None)
+        if samskara is not None:
+            relevant = samskara.relevant_to(sankalpa.text)
+            if relevant:
+                insights = "\n".join(f"- {s.insight}" for s in relevant)
+                block += f"\n\nLearned adaptations (Samskara):\n{insights}"
+        return block
