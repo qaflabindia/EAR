@@ -2,6 +2,9 @@
 
 *A technical whitepaper on the EAR (`ear`) Python package*
 
+> An English-only terminology edition (no Sanskrit terms) is available at
+> [`docs/WHITEPAPER_ENGLISH.md`](WHITEPAPER_ENGLISH.md).
+
 ## Abstract
 
 Production agentic systems routinely collapse several distinct concerns —
