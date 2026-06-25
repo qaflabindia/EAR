@@ -1,9 +1,11 @@
 from ear import (
+    Anubhava,
     Dharma,
     Guna,
     Karma,
     Ksetra,
     Manas,
+    Pramana,
     Samskara,
     SamskaraBank,
     Sankalpa,
@@ -178,9 +180,10 @@ def test_samskara_bank_learn_from_picks_most_common_decision():
     smriti.record("a", decision="approved")
     smriti.record("b", decision="approved")
     smriti.record("c", decision="rejected")
+    anubhava = Anubhava().observe(smriti)
 
     bank = SamskaraBank()
-    learned = bank.learn_from(smriti)
+    learned = bank.learn_from(anubhava)
 
     assert learned is not None
     assert "approved" in learned.insight
@@ -188,7 +191,7 @@ def test_samskara_bank_learn_from_picks_most_common_decision():
 
 
 def test_samskara_bank_learn_from_empty_memory_returns_none():
-    assert SamskaraBank().learn_from(Smriti()) is None
+    assert SamskaraBank().learn_from(Anubhava()) is None
 
 
 def test_samskara_bank_relevant_to_keyword_overlap():
@@ -230,3 +233,96 @@ def test_manas_reasoning_includes_memory_and_samskara_in_prompt():
     assert "Memory (Smriti)" in prompt
     assert "Learned adaptations (Samskara)" in prompt
     assert "past requests get approved" in prompt
+
+
+def test_pramana_str_returns_basis():
+    pramana = Pramana(basis="Cleared PO Approval Policy", sources={"policy": "PO Approval Policy"})
+    assert str(pramana) == "Cleared PO Approval Policy"
+
+
+def test_anubhava_observe_entry_counts_decisions_and_evidence():
+    anubhava = Anubhava()
+    smriti = Smriti(capacity=10)
+    entry = smriti.record("a", decision="approved", evidence=Pramana(basis="cleared"))
+
+    anubhava.observe_entry(entry)
+
+    assert anubhava.observations == 1
+    assert anubhava.decision_counts == {"approved": 1}
+    assert anubhava.evidence_seen == [entry.evidence]
+
+
+def test_anubhava_observe_rebuilds_from_smriti_working():
+    smriti = Smriti(capacity=10)
+    smriti.record("a", decision="approved")
+    smriti.record("b", decision="approved")
+    smriti.record("c", decision="rejected")
+
+    anubhava = Anubhava().observe(smriti)
+
+    assert anubhava.observations == 3
+    assert anubhava.most_common_decision() == ("approved", 2)
+
+
+def test_anubhava_summary_ranks_by_count():
+    anubhava = Anubhava()
+    smriti = Smriti(capacity=10)
+    anubhava.observe_entry(smriti.record("a", decision="approved"))
+    anubhava.observe_entry(smriti.record("b", decision="approved"))
+    anubhava.observe_entry(smriti.record("c", decision="rejected"))
+
+    summary = anubhava.summary()
+    assert "'approved': 2/3 cycles" in summary
+    assert summary.index("approved") < summary.index("rejected")
+
+
+def test_anubhava_len_reflects_observations():
+    anubhava = Anubhava()
+    smriti = Smriti(capacity=10)
+    anubhava.observe_entry(smriti.record("a", decision="approved"))
+    assert len(anubhava) == 1
+
+
+def test_ksetra_reason_builds_pramana_and_updates_anubhava_on_default_path():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    runtime.reason(Sankalpa(text="Create PO for laptops"))
+
+    entry = runtime.smriti.working[-1]
+    assert isinstance(entry.evidence, Pramana)
+    assert entry.evidence.basis == "Resolved via Bhuddi's dependency-free default"
+    assert runtime.anubhava.observations == 1
+
+
+def test_ksetra_reason_builds_pramana_for_manas_path():
+    stub = _StubLM()
+    manas = Manas(provider="openai", model="gpt-4o-mini", lm=stub)
+    runtime = Ksetra(name="Procurement-Kurukshetra", manas=manas)
+
+    runtime.reason(Sankalpa(text="Create PO for laptops"))
+
+    entry = runtime.smriti.working[-1]
+    assert entry.evidence.basis == "Resolved via Manas LM 'openai/gpt-4o-mini'"
+    assert runtime.anubhava.observations == 1
+
+
+def test_ksetra_reason_builds_pramana_for_dspy_program_path():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    runtime.reasoner.program = lambda sankalpa, context: "programmatic decision"
+
+    runtime.reason(Sankalpa(text="Create PO for laptops"))
+
+    entry = runtime.smriti.working[-1]
+    assert entry.evidence.basis == "Resolved via a compiled DSPy program"
+    assert runtime.anubhava.observations == 1
+
+
+def test_ksetra_default_reasoning_surfaces_anubhava_experience_in_prompt():
+    stub = _StubLM()
+    manas = Manas(provider="openai", model="gpt-4o-mini", lm=stub)
+    runtime = Ksetra(name="Procurement-Kurukshetra", manas=manas)
+    runtime.reason(Sankalpa(text="first request"))
+
+    runtime.reason(Sankalpa(text="second request"))
+
+    prompt = stub.calls[-1]
+    assert "Experience (Anubhava)" in prompt

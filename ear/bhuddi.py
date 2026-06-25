@@ -63,13 +63,17 @@ class Bhuddi:
 
     @staticmethod
     def _memory_block(sankalpa: Sankalpa, runtime: Any) -> str:
-        """Render Smriti history and any relevant Samskara insights for the
-        prompt -- this is how persistent memory and learned adaptations
-        feed back into reasoning."""
+        """Render Smriti history, Anubhava experience and any relevant
+        Samskara insights for the prompt -- this is how persistent memory,
+        aggregated experience and learned adaptations feed back into
+        reasoning, kept as three distinct layers rather than one blob."""
         block = ""
         smriti = getattr(runtime, "smriti", None)
         if smriti is not None and len(smriti):
             block += f"\n\nMemory (Smriti):\n{smriti.context_window()}"
+        anubhava = getattr(runtime, "anubhava", None)
+        if anubhava is not None and anubhava.observations:
+            block += f"\n\nExperience (Anubhava):\n{anubhava.summary()}"
         samskara = getattr(runtime, "samskara", None)
         if samskara is not None:
             relevant = samskara.relevant_to(sankalpa.text)

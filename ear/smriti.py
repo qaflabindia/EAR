@@ -1,5 +1,7 @@
-"""Smṛti -- persistent memory: execution history, evidence and decisions,
-held in layers so the runtime's context stays bounded as it grows."""
+"""Smṛti -- persistent memory: what happened. Held in layers so the
+runtime's context stays bounded as it grows. The evidentiary "why" behind
+each entry lives in its `evidence` (Pramana), not folded into the memory
+itself -- a distinction AI systems often blur."""
 
 from __future__ import annotations
 
@@ -7,19 +9,26 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from .pramana import Pramana
+
 
 @dataclass
 class SmritiEntry:
-    """One remembered cycle: a Sankalpa, what Bhuddi decided, and the
-    evidence (context) behind it."""
+    """One remembered cycle: a Sankalpa, what Bhuddi decided, the Sankalpa's
+    own input context, and -- separately -- the Pramana evidence for why
+    that decision was made."""
 
     sankalpa_text: str
     decision: Any
     context: dict[str, Any] = field(default_factory=dict)
+    evidence: Optional[Pramana] = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def render(self) -> str:
-        return f"- ({self.timestamp:%Y-%m-%d %H:%M}) '{self.sankalpa_text}' -> {self.decision}"
+        line = f"- ({self.timestamp:%Y-%m-%d %H:%M}) '{self.sankalpa_text}' -> {self.decision}"
+        if self.evidence is not None:
+            line += f" [{self.evidence.basis}]"
+        return line
 
 
 @dataclass
@@ -40,8 +49,14 @@ class Smriti:
         sankalpa_text: str,
         decision: Any,
         context: Optional[dict[str, Any]] = None,
+        evidence: Optional[Pramana] = None,
     ) -> SmritiEntry:
-        entry = SmritiEntry(sankalpa_text=sankalpa_text, decision=decision, context=context or {})
+        entry = SmritiEntry(
+            sankalpa_text=sankalpa_text,
+            decision=decision,
+            context=context or {},
+            evidence=evidence,
+        )
         self.working.append(entry)
         if len(self.working) > self.capacity:
             self.compress()

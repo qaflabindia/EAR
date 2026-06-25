@@ -1,19 +1,22 @@
-"""Saṃskāra -- learned adaptations distilled from Smṛti memory that bias
-future Bhuddi reasoning and execution."""
+"""Saṃskāra -- adaptation: how future behaviour should change, distilled
+from Anubhava experience rather than raw Smṛti memory directly. Skipping
+straight from memory to "lesson learned" is exactly the conflation EAR's
+Pramana / Smriti / Anubhava / Samskara split is meant to avoid."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .smriti import Smriti
+from .anubhava import Anubhava
 
 
 @dataclass
 class Samskara:
     """A Saṃskāra is one standing impression: an insight distilled from
-    past cycles (e.g. "POs from Procurement over $400 get escalated --
-    learned from 3 past approvals") that Ksetra surfaces back to Bhuddi."""
+    Anubhava experience (e.g. "POs from Procurement over $400 get
+    escalated -- learned from 3 past approvals") that Ksetra surfaces back
+    to Bhuddi."""
 
     name: str
     insight: str
@@ -24,7 +27,7 @@ class Samskara:
 @dataclass
 class SamskaraBank:
     """The runtime's long-term, distilled memory: a small set of Samskaras
-    learned from Smriti, plus the machinery to learn more."""
+    learned from Anubhava experience, plus the machinery to learn more."""
 
     impressions: list[Samskara] = field(default_factory=list)
 
@@ -40,35 +43,34 @@ class SamskaraBank:
             return list(self.impressions)
         return [s for s in self.impressions if any(word in s.insight.lower() for word in words)]
 
-    def learn_from(self, smriti: Smriti, summarizer: Optional[Any] = None) -> Optional[Samskara]:
-        """Distill the current Smriti memory into one new Samskara.
+    def learn_from(self, anubhava: Anubhava, summarizer: Optional[Any] = None) -> Optional[Samskara]:
+        """Distill the current Anubhava experience into one new Samskara.
 
         Pass an activated `dspy.LM` (e.g. `runtime.manas.lm`) as
         `summarizer` for an LLM-written insight; without one, the most
-        frequently repeated past decision is reported instead.
+        frequently repeated decision in the experience is reported instead.
         """
-        if not smriti.working and not smriti.compressed:
+        if not anubhava.decision_counts:
             return None
         if summarizer is not None:
             prompt = (
-                "From this execution history, state one durable lesson that should "
-                "bias future decisions, in one sentence:\n\n" + smriti.context_window()
+                "From this aggregated execution experience, state one durable lesson "
+                "that should bias future decisions, in one sentence:\n\n" + anubhava.summary()
             )
             completions = summarizer(prompt=prompt)
             insight = completions[0] if completions else ""
         else:
-            decisions = [str(entry.decision) for entry in smriti.working]
-            if not decisions:
+            common = anubhava.most_common_decision()
+            if common is None:
                 return None
-            most_common = max(set(decisions), key=decisions.count)
+            decision, count = common
             insight = (
-                f"Most frequent recent outcome: '{most_common[:80]}' "
-                f"({decisions.count(most_common)}/{len(decisions)} cycles)"
+                f"Most frequent outcome: '{decision[:80]}' ({count}/{anubhava.observations} cycles)"
             )
         samskara = Samskara(
             name=f"Learned-{len(self.impressions) + 1}",
             insight=insight,
-            evidence_count=len(smriti),
+            evidence_count=anubhava.observations,
         )
         self.add(samskara)
         return samskara
