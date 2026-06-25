@@ -63,7 +63,7 @@ Execute      → Anuṣṭhāna    (अनुष्ठान) → run the cycle'
 Perform      → Kriyā        (क्रिया)   → deliberate, decide, validate
 Reason       → Vicāra       (विचार)   → deliberate via Bhuddi
 Decide       → Nirṇaya      (निर्णय)   → commit to one decision
-Validate     → Parīkṣā      (परीक्षा)  → reject a malformed decision
+Validate     → Parīkṣā      (परीक्षा)  → checker layer for every maker stage's output (and the final decision)
 Remember     → Smaraṇa      (स्मरण)    → recall Smriti context as evidence
 Store Memory → Smṛti        (स्मृति)   → what happened
 Explain      → Vyākhyā      (व्याख्या) → render why a decision was reached
@@ -77,10 +77,17 @@ Optimize     → Utkarṣa      (उत्कर्ष)  → refine a Guna skill
 Every `reason()` call runs:
 
 ```text
-Niyamana → Arambha → Anveshana → Varana → Samyojana → Niyojana → Smarana
+Niyamana → Arambha → Anveshana → Pariksha → Varana → Pariksha → Samyojana
+  → Pariksha → Niyojana → Pariksha → Smarana
   → Samanvaya [→ Anushthana → Kriya [→ Vicara → Nirnaya → Pariksha]]
   → Vyakhya → Parishodhana → Smriti → Adhyayana → Anukulana
 ```
+
+`Pariksha` runs after every maker stage -- Anveshana's discovered
+candidates, Varana's selection, Samyojana's composed plan, Niyojana's
+schedule, and (inside Kriya) Nirnaya's final decision -- rejecting any
+malformed output with a `TypeError` (or `ValueError` for a blank decision)
+before the next stage trusts it.
 
 `Niyamana` raises `PermissionError` and stops the cycle before anything
 else runs if a Dharma policy is violated. `Anukulana` only calls
@@ -251,7 +258,7 @@ ear/
   kriya.py      Kriya       — perform: chain Vicara -> Nirnaya -> Pariksha
   vicara.py     Vicara      — reason: deliberate via Bhuddi
   nirnaya.py    Nirnaya     — decide: commit to one final decision
-  pariksha.py   Pariksha    — validate: reject a malformed decision
+  pariksha.py   Pariksha    — validate: checker layer for every maker stage's output (Anveshana, Varana, Samyojana, Niyojana) and the final Nirnaya decision
   smarana.py    Smarana     — remember: recall Smriti context as evidence
   vyakhya.py    Vyakhya     — explain: render why a decision was reached
   parishodhana.py Parishodhana — audit: inspect evidence for compliance

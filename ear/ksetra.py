@@ -29,6 +29,7 @@ from .niyamana import Niyamana
 from .niyojana import Niyojana
 from .parinama import Parinama
 from .parishodhana import Parishodhana
+from .pariksha import Pariksha
 from .pramana import Pramana
 from .samanvaya import Samanvaya
 from .samskara import SamskaraBank
@@ -65,6 +66,7 @@ class Ksetra:
     varana: Varana = field(default_factory=Varana)
     samyojana: Samyojana = field(default_factory=Samyojana)
     niyojana: Niyojana = field(default_factory=Niyojana)
+    pariksha: Pariksha = field(default_factory=Pariksha)
     samanvaya: Samanvaya = field(default_factory=Samanvaya)
     smarana: Smarana = field(default_factory=Smarana)
     vyakhya: Vyakhya = field(default_factory=Vyakhya)
@@ -96,10 +98,10 @@ class Ksetra:
 
         self.arambha.initialize(self)
 
-        candidates = self.anveshana.discover(self, sankalpa)
-        selected = self.varana.select(self, candidates)
-        plan = self.samyojana.compose(selected)
-        scheduled = self.niyojana.schedule(plan)
+        candidates = self.pariksha.validate_candidates(self.anveshana.discover(self, sankalpa))
+        selected = self.pariksha.validate_selection(self.varana.select(self, candidates))
+        plan = self.pariksha.validate_plan(self.samyojana.compose(selected))
+        scheduled = self.pariksha.validate_schedule(self.niyojana.schedule(plan))
         recalled = self.smarana.recall(self.smriti, sankalpa)
 
         decision = self.samanvaya.orchestrate(self, sankalpa)

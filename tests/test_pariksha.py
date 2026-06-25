@@ -443,6 +443,78 @@ def test_pariksha_validate_passes_through_decision():
     assert Pariksha().validate("approved") == "approved"
 
 
+def test_pariksha_validate_candidates_passes_through_karma_list():
+    candidates = [Karma(name="Create Purchase Order")]
+    assert Pariksha().validate_candidates(candidates) == candidates
+
+
+def test_pariksha_validate_candidates_rejects_non_list():
+    try:
+        Pariksha().validate_candidates("not-a-list")
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("expected TypeError")
+
+
+def test_pariksha_validate_candidates_rejects_wrong_item_type():
+    try:
+        Pariksha().validate_candidates([Varna(name="Procurement Workflow")])
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("expected TypeError")
+
+
+def test_pariksha_validate_selection_passes_through_karma_list():
+    selected = [Karma(name="Create Purchase Order")]
+    assert Pariksha().validate_selection(selected) == selected
+
+
+def test_pariksha_validate_selection_rejects_wrong_item_type():
+    try:
+        Pariksha().validate_selection([object()])
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("expected TypeError")
+
+
+def test_pariksha_validate_plan_passes_through_varna_list():
+    plan = [Varna(name="Procurement Workflow")]
+    assert Pariksha().validate_plan(plan) == plan
+
+
+def test_pariksha_validate_plan_rejects_wrong_item_type():
+    try:
+        Pariksha().validate_plan([Karma(name="Create Purchase Order")])
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("expected TypeError")
+
+
+def test_pariksha_validate_schedule_passes_through_varna_list():
+    scheduled = [Varna(name="Procurement Workflow")]
+    assert Pariksha().validate_schedule(scheduled) == scheduled
+
+
+def test_pariksha_validate_schedule_rejects_non_list():
+    try:
+        Pariksha().validate_schedule(None)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("expected TypeError")
+
+
+def test_pariksha_validate_lists_allow_empty():
+    assert Pariksha().validate_candidates([]) == []
+    assert Pariksha().validate_selection([]) == []
+    assert Pariksha().validate_plan([]) == []
+    assert Pariksha().validate_schedule([]) == []
+
+
 def test_kriya_performs_deliberate_decide_validate_chain():
     runtime = Ksetra(name="Procurement-Kurukshetra")
     result = Kriya().perform(runtime, Sankalpa(text="Create PO for laptops"))
@@ -514,6 +586,18 @@ def test_ksetra_reason_runs_the_full_pipeline_and_records_plan_and_recall():
     assert "audited" in entry.evidence.sources
     assert "explanation" in entry.evidence.sources
     assert runtime.anubhava.observations == 1
+
+
+def test_ksetra_reason_rejects_malformed_anveshana_output_via_pariksha():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    runtime.anveshana.discover = lambda *_args, **_kwargs: [Varna(name="not-a-karma")]
+
+    try:
+        runtime.reason(Sankalpa(text="Create PO for laptops"))
+    except TypeError as exc:
+        assert "Anveshana candidates" in str(exc)
+    else:
+        raise AssertionError("expected TypeError")
 
 
 def test_ksetra_reason_adapts_samskara_every_adapt_every_cycles():
