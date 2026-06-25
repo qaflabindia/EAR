@@ -18,6 +18,12 @@ class Governor:
 
     def govern(self, runtime: Any, intent: Intent) -> list[Policy]:
         model_binding = getattr(runtime, "model_binding", None)
+        if model_binding is not None:
+            # Activation just builds (once) and configures the DSPy LM --
+            # idempotent and cheap -- so policies are judged against a real
+            # model here rather than silently falling back because the
+            # Initializer step hasn't run yet.
+            model_binding.activate()
         return [
             policy
             for policy in runtime.policies
