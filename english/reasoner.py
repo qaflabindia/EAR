@@ -1,0 +1,123 @@
+"""Reasoner -- the discriminative intelligence the runtime starts.
+
+This is the one place DSPy and GEPA are used deliberately, not sprinkled
+across every class: the Reasoner's core judgment is always a DSPy
+`Predict(ReasonAboutIntent)` call against whichever ModelBinding is active
+-- a natural-language prompt, not a hardcoded decision tree -- and GEPA is
+the single sanctioned optimizer for reflectively improving that one
+program's prompt against a labelled trainset. Every other stage in this
+package either has no judgment call to make (Selector, Composer,
+Scheduler) or uses a DSPy signature directly (Policy, Discoverer,
+Explainer) without needing GEPA optimization of its own.
+
+With no ModelBinding active at all, reasoning falls back to a
+deterministic summary, so the runtime is usable -- and testable -- with no
+LLM."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Optional
+
+from .intent import Intent
+
+
+@dataclass
+class Reasoner:
+    """The reasoning layer a Runtime invokes once an Intent has cleared
+    every Policy gate. Runtime activates its ModelBinding (LLM provider)
+    first; Reasoner then reasons with a compiled DSPy program if one is
+    attached, or by predicting directly against the activated
+    ModelBinding's LM otherwise. Call `compile_with_dspy` to attach a
+    custom DSPy program, or `optimize_with_gepa` to reflectively improve
+    the default one against examples."""
+
+    program: Optional[Any] = None
+
+    def reason(self, intent: Intent, runtime: Any = None) -> Any:
+        if self.program is not None:
+            return self._run_program(intent)
+        model_binding = getattr(runtime, "model_binding", None)
+        if model_binding is not None and model_binding.lm is not None:
+            return self._reason_with_llm(intent, runtime, model_binding.lm)
+        return self._default_reasoning(intent, runtime)
+
+    def compile_with_dspy(self, signature: Optional[Any] = None, **predict_kwargs: Any) -> "Reasoner":
+        """Attach a DSPy signature or program as this Reasoner's reasoning
+        core. With no `signature`, compiles the package's default
+        `ReasonAboutIntent` signature."""
+        import dspy
+
+        from .signatures import ReasonAboutIntent
+
+        signature = signature or ReasonAboutIntent
+        if isinstance(signature, type) and issubclass(signature, dspy.Signature):
+            self.program = dspy.Predict(signature, **predict_kwargs)
+        else:
+            self.program = signature
+        return self
+
+    def optimize_with_gepa(self, trainset: list[Any], metric: Any, **gepa_kwargs: Any) -> "Reasoner":
+        """Reflectively optimize this Reasoner's compiled DSPy program with
+        GEPA -- this package's one sanctioned use of GEPA, kept on the
+        single most judgment-laden stage rather than spread across every
+        module. Compiles the default `ReasonAboutIntent` program first if
+        none is attached yet."""
+        import dspy
+
+        if self.program is None:
+            self.compile_with_dspy()
+        optimizer = dspy.GEPA(metric=metric, **gepa_kwargs)
+        self.program = optimizer.compile(self.program, trainset=trainset)
+        return self
+
+    def _run_program(self, intent: Intent) -> Any:
+        return self.program(intent=str(intent), context=intent.context)
+
+    @staticmethod
+    def _reason_with_llm(intent: Intent, runtime: Any, lm: Any) -> str:
+        import dspy
+
+        from .signatures import ReasonAboutIntent
+
+        runtime_name = getattr(runtime, "name", "Runtime")
+        process_names = [process.name for process in getattr(runtime, "processes", [])]
+        context = dict(intent.context)
+        context["_runtime_name"] = runtime_name
+        context["_available_processes"] = ", ".join(process_names) if process_names else "none"
+        context["_remembered_context"] = Reasoner._memory_block(intent, runtime)
+
+        reasoner = dspy.Predict(ReasonAboutIntent)
+        with dspy.context(lm=lm):
+            result = reasoner(intent=intent.text, context=context)
+        return result.decision
+
+    @staticmethod
+    def _default_reasoning(intent: Intent, runtime: Any) -> str:
+        process_names = [process.name for process in getattr(runtime, "processes", [])]
+        runtime_name = getattr(runtime, "name", "Runtime")
+        processes = ", ".join(process_names) if process_names else "none"
+        memory = getattr(runtime, "memory", None)
+        memory_note = f", drawing on {len(memory)} remembered cycles" if memory and len(memory) else ""
+        return f"[{runtime_name}] resolved intent '{intent.text}' across processes: {processes}{memory_note}"
+
+    @staticmethod
+    def _memory_block(intent: Intent, runtime: Any) -> str:
+        """Render Memory history, Experience and any relevant Adaptation
+        insights for the prompt -- this is how persistent memory,
+        aggregated experience and learned adaptations feed back into
+        reasoning, kept as three distinct layers rather than one blob."""
+        block = ""
+        memory = getattr(runtime, "memory", None)
+        if memory is not None and len(memory):
+            block += f"\n\nMemory:\n{memory.context_window()}"
+        experience = getattr(runtime, "experience", None)
+        if experience is not None and experience.observations:
+            block += f"\n\nExperience:\n{experience.summary()}"
+        adaptations = getattr(runtime, "adaptations", None)
+        if adaptations is not None:
+            relevant = adaptations.relevant_to(intent.text)
+            if relevant:
+                insights = "\n".join(f"- {a.insight}" for a in relevant)
+                block += f"\n\nLearned adaptations:\n{insights}"
+        return block
