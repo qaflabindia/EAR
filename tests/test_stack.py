@@ -1,4 +1,4 @@
-from ear import Dharma, Guna, Karma, Ksetra, Sankalpa, Varna, Vidya
+from ear import Dharma, Guna, Karma, Ksetra, Manas, Sankalpa, Varna, Vidya
 
 
 def test_vidya_invoke():
@@ -86,3 +86,44 @@ def test_ksetra_reason_raises_on_policy_violation():
         assert "PO Approval Policy" in str(exc)
     else:
         raise AssertionError("expected PermissionError")
+
+
+class _StubLM:
+    """Stands in for a dspy.LM so tests never make a network call."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def __call__(self, prompt=None, messages=None, **kwargs):
+        self.calls.append(prompt)
+        return ["stubbed reasoning"]
+
+
+def test_manas_model_id_defaults_to_provider_prefix():
+    manas = Manas(provider="openai", model="gpt-4o-mini")
+    assert manas.model_id == "openai/gpt-4o-mini"
+
+
+def test_manas_model_id_passthrough_when_already_qualified():
+    manas = Manas(provider="openai", model="anthropic/claude-3-5-sonnet")
+    assert manas.model_id == "anthropic/claude-3-5-sonnet"
+
+
+def test_ksetra_reason_uses_activated_manas_lm_when_no_dspy_program():
+    stub = _StubLM()
+    manas = Manas(provider="openai", model="gpt-4o-mini", lm=stub)
+    runtime = Ksetra(name="Procurement-Kurukshetra", manas=manas)
+    process = Karma(name="Create Purchase Order")
+    runtime.add_process(process)
+
+    result = runtime.reason(Sankalpa(text="Create PO for laptops"))
+
+    assert result == "stubbed reasoning"
+    assert len(stub.calls) == 1
+    assert "Create PO for laptops" in stub.calls[0]
+
+
+def test_bhuddi_falls_back_to_default_without_manas_or_program():
+    runtime = Ksetra(name="Procurement-Kurukshetra")
+    result = runtime.reason(Sankalpa(text="Create PO for laptops"))
+    assert result.startswith("[Procurement-Kurukshetra]")

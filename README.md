@@ -24,6 +24,12 @@ Ksetra    → Runtime battlefield / field of execution
 Bhuddi    → Reasoning / discriminative intelligence
 ```
 
+Manas (the mind) is the LLM provider binding -- model, credentials, call
+parameters. It isn't a step in the stack so much as the current that runs
+through it: Ksetra activates its Manas before handing the Sankalpa to
+Bhuddi, so reasoning runs against a real model instead of the
+dependency-free default.
+
 ## Install
 
 ```bash
@@ -59,9 +65,22 @@ result = runtime.reason(Sankalpa(text="Create PO for laptops under approved budg
 print(result)
 ```
 
-Without an attached DSPy program, `Ksetra.reason` falls back to a
+Without a Manas or DSPy program attached, `Ksetra.reason` falls back to a
 deterministic summary of which processes the Sankalpa cleared, so the
-example above runs with no LLM credentials. Wire in real reasoning with:
+example above runs with no LLM credentials. Give the runtime a real mind:
+
+```python
+from ear import Manas
+
+runtime.manas = Manas(provider="openai", model="gpt-4o-mini", api_key="sk-...")
+
+result = runtime.reason(Sankalpa(text="Create PO for laptops under approved budget"))
+```
+
+`Ksetra.reason` activates `runtime.manas` (configuring DSPy's LM) before
+calling `Bhuddi.reason`. With no DSPy program attached, Bhuddi calls that
+LM directly; attach a compiled DSPy program for structured reasoning
+instead, and it'll run against the same activated Manas LM:
 
 ```python
 import dspy
@@ -85,8 +104,9 @@ ear/
   varna.py      Varna     — workflow (a stack of Guna personas)
   karma.py      Karma     — process (a stack of Varna workflows)
   dharma.py     Dharma    — policy (a guarded rule, safely evaluated — no eval/exec)
-  ksetra.py     Ksetra    — runtime (orchestrates Karma processes, enforces Dharma, starts Bhuddi)
-  bhuddi.py     Bhuddi    — reasoning (DSPy-backed, with a dependency-free default)
+  ksetra.py     Ksetra    — runtime (orchestrates Karma processes, enforces Dharma, activates Manas, starts Bhuddi)
+  manas.py      Manas     — LLM provider binding (model, credentials, params -> a DSPy LM)
+  bhuddi.py     Bhuddi    — reasoning (DSPy-backed or raw Manas LM call, with a dependency-free default)
   integrations/
     dspy_backend.py      DSPy signature/program → Bhuddi
     evolve_backend.py    openevolve — evolve a Vidya's source against an evaluator

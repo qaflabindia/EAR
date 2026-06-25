@@ -2,6 +2,8 @@
 
 Engineering stack:   Prompt  -> Skill -> Persona -> Workflow -> Process -> Policy -> Runtime -> Reasoning
 Philosophical stack: Sankalpa -> Vidya -> Guna   -> Varna    -> Karma   -> Dharma  -> Ksetra  -> Bhuddi
+
+Manas (the LLM provider binding) is activated by Ksetra to power Bhuddi.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from .dharma import Dharma
 from .guna import Guna
 from .karma import Karma
 from .ksetra import Ksetra
+from .manas import Manas
 from .sankalpa import Sankalpa
 from .varna import Varna
 from .vidya import Vidya
@@ -25,6 +28,7 @@ __all__ = [
     "Karma",
     "Dharma",
     "Ksetra",
+    "Manas",
     "Bhuddi",
     "__version__",
 ]
