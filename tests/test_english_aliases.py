@@ -1,0 +1,126 @@
+from ear import (
+    Adaptation,
+    AdaptationBank,
+    Adapter,
+    Adhyayana,
+    Anubhava,
+    Anukulana,
+    Anushthana,
+    Anveshana,
+    Arambha,
+    Auditor,
+    Bhuddi,
+    Composer,
+    Decider,
+    Deliberator,
+    Dharma,
+    Discoverer,
+    Evidence,
+    Evolver,
+    Executor,
+    Experience,
+    Explainer,
+    Governor,
+    Guna,
+    Initializer,
+    Intent,
+    Karma,
+    Kriya,
+    Ksetra,
+    Learner,
+    Manas,
+    Memory,
+    MemoryEntry,
+    ModelBinding,
+    Nirnaya,
+    Niyamana,
+    Niyojana,
+    Optimizer,
+    Orchestrator,
+    Parinama,
+    Parishodhana,
+    Pariksha,
+    Performer,
+    Persona,
+    Policy,
+    Pramana,
+    Process,
+    Reasoner,
+    Recaller,
+    Runtime,
+    Samanvaya,
+    Samskara,
+    SamskaraBank,
+    Samyojana,
+    Sankalpa,
+    Scheduler,
+    Selector,
+    Skill,
+    Smarana,
+    Smriti,
+    SmritiEntry,
+    Utkarsha,
+    Validator,
+    Varana,
+    Varna,
+    Vicara,
+    Vidya,
+    Vyakhya,
+    Workflow,
+)
+
+
+def test_english_aliases_are_the_same_classes_as_their_sanskrit_originals():
+    pairs = [
+        (Intent, Sankalpa),
+        (Skill, Vidya),
+        (Persona, Guna),
+        (Workflow, Varna),
+        (Process, Karma),
+        (Policy, Dharma),
+        (Runtime, Ksetra),
+        (ModelBinding, Manas),
+        (Evidence, Pramana),
+        (Memory, Smriti),
+        (MemoryEntry, SmritiEntry),
+        (Experience, Anubhava),
+        (Adaptation, Samskara),
+        (AdaptationBank, SamskaraBank),
+        (Reasoner, Bhuddi),
+        (Governor, Niyamana),
+        (Initializer, Arambha),
+        (Discoverer, Anveshana),
+        (Selector, Varana),
+        (Composer, Samyojana),
+        (Scheduler, Niyojana),
+        (Orchestrator, Samanvaya),
+        (Executor, Anushthana),
+        (Performer, Kriya),
+        (Deliberator, Vicara),
+        (Decider, Nirnaya),
+        (Validator, Pariksha),
+        (Recaller, Smarana),
+        (Explainer, Vyakhya),
+        (Auditor, Parishodhana),
+        (Learner, Adhyayana),
+        (Adapter, Anukulana),
+        (Evolver, Parinama),
+        (Optimizer, Utkarsha),
+    ]
+    for english_class, sanskrit_class in pairs:
+        assert english_class is sanskrit_class
+
+
+def test_english_named_runtime_runs_a_full_cycle():
+    runtime = Runtime(name="English-Runtime")
+    runtime.add_policy(Policy(name="PO Approval Policy", rule="purchase_amount <= approval_limit"))
+    process = Process(name="Create Purchase Order")
+    process.add_workflow(Workflow(name="Procurement Workflow"))
+    runtime.add_process(process)
+
+    result = runtime.reason(Intent(text="Create PO for laptops under approved budget"))
+
+    assert "Create Purchase Order" in result
+    entry = runtime.smriti.working[-1]
+    assert isinstance(entry, MemoryEntry)
+    assert isinstance(entry.evidence, Evidence)

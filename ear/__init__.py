@@ -31,6 +31,10 @@ Pramana (evidence) and Anubhava (experience aggregated from repeated
 Smriti entries) round out the memory layers Samskara then adapts from.
 Parinama (evolve) and Utkarsha (optimize) are structural, dev-time
 operations on Vidya/Guna -- not part of the per-cycle pipeline.
+
+Every class above is also importable under its English equivalent (e.g.
+`Runtime` for `Ksetra`, `Policy` for `Dharma`) -- see `ear/english.py`.
+These are aliases, not copies: `Runtime is Ksetra` holds.
 """
 
 from __future__ import annotations
@@ -43,6 +47,42 @@ from .anveshana import Anveshana
 from .arambha import Arambha
 from .bhuddi import Bhuddi
 from .dharma import Dharma
+from .english import (
+    Adaptation,
+    AdaptationBank,
+    Adapter,
+    Auditor,
+    Composer,
+    Decider,
+    Deliberator,
+    Discoverer,
+    Evidence,
+    Evolver,
+    Executor,
+    Experience,
+    Explainer,
+    Governor,
+    Initializer,
+    Intent,
+    Learner,
+    Memory,
+    MemoryEntry,
+    ModelBinding,
+    Optimizer,
+    Orchestrator,
+    Performer,
+    Persona,
+    Policy,
+    Process,
+    Reasoner,
+    Recaller,
+    Runtime,
+    Scheduler,
+    Selector,
+    Skill,
+    Validator,
+    Workflow,
+)
 from .guna import Guna
 from .karma import Karma
 from .kriya import Kriya
@@ -105,5 +145,40 @@ __all__ = [
     "Anukulana",
     "Parinama",
     "Utkarsha",
+    # English-terminology aliases (see ear/english.py) -- same classes, English names.
+    "Intent",
+    "Skill",
+    "Persona",
+    "Workflow",
+    "Process",
+    "Policy",
+    "Runtime",
+    "ModelBinding",
+    "Evidence",
+    "Memory",
+    "MemoryEntry",
+    "Experience",
+    "Adaptation",
+    "AdaptationBank",
+    "Reasoner",
+    "Governor",
+    "Initializer",
+    "Discoverer",
+    "Selector",
+    "Composer",
+    "Scheduler",
+    "Orchestrator",
+    "Executor",
+    "Performer",
+    "Deliberator",
+    "Decider",
+    "Validator",
+    "Recaller",
+    "Explainer",
+    "Auditor",
+    "Learner",
+    "Adapter",
+    "Evolver",
+    "Optimizer",
     "__version__",
 ]

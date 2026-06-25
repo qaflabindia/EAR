@@ -234,6 +234,27 @@ them into the prompt as three distinct sections, so memory, experience and
 learned adaptation each influence the next decision without blurring
 together.
 
+## English-terminology aliases
+
+Every class is also importable under its English equivalent — `Runtime`
+for `Ksetra`, `Policy` for `Dharma`, `Validator` for `Pariksha`, and so on
+for all 33 classes. These are aliases, not copies: `Runtime is Ksetra`
+holds, so code can freely mix vocabularies or migrate from one to the
+other a class at a time. See [`ear/english.py`](ear/english.py) for the
+full mapping.
+
+```python
+from ear import Runtime, Policy, Process, Workflow, Intent
+
+runtime = Runtime(name="English-Runtime")
+runtime.add_policy(Policy(name="PO Approval Policy", rule="purchase_amount <= approval_limit"))
+process = Process(name="Create Purchase Order")
+process.add_workflow(Workflow(name="Procurement Workflow"))
+runtime.add_process(process)
+
+result = runtime.reason(Intent(text="Create PO for laptops under approved budget"))
+```
+
 ## Package layout
 
 ```text
@@ -270,6 +291,7 @@ ear/
   anukulana.py  Anukulana   — adapt: periodically distill a new Samskara
   parinama.py   Parinama    — evolve: transform a Vidya skill's source (openevolve, dev-time)
   utkarsha.py   Utkarsha    — optimize: refine a Guna skill document (SkillOpt, dev-time)
+  english.py    English-terminology aliases for every class above (Runtime = Ksetra, Policy = Dharma, ...)
   integrations/
     dspy_backend.py      DSPy signature/program → Bhuddi
     evolve_backend.py    openevolve — evolve a Vidya's source against an evaluator
