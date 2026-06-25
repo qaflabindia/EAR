@@ -289,6 +289,46 @@ def test_adaptation_bank_relevant_to_keyword_overlap():
     assert [a.name for a in matches] == ["dti-rule"]
 
 
+def test_skill_is_prompt_first_without_a_handler():
+    skill = Skill(name="assess-dti", prompt="Decline any application whose debt-to-income exceeds 0.43")
+    assert skill.instruction() == "Decline any application whose debt-to-income exceeds 0.43"
+    # A prompt-only skill needs no Python code -- the user just stacks a prompt.
+    assert skill.handler is None
+
+
+def test_skill_instruction_falls_back_to_description_then_name():
+    assert Skill(name="x", description="does x").instruction() == "does x"
+    assert Skill(name="x").instruction() == "x"
+
+
+def test_reasoner_renders_stacked_capabilities_into_the_decision():
+    persona = Persona(name="Underwriter", instructions="Be conservative on risk")
+    persona.add_skill(Skill(name="assess-dti", prompt="Decline if DTI exceeds 0.43"))
+    workflow = Workflow(name="Credit Review Workflow")
+    workflow.add_persona(persona)
+
+    decision = Reasoner().reason(Intent(text="Evaluate application"), plan=[workflow])
+
+    # The stacked persona instruction and skill name reach the reasoning output,
+    # proving the stack is no longer dropped before reasoning.
+    assert "Underwriter" in decision
+    assert "assess-dti" in decision
+
+
+def test_runtime_threads_scheduled_stack_into_reasoning():
+    runtime = Runtime(name="Credit-Risk-Runtime")
+    persona = Persona(name="Underwriter", instructions="Be conservative on risk")
+    persona.add_skill(Skill(name="assess-dti", prompt="Decline if DTI exceeds 0.43"))
+    workflow = Workflow(name="Credit Review Workflow")
+    workflow.add_persona(persona)
+    process = Process(name="Evaluate Credit Application")
+    process.add_workflow(workflow)
+    runtime.add_process(process)
+
+    decision = runtime.reason(Intent(text="Evaluate a credit application"))
+    assert "Underwriter" in decision
+
+
 def test_runtime_reason_default_path():
     runtime = Runtime(name="Credit-Risk-Runtime")
     runtime.add_policy(Policy(name="DTI Policy", fallback_expression="debt_to_income <= 0.43"))

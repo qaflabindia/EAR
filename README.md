@@ -6,6 +6,14 @@ stacked inside a persona, a persona is stacked into a workflow, workflows
 are stacked into processes, policies are mapped onto those processes,
 processes are orchestrated by the runtime, and the runtime reasons.
 
+The user writes no code: a `Skill` is a prompt, a `Persona` is skills plus
+standing instructions, a `Policy` is a plain-English rule. For the intent
+at hand the runtime composes the relevant Personas and their stacked Skill
+prompts into one assembled-capabilities block and reasons over it with the
+active LLM — so what you stack is what the model actually reasons with. A
+deterministic Python `handler` on a Skill stays available for the advanced
+case, but it is optional, never required.
+
 ```text
 Intent → Skill → Persona → Workflow → Process → Policy → Runtime → Reasoner
 ```
@@ -184,7 +192,7 @@ each influence the next decision without blurring together.
 ```text
 ear/
   intent.py        Intent        — prompt / resolved request that starts a reasoning cycle
-  skill.py         Skill         — a single addressable capability a persona can invoke
+  skill.py         Skill         — a stacked prompt (a capability), reasoned over by the runtime; no handler code required
   persona.py       Persona       — a stack of Skills plus standing instructions
   workflow.py       Workflow      — an ordered stack of Personas
   process.py       Process       — a stack of Workflows that performs an action

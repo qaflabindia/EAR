@@ -120,7 +120,7 @@ class Runtime:
         scheduled = self.validator.validate_schedule(self.scheduler.schedule(plan))
         recalled = self.recaller.recall(self.memory, intent)
 
-        decision = self.orchestrator.orchestrate(self, intent)
+        decision = self.orchestrator.orchestrate(self, intent, plan=scheduled)
 
         evidence = self._build_evidence(intent, scheduled, recalled)
         evidence.sources["explanation"] = self.explainer.explain(evidence, decision, model_binding=self.model_binding)

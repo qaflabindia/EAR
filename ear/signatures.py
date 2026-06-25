@@ -40,10 +40,18 @@ class DiscoverRelevantProcesses(dspy.Signature):
 
 
 class ReasonAboutIntent(dspy.Signature):
-    """Resolve an intent into a final, concrete decision given its context."""
+    """Resolve an intent into a final, concrete decision given its context.
+
+    Reason *as* the assembled capabilities: the persona instructions and the
+    stacked skill prompts describe who is acting and how -- follow them when
+    reaching the decision."""
 
     intent: str = dspy.InputField(desc="The natural-language intent to resolve")
     context: dict = dspy.InputField(desc="Structured context relevant to the intent")
+    capabilities: str = dspy.InputField(
+        desc="The stacked personas and skill prompts the runtime composed for this "
+        "intent -- the standing instructions and capabilities to reason with"
+    )
     decision: str = dspy.OutputField(desc="The concrete decision reached, with a brief justification")
 
 

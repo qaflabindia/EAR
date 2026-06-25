@@ -34,13 +34,14 @@ class Reasoner:
 
     program: Optional[Any] = None
 
-    def reason(self, intent: Intent, runtime: Any = None) -> Any:
+    def reason(self, intent: Intent, runtime: Any = None, plan: Any = None) -> Any:
+        capabilities = self._render_capabilities(plan)
         if self.program is not None:
-            return self._run_program(intent)
+            return self._run_program(intent, capabilities)
         model_binding = getattr(runtime, "model_binding", None)
         if model_binding is not None and model_binding.lm is not None:
-            return self._reason_with_llm(intent, runtime, model_binding.lm)
-        return self._default_reasoning(intent, runtime)
+            return self._reason_with_llm(intent, runtime, model_binding.lm, capabilities)
+        return self._default_reasoning(intent, runtime, capabilities)
 
     def compile_with_dspy(self, signature: Optional[Any] = None, **predict_kwargs: Any) -> "Reasoner":
         """Attach a DSPy signature or program as this Reasoner's reasoning
@@ -71,11 +72,11 @@ class Reasoner:
         self.program = optimizer.compile(self.program, trainset=trainset)
         return self
 
-    def _run_program(self, intent: Intent) -> Any:
-        return self.program(intent=str(intent), context=intent.context)
+    def _run_program(self, intent: Intent, capabilities: str = "") -> Any:
+        return self.program(intent=str(intent), context=intent.context, capabilities=capabilities)
 
     @staticmethod
-    def _reason_with_llm(intent: Intent, runtime: Any, lm: Any) -> str:
+    def _reason_with_llm(intent: Intent, runtime: Any, lm: Any, capabilities: str = "") -> str:
         import dspy
 
         from .signatures import ReasonAboutIntent
@@ -89,17 +90,52 @@ class Reasoner:
 
         reasoner = dspy.Predict(ReasonAboutIntent)
         with dspy.context(lm=lm):
-            result = reasoner(intent=intent.text, context=context)
+            result = reasoner(
+                intent=intent.text,
+                context=context,
+                capabilities=capabilities or "none",
+            )
         return result.decision
 
     @staticmethod
-    def _default_reasoning(intent: Intent, runtime: Any) -> str:
+    def _default_reasoning(intent: Intent, runtime: Any, capabilities: str = "") -> str:
         process_names = [process.name for process in getattr(runtime, "processes", [])]
         runtime_name = getattr(runtime, "name", "Runtime")
         processes = ", ".join(process_names) if process_names else "none"
         memory = getattr(runtime, "memory", None)
         memory_note = f", drawing on {len(memory)} remembered cycles" if memory and len(memory) else ""
-        return f"[{runtime_name}] resolved intent '{intent.text}' across processes: {processes}{memory_note}"
+        capability_note = ""
+        if capabilities:
+            names = [line.split(":", 1)[0].strip(" -") for line in capabilities.splitlines() if line.strip()]
+            if names:
+                capability_note = f", applying capabilities: {', '.join(names)}"
+        return (
+            f"[{runtime_name}] resolved intent '{intent.text}' across processes: "
+            f"{processes}{capability_note}{memory_note}"
+        )
+
+    @staticmethod
+    def _render_capabilities(plan: Any) -> str:
+        """Flatten the scheduled plan (Workflows -> Personas -> Skills) into a
+        natural-language block the reasoner can act on. This is what makes the
+        user's stacking matter: the persona instructions and stacked skill
+        prompts the runtime composed for this intent are what the LLM reasons
+        with, rather than the bare intent. Returns "" when no plan is
+        threaded through, so reasoning stays valid in that case."""
+        if not plan:
+            return ""
+        lines: list[str] = []
+        for workflow in plan:
+            for persona in getattr(workflow, "personas", []):
+                instructions = getattr(persona, "instructions", "")
+                header = f"- Persona {persona.name}"
+                if instructions:
+                    header += f": {instructions}"
+                lines.append(header)
+                for skill in getattr(persona, "skills", []):
+                    instruction = skill.instruction() if hasattr(skill, "instruction") else getattr(skill, "name", "")
+                    lines.append(f"    - Skill {skill.name}: {instruction}")
+        return "\n".join(lines)
 
     @staticmethod
     def _memory_block(intent: Intent, runtime: Any) -> str:
