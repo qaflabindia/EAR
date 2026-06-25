@@ -24,8 +24,22 @@ class Governor:
             # model here rather than silently falling back because the
             # Initializer step hasn't run yet.
             model_binding.activate()
+        return self._violations(runtime.policies, model_binding, intent)
+
+    def govern_workflows(self, runtime: Any, intent: Intent, workflows: Any) -> list[Policy]:
+        """Enforce the policies attached to each workflow in the composed
+        plan. Runtime-wide policies are checked by `govern` up front; a
+        workflow's own policies can only be checked once the plan is known,
+        so this runs after composition and before the workflow's steps are
+        reasoned."""
+        model_binding = getattr(runtime, "model_binding", None)
+        policies = [policy for workflow in workflows for policy in getattr(workflow, "policies", [])]
+        return self._violations(policies, model_binding, intent)
+
+    @staticmethod
+    def _violations(policies: Any, model_binding: Any, intent: Intent) -> list[Policy]:
         return [
             policy
-            for policy in runtime.policies
+            for policy in policies
             if not policy.evaluate(model_binding=model_binding, **intent.context)
         ]

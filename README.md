@@ -6,13 +6,33 @@ stacked inside a persona, a persona is stacked into a workflow, workflows
 are stacked into processes, policies are mapped onto those processes,
 processes are orchestrated by the runtime, and the runtime reasons.
 
-The user writes no code: a `Skill` is a prompt, a `Persona` is skills plus
-standing instructions, a `Policy` is a plain-English rule. For the intent
-at hand the runtime composes the relevant Personas and their stacked Skill
-prompts into one assembled-capabilities block and reasons over it with the
-active LLM — so what you stack is what the model actually reasons with. A
-deterministic Python `handler` on a Skill stays available for the advanced
-case, but it is optional, never required.
+The user writes no code — they stack declarations in plain English and the
+runtime reasons over them:
+
+- narrate a **`Skill`** as a prompt,
+- stack skills into a **`Persona`**,
+- narrate ordered **steps** into a **`Workflow`** and delegate each to a persona,
+- attach a **`Policy`** to govern the workflow (or the whole runtime).
+
+```python
+guru = Persona(name="Credit Risk Guru", instructions="Underwrite conservatively.")
+guru.add_skill(Skill(name="risk_grade", prompt="Combine the score tier and DTI band into a grade A–E."))
+
+workflow = Workflow(name="Underwriting Workflow")
+workflow.add_step("Band the credit profile and assign a risk grade.", persona=guru)
+workflow.add_step("Decide approve or decline against the grade.", persona=guru)
+workflow.add_policy(Policy(name="Loan Amount Cap", statement="The loan must not exceed $75,000."))
+```
+
+For the intent at hand the runtime composes the workflow's ordered steps,
+the personas they delegate to and the stacked skill prompts into one
+assembled-capabilities block and reasons over it with the active LLM
+(any [LiteLLM](https://github.com/BerriAI/litellm) provider — Anthropic,
+OpenAI, Gemini, Bedrock, Ollama — selected by `ModelBinding`, never
+hardcoded), and enforces the workflow's policies before it runs. So what
+you stack is what the model actually reasons with. A deterministic Python
+`handler` on a Skill stays available for the advanced case, but it is
+optional, never required.
 
 ```text
 Intent → Skill → Persona → Workflow → Process → Policy → Runtime → Reasoner
@@ -194,9 +214,10 @@ ear/
   intent.py        Intent        — prompt / resolved request that starts a reasoning cycle
   skill.py         Skill         — a stacked prompt (a capability), reasoned over by the runtime; no handler code required
   persona.py       Persona       — a stack of Skills plus standing instructions
-  workflow.py       Workflow      — an ordered stack of Personas
+  step.py          Step          — one narrated instruction in a Workflow, delegated to a Persona
+  workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies
   process.py       Process       — a stack of Workflows that performs an action
-  policy.py        Policy        — governance rule, judged in natural language with a safe-eval fallback
+  policy.py        Policy        — governance rule, judged in natural language with a safe-eval fallback; attaches runtime-wide or to a Workflow
   runtime.py       Runtime       — runs every cycle through the full operation pipeline below
   model_binding.py ModelBinding  — LLM provider binding (model, credentials, params -> a DSPy LM)
   evidence.py      Evidence      — why this decision was made

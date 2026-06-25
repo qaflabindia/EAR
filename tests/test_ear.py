@@ -50,6 +50,7 @@ from ear import (
     Scheduler,
     Selector,
     Skill,
+    Step,
     Validator,
     Workflow,
 )
@@ -311,6 +312,64 @@ def test_reasoner_renders_stacked_capabilities_into_the_decision():
 
     # The stacked persona instruction and skill name reach the reasoning output,
     # proving the stack is no longer dropped before reasoning.
+    assert "Underwriter" in decision
+    assert "assess-dti" in decision
+
+
+def test_workflow_add_step_delegates_to_persona():
+    persona = Persona(name="Underwriter")
+    workflow = Workflow(name="Underwriting Workflow")
+    workflow.add_step("Band the applicant's credit profile", persona=persona)
+    workflow.add_step("Decide approval within policy", persona=persona)
+
+    assert [s.instruction for s in workflow.steps] == [
+        "Band the applicant's credit profile",
+        "Decide approval within policy",
+    ]
+    assert all(isinstance(s, Step) for s in workflow.steps)
+    assert workflow.steps[0].persona is persona
+    # Same persona delegated twice -> de-duplicated by identity.
+    assert workflow.delegated_personas() == [persona]
+
+
+def test_workflow_add_policy_attaches_governing_policy():
+    workflow = Workflow(name="Underwriting Workflow")
+    policy = Policy(name="DTI Ceiling", fallback_expression="debt_to_income <= 0.45")
+    workflow.add_policy(policy)
+    assert workflow.policies == [policy]
+
+
+def test_governor_returns_violated_workflow_policies():
+    workflow = Workflow(name="Underwriting Workflow")
+    policy = Policy(name="DTI Ceiling", fallback_expression="debt_to_income <= 0.45")
+    workflow.add_policy(policy)
+    runtime = Runtime(name="Credit-Risk-Runtime")
+
+    intent = Intent(text="high DTI application", context={"debt_to_income": 0.60})
+    assert Governor().govern_workflows(runtime, intent, [workflow]) == [policy]
+
+
+def test_runtime_reason_blocks_on_workflow_policy_violation():
+    runtime = Runtime(name="Credit-Risk-Runtime")
+    workflow = Workflow(name="Underwriting Workflow")
+    workflow.add_policy(Policy(name="DTI Ceiling", fallback_expression="debt_to_income <= 0.45"))
+    process = Process(name="Evaluate Credit Application")
+    process.add_workflow(workflow)
+    runtime.add_process(process)
+
+    with pytest.raises(PermissionError, match="Workflow policy violated: DTI Ceiling"):
+        runtime.reason(Intent(text="Evaluate application", context={"debt_to_income": 0.60}))
+
+
+def test_reasoner_renders_workflow_steps_and_delegated_persona():
+    persona = Persona(name="Underwriter", instructions="Be conservative on risk")
+    persona.add_skill(Skill(name="assess-dti", prompt="Decline if DTI exceeds 0.45"))
+    workflow = Workflow(name="Underwriting Workflow")
+    workflow.add_step("Band the applicant's credit profile", persona=persona)
+
+    decision = Reasoner().reason(Intent(text="Evaluate application"), plan=[workflow])
+    # Offline default reasoning echoes the stacked capability names, proving the
+    # narrated step and its delegated persona reached the reasoner.
     assert "Underwriter" in decision
     assert "assess-dti" in decision
 

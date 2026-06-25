@@ -116,26 +116,47 @@ class Reasoner:
 
     @staticmethod
     def _render_capabilities(plan: Any) -> str:
-        """Flatten the scheduled plan (Workflows -> Personas -> Skills) into a
-        natural-language block the reasoner can act on. This is what makes the
-        user's stacking matter: the persona instructions and stacked skill
-        prompts the runtime composed for this intent are what the LLM reasons
-        with, rather than the bare intent. Returns "" when no plan is
-        threaded through, so reasoning stays valid in that case."""
+        """Flatten the scheduled plan (Workflows -> ordered Steps delegated to
+        Personas -> stacked Skill prompts) into a natural-language block the
+        reasoner can act on, in order. This is what makes the user's stacking
+        matter: the narrated steps, the personas they delegate to and the
+        stacked skill prompts are what the LLM reasons with and the order it
+        works them in, rather than the bare intent. Returns "" when no plan
+        is threaded through, so reasoning stays valid in that case."""
         if not plan:
             return ""
         lines: list[str] = []
         for workflow in plan:
+            workflow_name = getattr(workflow, "name", "")
+            if workflow_name:
+                lines.append(f"Workflow {workflow_name}:")
+            steps = getattr(workflow, "steps", [])
+            for number, step in enumerate(steps, start=1):
+                delegate = ""
+                if step.persona is not None:
+                    delegate = f" [delegated to Persona {step.persona.name}]"
+                lines.append(f"  Step {number}: {step.instruction}{delegate}")
+                Reasoner._render_persona(step.persona, lines, indent="      ")
+            # Personas stacked directly on the workflow (no per-step narration).
             for persona in getattr(workflow, "personas", []):
-                instructions = getattr(persona, "instructions", "")
-                header = f"- Persona {persona.name}"
-                if instructions:
-                    header += f": {instructions}"
-                lines.append(header)
-                for skill in getattr(persona, "skills", []):
-                    instruction = skill.instruction() if hasattr(skill, "instruction") else getattr(skill, "name", "")
-                    lines.append(f"    - Skill {skill.name}: {instruction}")
+                Reasoner._render_persona(persona, lines, indent="  ", header=True)
         return "\n".join(lines)
+
+    @staticmethod
+    def _render_persona(persona: Any, lines: list[str], indent: str, header: bool = False) -> None:
+        if persona is None:
+            return
+        instructions = getattr(persona, "instructions", "")
+        if header:
+            line = f"{indent}Persona {persona.name}"
+            if instructions:
+                line += f": {instructions}"
+            lines.append(line)
+        elif instructions:
+            lines.append(f"{indent}Persona {persona.name}: {instructions}")
+        for skill in getattr(persona, "skills", []):
+            instruction = skill.instruction() if hasattr(skill, "instruction") else getattr(skill, "name", "")
+            lines.append(f"{indent}  - Skill {skill.name}: {instruction}")
 
     @staticmethod
     def _memory_block(intent: Intent, runtime: Any) -> str:

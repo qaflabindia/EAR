@@ -118,6 +118,12 @@ class Runtime:
         selected = self.validator.validate_selection(self.selector.select(self, candidates))
         plan = self.validator.validate_plan(self.composer.compose(selected))
         scheduled = self.validator.validate_schedule(self.scheduler.schedule(plan))
+
+        workflow_violations = self.governor.govern_workflows(self, intent, scheduled)
+        if workflow_violations:
+            names = ", ".join(policy.name for policy in workflow_violations)
+            raise PermissionError(f"Workflow policy violated: {names}")
+
         recalled = self.recaller.recall(self.memory, intent)
 
         decision = self.orchestrator.orchestrate(self, intent, plan=scheduled)
