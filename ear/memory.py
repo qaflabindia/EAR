@@ -54,7 +54,11 @@ class Memory:
         decision: Any,
         context: Optional[dict[str, Any]] = None,
         evidence: Optional[Evidence] = None,
+        summarizer: Optional[Any] = None,
     ) -> MemoryEntry:
+        """Record one cycle. Pass the active LM as `summarizer` so any
+        overflow compression this record triggers is written by the model
+        rather than the deterministic digest."""
         entry = MemoryEntry(
             intent_text=intent_text,
             decision=decision,
@@ -63,7 +67,7 @@ class Memory:
         )
         self.working.append(entry)
         if len(self.working) > self.capacity:
-            self.compress()
+            self.compress(summarizer=summarizer)
         return entry
 
     def compress(self, summarizer: Optional[Any] = None, keep: Optional[int] = None) -> Optional[str]:

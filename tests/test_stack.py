@@ -702,6 +702,46 @@ def test_unknown_reference_error_suggests_the_close_match(tmp_path):
         load_runtime(write_stack(tmp_path / "stack", **stack))
 
 
+def test_recaller_and_auditor_stay_deterministic_and_silent_offline():
+    runtime = Runtime(name="Offline-Runtime")
+    runtime.reason(Intent(text="first cycle"))
+    runtime.reason(Intent(text="second cycle"))
+    # Offline recall is the full window and audit is the flag -- neither is
+    # a judgment, so neither lands in the trail.
+    assert runtime.reasoning_log.for_stage("recall") == []
+    assert runtime.reasoning_log.for_stage("audit") == []
+    entry = runtime.memory.working[-1]
+    assert entry.evidence.sources["audited"] is True
+    assert "first cycle" in entry.evidence.sources["recalled_memory"]
+
+
+def test_adaptation_is_logged_when_distilled():
+    runtime = Runtime(name="Adapting-Runtime")
+    runtime.adapter.adapt_every = 1
+    runtime.reason(Intent(text="underwrite something"))
+    record = runtime.reasoning_log.for_stage("adaptation")[0]
+    assert record.output == runtime.adaptations.impressions[0].insight
+    assert record.model == "deterministic-fallback"
+
+
+@requires_anthropic_key
+def test_recall_and_audit_are_llm_judged_and_on_the_trail():
+    from ear import ModelBinding
+
+    binding = ModelBinding(provider="anthropic", model=os.environ.get("ANTHROPIC_TEST_MODEL", "claude-haiku-4-5"))
+    runtime = Runtime(name="Live-Audited-Runtime", model_binding=binding)
+    runtime.memory.record("approved a $5,000 bicycle loan", decision="approved at grade B")
+    runtime.memory.record("cancelled a lunch reservation", decision="cancelled")
+
+    runtime.reason(Intent(text="Underwrite another small bicycle loan", context={"loan_amount": 4000}))
+
+    recall = runtime.reasoning_log.for_stage("recall")[0]
+    assert recall.model == binding.model_id
+    audit = runtime.reasoning_log.for_stage("audit")[0]
+    assert audit.output.strip()
+    assert runtime.memory.working[-1].evidence.sources["audit_assessment"] == audit.output
+
+
 @requires_anthropic_key
 def test_selector_chooses_the_relevant_process_with_llm():
     from ear import ModelBinding, Process

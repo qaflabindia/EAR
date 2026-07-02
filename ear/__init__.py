@@ -25,12 +25,12 @@ own class so operations AI runtimes often blur together stay distinct:
     Deliberator  -> deliberate   (deliberate via the Reasoner)
     Decider      -> decide       (commit to one decision)
     Validator    -> validate     (reject a malformed decision)
-    Recaller     -> remember     (recall Memory context as evidence)
+    Recaller     -> remember     (recall relevant Memory as evidence; LLM-recalled, full-window fallback)
     Explainer    -> explain      (render why a decision was reached; LLM-written, with an f-string fallback)
-    Auditor      -> audit        (inspect evidence for compliance)
-    Memory       -> store memory (what happened)
+    Auditor      -> audit        (inspect evidence for compliance; LLM-assessed, flag fallback)
+    Memory       -> store memory (what happened; overflow compressed by the active LM when bound)
     Learner      -> learn        (fold the cycle into Experience)
-    Adapter      -> adapt        (periodically distill a new Adaptation)
+    Adapter      -> adapt        (periodically distill a new Adaptation; LLM-distilled when bound)
 
 Evidence (why) and Experience (pattern aggregated from repeated Memory
 entries) round out the memory layers Adaptation then adapts from.

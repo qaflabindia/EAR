@@ -153,7 +153,7 @@ class Runtime:
             raise PermissionError(f"Workflow policy violated: {names}")
 
         self.delegator.delegate(self, intent, scheduled)
-        recalled = self.recaller.recall(self.memory, intent)
+        recalled = self.recaller.recall(self.memory, intent, runtime=self)
 
         decision = self.orchestrator.orchestrate(self, intent, plan=scheduled)
 
@@ -166,11 +166,21 @@ class Runtime:
             output=str(explanation),
             model=model_name(self.model_binding),
         )
-        self.auditor.audit(evidence)
+        self.auditor.audit(evidence, runtime=self, decision=decision)
 
-        entry = self.memory.record(intent.text, decision, context=intent.context, evidence=evidence)
+        active_lm = self.model_binding.lm if self.model_binding is not None else None
+        entry = self.memory.record(
+            intent.text, decision, context=intent.context, evidence=evidence, summarizer=active_lm
+        )
         self.learner.learn(self.experience, entry)
-        self.adapter.adapt(self.adaptations, self.experience)
+        learned = self.adapter.adapt(self.adaptations, self.experience, summarizer=active_lm)
+        if learned is not None:
+            self.reasoning_log.record(
+                stage="adaptation",
+                inputs={"experience": self.experience.summary()},
+                output=learned.insight,
+                model=model_name(self.model_binding),
+            )
         if self.session_store is not None:
             self.session_store.save(self)
         self.reasoning_log.flush()

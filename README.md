@@ -157,7 +157,11 @@ delegation    which persona each undelegated step was assigned to, and why it
               was available -- the runtime completing the authoring, on record
 deliberation  the Reasoner's decision, with the full stacked capabilities
               block and memory context -- the exact prompt material to review
+recall        what was recalled from memory as relevant to this intent
 explanation   the Explainer's prose and the evidence it rested on
+audit         the auditor's assessment of whether the evidence supports
+              the decision
+adaptation    each newly distilled lesson, when the Adapter fires
 ```
 
 Each record carries the model that produced it (`deterministic-fallback`
@@ -222,12 +226,12 @@ Performer    → perform      deliberate, decide, validate
 Deliberator  → deliberate   reason via the Reasoner
 Decider      → decide       commit to one decision
 Validator    → validate     reject a malformed decision
-Recaller     → remember     recall Memory context as evidence
+Recaller     → remember     recall relevant Memory as evidence (LLM-recalled, full-window fallback)
 Explainer    → explain      render why a decision was reached (LLM-written, f-string fallback)
-Auditor      → audit        inspect evidence for compliance
-Memory       → store memory what happened
+Auditor      → audit        inspect evidence for compliance (LLM-assessed, flag fallback)
+Memory       → store memory what happened (overflow compressed by the active LM when bound)
 Learner      → learn        fold the cycle into Experience
-Adapter      → adapt        periodically distill a new Adaptation
+Adapter      → adapt        periodically distill a new Adaptation (LLM-distilled when bound)
 ```
 
 `Governor` raises `PermissionError` and stops the cycle before anything

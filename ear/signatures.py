@@ -86,6 +86,28 @@ class ReasonAboutIntent(dspy.Signature):
     decision: str = dspy.OutputField(desc="The concrete decision reached, with a brief justification")
 
 
+class RecallRelevantMemory(dspy.Signature):
+    """From the runtime's remembered history, recall what is genuinely
+    relevant to the intent at hand -- prior decisions, amounts and
+    outcomes that should inform this cycle -- and leave the rest behind.
+    Recall facts as they were recorded; never invent or embellish them."""
+
+    intent_text: str = dspy.InputField()
+    history: str = dspy.InputField(desc="The full remembered context window")
+    relevant_context: str = dspy.OutputField(desc="Only the remembered facts relevant to this intent, verbatim where possible")
+
+
+class AuditEvidence(dspy.Signature):
+    """Inspect a decision's evidence the way an internal auditor would:
+    check the decision against its basis, the policies checked and the
+    plan, and say whether the evidence supports the decision, naming any
+    gap or inconsistency plainly."""
+
+    decision: str = dspy.InputField()
+    evidence: str = dspy.InputField(desc="The basis, policies checked, plan and recalled memory behind the decision")
+    assessment: str = dspy.OutputField(desc="One or two sentences: supported or not, and any gap found")
+
+
 class ExplainDecision(dspy.Signature):
     """Write a short, human-readable explanation of why a decision was
     reached, given the evidentiary basis for it."""
