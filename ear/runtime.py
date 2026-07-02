@@ -22,6 +22,7 @@ enforces and records."""
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -41,6 +42,7 @@ from .governor import Governor
 from .initializer import Initializer
 from .intent import Intent
 from .learner import Learner
+from .librarian import Librarian
 from .memory import Memory
 from .model_binding import ModelBinding
 from .orchestrator import Orchestrator
@@ -98,6 +100,7 @@ class Runtime:
     validator: Validator = field(default_factory=Validator)
     orchestrator: Orchestrator = field(default_factory=Orchestrator)
     recaller: Recaller = field(default_factory=Recaller)
+    librarian: Librarian = field(default_factory=Librarian)
     explainer: Explainer = field(default_factory=Explainer)
     auditor: Auditor = field(default_factory=Auditor)
     learner: Learner = field(default_factory=Learner)
@@ -130,12 +133,15 @@ class Runtime:
         return [policy for policy in self.policies if not policy.evaluate(self.model_binding, **context)]
 
     def reason(self, intent: Intent) -> Any:
+        started = time.monotonic()
+        calls_before = self._model_calls_so_far()
         self.reasoning_log.begin_cycle(intent)
 
         violations = self.governor.govern(self, intent)
         if violations:
             names = ", ".join(policy.name for policy in violations)
             # A blocked cycle is exactly what an auditor wants on record.
+            self._record_usage(started, calls_before)
             self.reasoning_log.flush()
             raise PermissionError(f"Policy violated: {names}")
 
@@ -149,19 +155,23 @@ class Runtime:
         workflow_violations = self.governor.govern_workflows(self, intent, scheduled)
         if workflow_violations:
             names = ", ".join(policy.name for policy in workflow_violations)
+            self._record_usage(started, calls_before)
             self.reasoning_log.flush()
             raise PermissionError(f"Workflow policy violated: {names}")
 
         self.delegator.delegate(self, intent, scheduled)
         recalled = self.recaller.recall(self.memory, intent, runtime=self)
+        research = self.librarian.research(self, intent)
 
-        decision = self.orchestrator.orchestrate(self, intent, plan=scheduled)
+        decision = self.orchestrator.orchestrate(self, intent, plan=scheduled, research=research)
 
         data = self._formalize(intent, scheduled, decision)
 
         evidence = self._build_evidence(intent, scheduled, recalled)
         if data:
             evidence.sources["data"] = data
+        if research is not None and research.citations:
+            evidence.sources["citations"] = list(research.citations)
         explanation = self.explainer.explain(evidence, decision, model_binding=self.model_binding)
         evidence.sources["explanation"] = explanation
         self.reasoning_log.record(
@@ -187,8 +197,54 @@ class Runtime:
             )
         if self.session_store is not None:
             self.session_store.save(self)
+        self._record_usage(started, calls_before)
         self.reasoning_log.flush()
         return decision
+
+    def _model_calls_so_far(self) -> int:
+        """How many calls the bound LM's history holds before this cycle,
+        so the cycle's usage is the delta. A binding not yet activated has
+        no history -- its count starts at zero, which is exactly right."""
+        lm = self.model_binding.lm if self.model_binding is not None else None
+        history = getattr(lm, "history", None)
+        return len(history) if history is not None else 0
+
+    def _record_usage(self, started: float, calls_before: int) -> None:
+        """Close the cycle's accounting: wall-clock latency always, and --
+        when a model is bound -- the model calls, tokens and cost this
+        cycle consumed, read from the LM's own call history. Written on
+        blocked cycles too: a refusal costs whatever it cost."""
+        latency_ms = int((time.monotonic() - started) * 1000)
+        lm = self.model_binding.lm if self.model_binding is not None else None
+        history = getattr(lm, "history", None) or []
+        cycle_calls = history[calls_before:]
+        input_tokens = output_tokens = 0
+        cost = 0.0
+        for call in cycle_calls:
+            usage = call.get("usage") or {} if isinstance(call, dict) else {}
+            input_tokens += int(usage.get("prompt_tokens") or 0)
+            output_tokens += int(usage.get("completion_tokens") or 0)
+            call_cost = call.get("cost") if isinstance(call, dict) else None
+            cost += float(call_cost or 0.0)
+        if cycle_calls:
+            summary = (
+                f"{len(cycle_calls)} model calls, {input_tokens}+{output_tokens} tokens, "
+                f"~${cost:.6f}, {latency_ms} ms"
+            )
+        else:
+            summary = f"0 model calls (deterministic fallbacks), {latency_ms} ms"
+        self.reasoning_log.record(
+            stage="usage",
+            inputs={
+                "model_calls": len(cycle_calls),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost": cost,
+                "latency_ms": latency_ms,
+            },
+            output=summary,
+            model=model_name(self.model_binding),
+        )
 
     def spawn(self, persona: Any, intent: Any) -> Any:
         """Spawn a subagent runtime scoped to one Persona and reason the

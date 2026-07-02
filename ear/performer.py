@@ -21,7 +21,7 @@ class Performer:
     decider: Decider = field(default_factory=Decider)
     validator: Validator = field(default_factory=Validator)
 
-    def perform(self, runtime: Any, intent: Intent, plan: Any = None) -> Any:
-        deliberation = self.deliberator.deliberate(runtime, intent, plan=plan)
+    def perform(self, runtime: Any, intent: Intent, plan: Any = None, research: Any = None) -> Any:
+        deliberation = self.deliberator.deliberate(runtime, intent, plan=plan, research=research)
         decision = self.decider.decide(deliberation)
         return self.validator.validate(decision)

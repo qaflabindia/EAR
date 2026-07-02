@@ -118,6 +118,10 @@ class Exchange:
                 plan = evidence.sources.get("plan")
                 if plan:
                     lines += [f"Plan: {', '.join(plan)}"]
+                citations = evidence.sources.get("citations")
+                if citations:
+                    lines += ["", "## Sources", ""]
+                    lines += [f"- {citation}" for citation in citations]
 
         judgments = [record for record in runtime.reasoning_log.for_cycle(cycle) if record.stage == "policy"]
         if judgments:

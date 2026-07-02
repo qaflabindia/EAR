@@ -17,5 +17,5 @@ class Orchestrator:
 
     executor: Executor = field(default_factory=Executor)
 
-    def orchestrate(self, runtime: Any, intent: Intent, plan: Any = None) -> Any:
-        return self.executor.execute(runtime, intent, plan=plan)
+    def orchestrate(self, runtime: Any, intent: Intent, plan: Any = None, research: Any = None) -> Any:
+        return self.executor.execute(runtime, intent, plan=plan, research=research)

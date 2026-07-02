@@ -28,7 +28,9 @@ dependencies = [
 [project.optional-dependencies]
 evolve = ["openevolve>=0.2"]
 skillopt = ["skillopt>=0.1"]
-dev = ["pytest>=7"]
+observability = ["opentelemetry-sdk>=1.25", "opentelemetry-exporter-otlp>=1.25"]
+rag = ["llama-index-core>=0.11"]
+dev = ["pytest>=7", "opentelemetry-sdk>=1.25"]
 
 [project.urls]
 Homepage = "https://github.com/qaflabindia/EAR"

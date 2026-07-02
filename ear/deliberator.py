@@ -16,5 +16,5 @@ class Deliberator:
     """A Deliberator deliberates by handing the intent to the runtime's
     Reasoner."""
 
-    def deliberate(self, runtime: Any, intent: Intent, plan: Any = None) -> Any:
-        return runtime.reasoner.reason(intent, runtime=runtime, plan=plan)
+    def deliberate(self, runtime: Any, intent: Intent, plan: Any = None, research: Any = None) -> Any:
+        return runtime.reasoner.reason(intent, runtime=runtime, plan=plan, research=research)

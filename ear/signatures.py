@@ -112,6 +112,17 @@ class JudgeDecisionQuality(dspy.Signature):
     rationale: str = dspy.OutputField(desc="One sentence explaining the verdict")
 
 
+class SelectRelevantPassages(dspy.Signature):
+    """From the numbered knowledge passages, choose the ones a careful
+    analyst would actually consult for this intent. Choosing none is a
+    valid judgment; never refer to a passage that is not in the list."""
+
+    intent_text: str = dspy.InputField()
+    passages: str = dspy.InputField(desc="Numbered passages, each headed by its [source]")
+    relevant_numbers: list[int] = dspy.OutputField(desc="The numbers of the relevant passages; empty if none apply")
+    rationale: str = dspy.OutputField(desc="One sentence explaining the choice")
+
+
 class RecallRelevantMemory(dspy.Signature):
     """From the runtime's remembered history, recall what is genuinely
     relevant to the intent at hand -- prior decisions, amounts and

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from .contract import Contract
+from .knowledge import Knowledge
 from .persona import Persona
 from .policy import Policy
 from .process import Process
@@ -286,6 +287,45 @@ class Loader:
             path = raw_path if raw_path.is_absolute() else self.directory / raw_path
             runtime.reasoning_log.path = str(path)
             runtime.reasoning_log.resume()
+            if strategy.audit_export_requested:
+                # The author asked for export by name; failing to provide it
+                # silently would be a governance hole, so a missing adapter
+                # dependency is loud.
+                try:
+                    from .integrations.otel_backend import OpenTelemetryExporter
+                except ImportError as missing:
+                    raise ValueError(
+                        "The audit trail declares an OTLP export (OpenTelemetry/Langfuse/Phoenix) "
+                        "but the exporter dependencies are not installed -- pip install 'ear[observability]'"
+                    ) from missing
+                runtime.reasoning_log.exporters.append(OpenTelemetryExporter(service_name=runtime.name))
+
+        if strategy.knowledge_sources:
+            knowledge = Knowledge()
+            for name, pattern in strategy.knowledge_sources:
+                for path in self._knowledge_paths(name, pattern):
+                    knowledge.add_document(name, path.name, path.read_text(encoding="utf-8"))
+            runtime.librarian.knowledge = knowledge
+
+
+    def _knowledge_paths(self, name: str, pattern: str) -> list[Path]:
+        """Resolve one declared knowledge source to real files, loudly:
+        knowledge the author declared and the runtime silently doesn't
+        have is a governance hole, not a default."""
+        candidate = Path(pattern)
+        if candidate.is_absolute():
+            paths = [candidate] if candidate.exists() else []
+        else:
+            try:
+                paths = sorted(self.directory.glob(pattern))
+            except ValueError:
+                paths = []
+        paths = [path for path in paths if path.is_file()]
+        if not paths:
+            raise ValueError(
+                f"Knowledge source '{name}' matched no files for '{pattern}' under {self.directory}"
+            )
+        return paths
 
 
 def load_runtime(directory: Union[str, Path], name: Optional[str] = None) -> Runtime:

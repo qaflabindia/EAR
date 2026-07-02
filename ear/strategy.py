@@ -108,10 +108,15 @@ class Strategy:
     # Skills discovery guidance -> Discoverer.
     skills_discovery: str = ""
 
-    # Reasoning audit trail -> ReasoningLog persistence.
+    # Reasoning audit trail -> ReasoningLog persistence (and export).
     audit_trail: str = ""
     audit_enabled: bool = False
     audit_path: str = ""
+    audit_export_requested: bool = False
+
+    # Knowledge -> the Librarian's reference corpus.
+    knowledge: str = ""
+    knowledge_sources: list[tuple[str, str]] = field(default_factory=list)
 
     # Ontological settings -> the reasoning vocabulary.
     ontology: Ontology = field(default_factory=Ontology)
@@ -127,6 +132,8 @@ class Strategy:
                 strategy._read_ontology(body)
             elif "audit" in heading or "log" in heading or "trace" in heading or "trail" in heading:
                 strategy._read_audit(prose)
+            elif "knowledge" in heading:
+                strategy._read_knowledge(body)
             elif "mcp" in heading:
                 strategy._read_mcp(body)
             elif "discover" in heading:
@@ -160,6 +167,25 @@ class Strategy:
         self.audit_trail = prose
         self.audit_enabled = not _DISABLED.search(prose)
         self.audit_path = _declared_path(prose)
+        # Naming an OTLP-ingesting platform in the audit prose asks the
+        # loader to attach the OpenTelemetry exporter alongside the file.
+        words = {word.strip(".,;:()`'\"") for word in prose.lower().split()}
+        self.audit_export_requested = bool(words & {"opentelemetry", "otlp", "otel", "langfuse", "phoenix"})
+
+    def _read_knowledge(self, body: Body) -> None:
+        self.knowledge = body.prose
+        for bullet in body.bullets:
+            name, description = _split_declaration(bullet)
+            command, url, cleaned = _extract_reach(description)
+            if url:
+                raise ValueError(
+                    f"Knowledge source '{name}' is a URL -- URL sources are not supported yet; "
+                    "copy the document into the stack directory instead"
+                )
+            pattern = command or cleaned
+            if not pattern:
+                raise ValueError(f"Knowledge source '{name}' declares no path -- write '- name: path-or-glob'")
+            self.knowledge_sources.append((name, pattern))
 
     def _read_subagents(self, prose: str) -> None:
         self.subagent_spawning = prose

@@ -111,14 +111,22 @@ class ReasoningRecord:
 @dataclass
 class ReasoningLog:
     """The runtime's reasoning audit trail: an ordered list of
-    ReasoningRecords, grouped by cycle, flushed append-only to a JSONL
-    file when a `path` is set."""
+    ReasoningRecords, grouped by cycle, flushed append-only to the trail
+    file at `path` and fanned out to any attached `exporters`.
+
+    An exporter is anything with `export(record)` (and optionally
+    `flush()`) -- e.g. `ear.integrations.otel_backend.OpenTelemetryExporter`
+    for Langfuse/Phoenix/any OTLP backend. The file on disk stays the
+    canonical record: an exporter that raises never breaks a cycle, its
+    failure is kept visible in `export_errors` instead."""
 
     path: str = ""
     records: list[ReasoningRecord] = field(default_factory=list)
     cycle: int = 0
     flushed: int = 0
     flushed_cycle: Optional[int] = None
+    exporters: list[Any] = field(default_factory=list)
+    export_errors: list[str] = field(default_factory=list)
 
     def resume(self) -> int:
         """Continue cycle numbering from an existing trail file, so a new
@@ -194,26 +202,41 @@ class ReasoningLog:
         return "\n".join(lines) if lines else "No reasoning recorded yet."
 
     def flush(self) -> Optional[str]:
-        """Append records not yet written to the trail file at `path` --
-        markdown when the path ends in `.md`, JSONL otherwise. With no
-        path set the trail stays in memory only."""
-        if not self.path or self.flushed >= len(self.records):
+        """Write records not yet flushed to the trail file at `path`
+        (markdown when the path ends in `.md`, JSONL otherwise) and fan
+        the same records out to every attached exporter. With no path and
+        no exporters the trail stays in memory only."""
+        pending = self.records[self.flushed :]
+        if not pending or (not self.path and not self.exporters):
             return None
-        directory = os.path.dirname(self.path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        as_markdown = self.path.endswith(".md")
-        with open(self.path, "a", encoding="utf-8") as handle:
-            for record in self.records[self.flushed :]:
-                if as_markdown:
-                    if record.cycle != self.flushed_cycle:
-                        self.flushed_cycle = record.cycle
-                        handle.write(f"\n## Cycle {record.cycle} -- {record.timestamp:%Y-%m-%d %H:%M:%S} UTC\n\n")
-                    handle.write(record.to_markdown() + "\n")
-                else:
-                    handle.write(record.to_json() + "\n")
+        if self.path:
+            directory = os.path.dirname(self.path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            as_markdown = self.path.endswith(".md")
+            with open(self.path, "a", encoding="utf-8") as handle:
+                for record in pending:
+                    if as_markdown:
+                        if record.cycle != self.flushed_cycle:
+                            self.flushed_cycle = record.cycle
+                            handle.write(
+                                f"\n## Cycle {record.cycle} -- {record.timestamp:%Y-%m-%d %H:%M:%S} UTC\n\n"
+                            )
+                        handle.write(record.to_markdown() + "\n")
+                    else:
+                        handle.write(record.to_json() + "\n")
+        for exporter in self.exporters:
+            try:
+                for record in pending:
+                    exporter.export(record)
+                finish = getattr(exporter, "flush", None)
+                if callable(finish):
+                    finish()
+            except Exception as error:  # noqa: BLE001 -- an exporter must never break a cycle
+                self.export_errors.append(f"{type(exporter).__name__}: {error}")
+                del self.export_errors[:-20]
         self.flushed = len(self.records)
-        return self.path
+        return self.path or None
 
     def __len__(self) -> int:
         return len(self.records)

@@ -16,5 +16,5 @@ class Executor:
 
     performer: Performer = field(default_factory=Performer)
 
-    def execute(self, runtime: Any, intent: Intent, plan: Any = None) -> Any:
-        return self.performer.perform(runtime, intent, plan=plan)
+    def execute(self, runtime: Any, intent: Intent, plan: Any = None, research: Any = None) -> Any:
+        return self.performer.perform(runtime, intent, plan=plan, research=research)

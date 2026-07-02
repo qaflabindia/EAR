@@ -177,6 +177,49 @@ print(runtime.reasoning_log.render())                      # the skim view
 runtime.reasoning_log.for_stage("deliberation")[-1].inputs  # the full prompt material
 ```
 
+### Knowledge — RAG with citations, declared in natural language
+
+Reference material is stacked in memory.md under a Knowledge section, one
+bullet per source (paths or globs, resolved relative to the stack; a
+source that matches nothing fails loudly at load):
+
+```markdown
+## Knowledge
+
+- underwriting manual: `knowledge/underwriting-manual.md`
+```
+
+Markdown sources are chunked into passages by the same Section parser the
+stack is authored with. Per cycle, the `Librarian` narrows the corpus
+structurally and the model judges which passages a careful analyst would
+actually consult — choosing none is a valid judgment, and it can only
+choose among real passages. What was consulted is first-class evidence:
+a `retrieval` trail record, `citations` in the Evidence, a `## Sources`
+section in the decision document, and the retrieved text reaches the
+Reasoner framed as reference material, never as instructions. A LlamaIndex
+retriever plugs into the same seam
+(`ear.integrations.llamaindex_backend.LlamaIndexRetriever`,
+`pip install 'ear[rag]'`) — the platform narrows, EAR's model still judges
+and cites.
+
+### Observability — exporters off the trail, usage on every cycle
+
+The ReasoningLog is the native trace; observability is an exporter, never
+a second instrumentation path. Attach anything with `export(record)` to
+`runtime.reasoning_log.exporters` — an exporter that raises never breaks a
+cycle (failures stay visible in `export_errors`), and the file on disk
+remains the canonical record. `pip install 'ear[observability]'` provides
+`OpenTelemetryExporter` (one trace per cycle, one span per record), which
+covers Langfuse and Phoenix through their native OTLP ingestion — endpoint
+and credentials come exclusively from the standard `OTEL_EXPORTER_OTLP_*`
+environment variables. Declare it in prose: an audit-trail section that
+names OpenTelemetry/Langfuse/Phoenix gets the exporter attached at load.
+
+Every cycle also closes with a `usage` record — model calls, tokens,
+approximate cost and wall-clock latency, read from the bound LM's own call
+history — written for blocked cycles too: a refusal costs whatever it
+cost.
+
 ### Contracts — typed deliverables, declared in natural language
 
 A workflow may declare what its decision must *deliver* with a
@@ -283,6 +326,7 @@ Deliberator  → deliberate   reason via the Reasoner
 Decider      → decide       commit to one decision
 Validator    → validate     reject a malformed decision
 Recaller     → remember     recall relevant Memory as evidence (LLM-recalled, full-window fallback)
+Librarian    → research     retrieve relevant Knowledge with citations (LLM-judged, structural fallback)
 Explainer    → explain      render why a decision was reached (LLM-written, f-string fallback)
 Auditor      → audit        inspect evidence for compliance (LLM-assessed, flag fallback)
 Memory       → store memory what happened (overflow compressed by the active LM when bound)
@@ -427,6 +471,8 @@ ear/
   workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies
   contract.py      Contract      — a workflow's Deliverable: fields with plain-English meanings, extracted and judged at runtime
   examiner.py      Examiner      — examine: run markdown-native evaluations and grade them, honestly offline
+  knowledge.py     Knowledge     — the declared reference corpus, chunked through the Section parser
+  librarian.py     Librarian     — research: retrieve relevant Knowledge with citations, on the record
   process.py       Process       — a stack of Workflows that performs an action
   policy.py        Policy        — governance rule, judged in natural language with a safe-eval fallback; attaches runtime-wide or to a Workflow
   runtime.py       Runtime       — runs every cycle through the full operation pipeline below
@@ -472,5 +518,7 @@ ear/
   integrations/
     evolve_backend.py    openevolve — evolve a Skill's source against an evaluator
     skillopt_backend.py  skillopt   — train a Persona's skill document with ReflACT
+    otel_backend.py      OpenTelemetryExporter — the trail as OTLP spans (Langfuse/Phoenix/any)
+    llamaindex_backend.py LlamaIndexRetriever  — a LlamaIndex retriever on the Librarian's seam
 ```
 </content>

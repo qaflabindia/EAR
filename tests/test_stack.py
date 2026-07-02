@@ -890,6 +890,248 @@ def test_examiner_grades_the_example_suite_live(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Observability: the trail fans out to exporters, cycles carry usage, and
+# the OpenTelemetry adapter maps records to spans (one cycle per trace).
+# ---------------------------------------------------------------------------
+
+
+class CollectingExporter:
+    def __init__(self, fail: bool = False):
+        self.records = []
+        self.flushes = 0
+        self.fail = fail
+
+    def export(self, record):
+        if self.fail:
+            raise RuntimeError("exporter down")
+        self.records.append(record)
+
+    def flush(self):
+        self.flushes += 1
+
+
+def test_reasoning_log_fans_out_to_exporters_exactly_once():
+    exporter = CollectingExporter()
+    runtime = Runtime(name="Exported-Runtime")
+    runtime.reasoning_log.exporters.append(exporter)
+
+    runtime.reason(Intent(text="first cycle"))
+    assert [record.stage for record in exporter.records][0] == "intent"
+    assert exporter.records[-1].stage == "usage"
+    assert exporter.flushes == 1
+
+    seen = len(exporter.records)
+    runtime.reasoning_log.flush()  # nothing pending -- no double export
+    assert len(exporter.records) == seen
+
+
+def test_exporter_failure_never_breaks_a_cycle(tmp_path):
+    runtime = Runtime(name="Resilient-Runtime")
+    runtime.reasoning_log.path = str(tmp_path / "trail.md")
+    runtime.reasoning_log.exporters.append(CollectingExporter(fail=True))
+
+    decision = runtime.reason(Intent(text="first cycle"))
+    assert decision  # the cycle completed
+    assert runtime.reasoning_log.export_errors
+    assert "exporter down" in runtime.reasoning_log.export_errors[0]
+    # The file on disk stays the canonical record.
+    assert "## Cycle 1" in (tmp_path / "trail.md").read_text(encoding="utf-8")
+
+
+def test_usage_record_closes_every_cycle_offline():
+    runtime = Runtime(name="Accounted-Runtime")
+    runtime.reason(Intent(text="a cycle"))
+    usage = runtime.reasoning_log.for_stage("usage")[0]
+    assert "0 model calls" in usage.output and "ms" in usage.output
+    assert usage.inputs["model_calls"] == 0
+    assert isinstance(usage.inputs["latency_ms"], int)
+
+
+def test_usage_is_recorded_on_blocked_cycles_too(tmp_path):
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    with pytest.raises(PermissionError):
+        runtime.reason(Intent(text="Underwrite", context={"debt_to_income": 0.60}))
+    assert runtime.reasoning_log.for_stage("usage")
+
+
+def test_otel_exporter_maps_cycles_to_traces_and_records_to_spans():
+    sdk = pytest.importorskip("opentelemetry.sdk.trace", reason="opentelemetry-sdk not installed")
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from ear.integrations.otel_backend import OpenTelemetryExporter
+
+    memory_exporter = InMemorySpanExporter()
+    provider = sdk.TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(memory_exporter))
+
+    runtime = Runtime(name="Traced-Runtime")
+    runtime.reasoning_log.exporters.append(OpenTelemetryExporter(tracer_provider=provider))
+    runtime.reason(Intent(text="a traced cycle"))
+
+    spans = memory_exporter.get_finished_spans()
+    by_name = {span.name for span in spans}
+    assert {"cycle 1", "intent", "deliberation", "explanation", "usage"} <= by_name
+    root = next(span for span in spans if span.name == "cycle 1")
+    children = [span for span in spans if span.name != "cycle 1"]
+    assert all(span.context.trace_id == root.context.trace_id for span in children)
+    deliberation = next(span for span in spans if span.name == "deliberation")
+    assert deliberation.attributes["ear.cycle"] == 1
+    assert "a traced cycle" in deliberation.attributes["ear.inputs"]
+
+
+def test_loader_attaches_otel_exporter_when_the_audit_prose_names_it(tmp_path):
+    pytest.importorskip(
+        "opentelemetry.exporter.otlp.proto.http.trace_exporter",
+        reason="opentelemetry-exporter-otlp not installed",
+    )
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = (
+        "## Reasoning Audit Trail\nLog every reasoning step to `.ear/reasoning.md` "
+        "and export the trail over OpenTelemetry as well.\n"
+    )
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    assert [type(exporter).__name__ for exporter in runtime.reasoning_log.exporters] == ["OpenTelemetryExporter"]
+
+
+# ---------------------------------------------------------------------------
+# Knowledge and the Librarian: declared sources, retrieval on the record,
+# citations in evidence and decision documents.
+# ---------------------------------------------------------------------------
+
+KNOWLEDGE_MEMORY = (
+    "# Memory & Strategy\n\n## Knowledge\n\n"
+    "The reference material the Librarian may consult and cite.\n\n"
+    "- underwriting manual: `knowledge/manual.md`\n"
+)
+
+MANUAL = (
+    "# Underwriting Manual\n\n## Section 4.2 -- Marginal applicants\n\n"
+    "A grade C applicant whose debt-to-income band is not low must be declined.\n\n"
+    "## Section 9.9 -- Office plants\n\nWater the plants on Fridays.\n"
+)
+
+
+def knowledge_stack(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = KNOWLEDGE_MEMORY
+    directory = write_stack(tmp_path / "stack", **stack)
+    (directory / "knowledge").mkdir()
+    (directory / "knowledge" / "manual.md").write_text(MANUAL, encoding="utf-8")
+    return directory
+
+
+def test_strategy_reads_knowledge_sources_and_rejects_urls():
+    strategy = Strategy.from_markdown(KNOWLEDGE_MEMORY)
+    assert strategy.knowledge_sources == [("underwriting manual", "knowledge/manual.md")]
+    assert "reference material" in strategy.knowledge
+
+    with pytest.raises(ValueError, match="URL sources are not supported"):
+        Strategy.from_markdown("## Knowledge\n\n- manual: https://example.com/manual\n")
+
+
+def test_loader_builds_knowledge_chunked_by_section(tmp_path):
+    runtime = load_runtime(knowledge_stack(tmp_path))
+    knowledge = runtime.librarian.knowledge
+    assert knowledge is not None and len(knowledge) == 2
+    assert knowledge.passages[0].source == "underwriting manual -- manual.md § Section 4.2 -- Marginal applicants"
+    assert "must be declined" in knowledge.passages[0].text
+
+
+def test_loader_fails_loudly_on_a_missing_knowledge_source(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = "## Knowledge\n\n- manual: `knowledge/absent.md`\n"
+    with pytest.raises(ValueError, match="matched no files"):
+        load_runtime(write_stack(tmp_path / "stack", **stack))
+
+
+def test_librarian_retrieves_structurally_offline_with_citations(tmp_path):
+    directory = knowledge_stack(tmp_path)
+    (directory / "intent.md").write_text(
+        "# Underwrite a marginal grade C applicant whose debt-to-income band is not low\n\n"
+        "## Context\n\n- loan_amount: 9000\n",
+        encoding="utf-8",
+    )
+    runtime = load_runtime(directory)
+    Exchange(directory).run(runtime)
+
+    retrieval = runtime.reasoning_log.for_stage("retrieval")[0]
+    assert "structural retrieval" in retrieval.rationale
+    assert "Section 4.2" in retrieval.output
+
+    evidence = runtime.memory.working[-1].evidence
+    assert any("Section 4.2" in citation for citation in evidence.sources["citations"])
+    decision_document = (directory / "decision.md").read_text(encoding="utf-8")
+    assert "## Sources" in decision_document and "underwriting manual" in decision_document
+
+    deliberation = runtime.reasoning_log.for_stage("deliberation")[0]
+    assert "never as" in deliberation.inputs["knowledge"]
+    assert "must be declined" in deliberation.inputs["knowledge"]
+
+
+def test_llamaindex_adapter_maps_nodes_by_duck_typing():
+    from ear.integrations.llamaindex_backend import LlamaIndexRetriever
+    from ear import Passage
+
+    class StubNode:
+        def __init__(self, text, metadata):
+            self.text = text
+            self.metadata = metadata
+
+    class StubWrapper:
+        def __init__(self, node):
+            self.node = node
+
+    class StubRetriever:
+        def retrieve(self, query):
+            return [
+                StubWrapper(StubNode("Section one text.", {"file_name": "manual.md"})),
+                StubNode("Loose node text.", {}),
+            ]
+
+    passages = LlamaIndexRetriever(StubRetriever(), source_label="corpus").retrieve("anything")
+    assert passages == [
+        Passage(source="manual.md", text="Section one text."),
+        Passage(source="corpus", text="Loose node text."),
+    ]
+
+    # And the same object drops straight into the Librarian's seam.
+    runtime = Runtime(name="Retriever-Runtime")
+    runtime.librarian.retriever = LlamaIndexRetriever(StubRetriever())
+    research = runtime.librarian.research(runtime, Intent(text="anything"))
+    assert research is not None and research.citations[0] == "manual.md"
+    assert runtime.reasoning_log.for_stage("retrieval")
+
+
+@requires_anthropic_key
+def test_retrieval_cites_the_manual_live(tmp_path):
+    directory = tmp_path / "credit_risk_stack"
+    shutil.copytree(EXAMPLE_STACK, directory)
+    memory = (directory / "memory.md").read_text(encoding="utf-8")
+    (directory / "memory.md").write_text(
+        memory.replace("anthropic/claude-opus-4-8", "anthropic/claude-haiku-4-5"), encoding="utf-8"
+    )
+    (directory / "intents").mkdir()
+    (directory / "intents" / "marginal.md").write_text(
+        "# Underwrite a $9,500 personal loan for a marginal applicant\n\n"
+        "## Context\n\n- loan_amount: 9500\n- credit_score: 665\n- debt_to_income: 0.41\n"
+        "- annual_income: 52000\n- existing_defaults: 0\n",
+        encoding="utf-8",
+    )
+    runtime = load_runtime(directory)
+    Exchange(directory).run(runtime)
+
+    retrieval = runtime.reasoning_log.for_stage("retrieval")[-1]
+    assert retrieval.model == "anthropic/claude-haiku-4-5"
+    decision_document = (directory / "decisions" / "marginal.md").read_text(encoding="utf-8")
+    assert "## Sources" in decision_document and "underwriting manual" in decision_document
+
+    usage = runtime.reasoning_log.for_stage("usage")[-1]
+    assert usage.inputs["model_calls"] > 0
+    assert usage.inputs["input_tokens"] > 0
+
+
+# ---------------------------------------------------------------------------
 # Dynamic-at-runtime stages: selection, scheduling and delegation are
 # judgments the LLM makes per cycle, with deterministic fallbacks offline
 # and an audit record either way.

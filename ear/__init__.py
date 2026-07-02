@@ -26,6 +26,7 @@ own class so operations AI runtimes often blur together stay distinct:
     Decider      -> decide       (commit to one decision)
     Validator    -> validate     (reject a malformed decision)
     Recaller     -> remember     (recall relevant Memory as evidence; LLM-recalled, full-window fallback)
+    Librarian    -> research     (retrieve relevant Knowledge with citations; LLM-judged, structural fallback)
     Explainer    -> explain      (render why a decision was reached; LLM-written, with an f-string fallback)
     Auditor      -> audit        (inspect evidence for compliance; LLM-assessed, flag fallback)
     Memory       -> store memory (what happened; overflow compressed by the active LM when bound)
@@ -71,7 +72,9 @@ from .explainer import Explainer
 from .governor import Governor
 from .initializer import Initializer
 from .intent import Intent
+from .knowledge import Knowledge, Passage
 from .learner import Learner
+from .librarian import Librarian, Research
 from .loader import Loader, load_runtime
 from .mcp_server import McpServer
 from .memory import Memory, MemoryEntry
@@ -140,6 +143,10 @@ __all__ = [
     "Exchange",
     "Contract",
     "ContractField",
+    "Knowledge",
+    "Passage",
+    "Librarian",
+    "Research",
     "Examiner",
     "Examination",
     "EvaluationResult",

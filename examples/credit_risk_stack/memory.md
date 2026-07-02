@@ -41,6 +41,13 @@ process discovery, the deliberation with the full stacked prompt material,
 and the explanation -- to `.ear/reasoning.md`, append-only across
 sessions, so the trail can be reviewed and the stacked prompts optimised.
 
+## Knowledge
+
+The reference material the Librarian may consult and cite while
+underwriting; sources resolve relative to this stack directory.
+
+- underwriting manual: `knowledge/underwriting-manual.md`
+
 ## Skills Discovery
 
 Rank processes by reading their descriptions against the intent, most

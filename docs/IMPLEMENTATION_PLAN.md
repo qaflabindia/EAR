@@ -334,7 +334,7 @@ all          = [everything above]        # plus existing: evolve, skillopt, dev
 | Phase | Weeks | Ships | Exit criteria |
 |---|---|---|---|
 | **1 — Deepen the core** ✅ shipped | 1–3 | Contracts/structured outputs (3.2 — DSPy-native path; Instructor extra still open), trail→GEPA trainsets + verdicts + shared metric (3.1), Examiner + md evals (3.3) | eval suite in CI ✅; Data sections round-trip ✅ (offline codec + live extraction); GEPA improvement run: pending a labelled corpus |
-| **2 — Measure & retrieve** | 4–6 | Trace exporters (3.4), LangSmith/Phoenix export (3.3), Knowledge/RAG recall (3.5) | one cycle visible in trail + Langfuse identically; decisions carry citations |
+| **2 — Measure & retrieve** ✅ shipped | 4–6 | Trace exporters (3.4 — OTel adapter, one cycle per trace; Langfuse/Phoenix via their native OTLP ingestion; per-cycle usage records), Knowledge/RAG recall (3.5 — core Librarian + LlamaIndex retriever seam; URL sources and `[rag]` embedding indices still open), evaluation export (3.3 — evaluation records ride the trail exporters; LangSmith dataset push still open) | decisions carry citations ✅ (live); trail ↔ OTLP span equivalence ✅ (in-memory provider test); Langfuse round-trip against a live account: pending credentials |
 | **3 — Durable enterprise** | 7–10 | Temporal backend (3.6), approval gates both backends (3.7) | mid-cycle crash recovery test green; human approval releases a parked cycle |
 | **4 — Ecosystem** | 11–14 | ToolBinder + LangChain (3.11), AutoGen patterns (3.9), PydanticAI backend (3.10), LangGraph compile (3.8) | credit-risk stack runs unchanged on every backend with equivalent trails |
 
