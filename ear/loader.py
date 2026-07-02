@@ -151,16 +151,38 @@ class Loader:
         policies: dict[str, Policy] = {}
         scopes: dict[str, str] = {}
         for section in document.sections:
-            body = section.body(field_keys=("fallback", "fallback expression", "applies to", "applies", "scope"))
+            body = section.body(
+                field_keys=("fallback", "fallback expression", "applies to", "applies", "scope", "approval")
+            )
             statement = "\n".join(filter(None, [body.prose] + [f"- {bullet}" for bullet in body.bullets]))
             key = normalize(section.name)
             policies[key] = Policy(
                 name=section.name,
                 statement=statement,
                 fallback_expression=body.field("fallback", "fallback expression"),
+                approval_required=self._read_approval_field(section.name, body.field("approval")),
             )
             scopes[key] = body.field("applies to", "applies", "scope")
         return policies, scopes
+
+    @staticmethod
+    def _read_approval_field(policy_name: str, value: str) -> bool:
+        """Read a policy's `Approval:` field. Absent means no gate; a
+        negated value means no gate; an affirming value means violations
+        park for a human. Anything unreadable fails loudly -- a gate the
+        author declared and the runtime silently ignores is a governance
+        hole."""
+        if not value:
+            return False
+        words = set(normalize(value).split())
+        if words & {"no", "not", "none", "never", "false"}:
+            return False
+        if words & {"required", "needed", "mandatory", "human", "yes", "true"}:
+            return True
+        raise ValueError(
+            f"Policy '{policy_name}' has an unreadable Approval field '{value}' -- "
+            "write 'Approval: required' or 'Approval: not required'"
+        )
 
     def _load_workflows(
         self,

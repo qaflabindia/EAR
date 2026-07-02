@@ -12,7 +12,8 @@ Stack:   Intent -> Skill -> Persona -> Workflow -> Process -> Policy -> Runtime 
 Runtime runs every cycle through a fully-named pipeline, each stage its
 own class so operations AI runtimes often blur together stay distinct:
 
-    Governor     -> govern       (enforce Policy gates; LLM-judged, with a safe-eval fallback)
+    Governor     -> govern       (enforce Policy gates; LLM-judged, with a safe-eval fallback;
+                                  approval-gated policies park the cycle for a human verdict)
     Initializer  -> initialize   (activate the ModelBinding)
     Discoverer   -> discover     (find relevant Processes; LLM-ranked, with a keyword fallback)
     Selector     -> select       (choose among candidates; LLM-chosen, with a dedupe fallback)
@@ -55,6 +56,7 @@ from __future__ import annotations
 
 from .adaptation import Adaptation, AdaptationBank
 from .adapter import Adapter
+from .approval import Approval, ApprovalRequired
 from .auditor import Auditor
 from .composer import Composer
 from .contract import Contract, ContractField
@@ -141,6 +143,8 @@ __all__ = [
     "Evolver",
     "Optimizer",
     "Exchange",
+    "Approval",
+    "ApprovalRequired",
     "Contract",
     "ContractField",
     "Knowledge",

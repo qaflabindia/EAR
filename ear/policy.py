@@ -22,11 +22,15 @@ from .safe_evaluator import MissingVariableError, safe_eval
 @dataclass
 class Policy:
     """A Policy is a governance rule that a Runtime enforces before it lets
-    a Process run."""
+    a Process run. With `approval_required` (authored as `Approval:
+    required` in policy.md) a violation parks the cycle for a human verdict
+    instead of blocking it outright -- the judgment stays the model's, the
+    waiver belongs only to a human, and code enforces both."""
 
     name: str
     statement: str = ""
     fallback_expression: str = ""
+    approval_required: bool = False
 
     def evaluate(self, model_binding: Optional[Any] = None, **context: Any) -> bool:
         """Return True when the policy is satisfied (or not applicable)."""

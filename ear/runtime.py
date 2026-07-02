@@ -28,6 +28,7 @@ from typing import Any, Optional
 
 from .adaptation import Adaptation, AdaptationBank
 from .adapter import Adapter
+from .approval import ApprovalRequired
 from .auditor import Auditor
 from .composer import Composer
 from .decider import Decider
@@ -132,18 +133,13 @@ class Runtime:
         """Return the policies that are violated by the given context."""
         return [policy for policy in self.policies if not policy.evaluate(self.model_binding, **context)]
 
-    def reason(self, intent: Intent) -> Any:
+    def reason(self, intent: Intent, approval: Any = None) -> Any:
         started = time.monotonic()
         calls_before = self._model_calls_so_far()
         self.reasoning_log.begin_cycle(intent)
 
-        violations = self.governor.govern(self, intent)
-        if violations:
-            names = ", ".join(policy.name for policy in violations)
-            # A blocked cycle is exactly what an auditor wants on record.
-            self._record_usage(started, calls_before)
-            self.reasoning_log.flush()
-            raise PermissionError(f"Policy violated: {names}")
+        violations = self.governor.govern(self, intent, approval=approval)
+        self._enforce(violations, approval, started, calls_before, scope="Policy")
 
         self.initializer.initialize(self)
 
@@ -152,12 +148,8 @@ class Runtime:
         plan = self.validator.validate_plan(self.composer.compose(selected))
         scheduled = self.validator.validate_schedule(self.scheduler.schedule(plan, runtime=self, intent=intent))
 
-        workflow_violations = self.governor.govern_workflows(self, intent, scheduled)
-        if workflow_violations:
-            names = ", ".join(policy.name for policy in workflow_violations)
-            self._record_usage(started, calls_before)
-            self.reasoning_log.flush()
-            raise PermissionError(f"Workflow policy violated: {names}")
+        workflow_violations = self.governor.govern_workflows(self, intent, scheduled, approval=approval)
+        self._enforce(workflow_violations, approval, started, calls_before, scope="Workflow policy")
 
         self.delegator.delegate(self, intent, scheduled)
         recalled = self.recaller.recall(self.memory, intent, runtime=self)
@@ -200,6 +192,32 @@ class Runtime:
         self._record_usage(started, calls_before)
         self.reasoning_log.flush()
         return decision
+
+    def _enforce(self, violations: list[Policy], approval: Any, started: float, calls_before: int, scope: str) -> None:
+        """Turn the Governor's unresolved violations into a stop: a hard
+        block when any non-gated policy is violated (or a human rejected
+        the gate), a parked `ApprovalRequired` when only approval-gated
+        policies remain. Both stops close the cycle's accounting and flush
+        the trail -- a refusal and a parked cycle are records, not gaps."""
+        if not violations:
+            return
+        rejected = approval is not None and approval.verdict is False
+        blocking = [policy for policy in violations if not policy.approval_required or rejected]
+        pending = [policy for policy in violations if policy.approval_required and not rejected]
+        if blocking:
+            names = ", ".join(policy.name for policy in blocking)
+            self._record_usage(started, calls_before)
+            self.reasoning_log.flush()
+            raise PermissionError(f"{scope} violated: {names}")
+        names = ", ".join(policy.name for policy in pending)
+        self.reasoning_log.record(
+            stage="approval",
+            inputs={"policies": [policy.name for policy in pending]},
+            output=f"PENDING -- human approval required for: {names}",
+        )
+        self._record_usage(started, calls_before)
+        self.reasoning_log.flush()
+        raise ApprovalRequired(pending)
 
     def _model_calls_so_far(self) -> int:
         """How many calls the bound LM's history holds before this cycle,

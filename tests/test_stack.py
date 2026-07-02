@@ -890,6 +890,199 @@ def test_examiner_grades_the_example_suite_live(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Approval gates: a violated Approval-required policy parks the cycle for
+# a human verdict instead of blocking it; the verdict is a markdown
+# document, and everything lands on the trail.
+# ---------------------------------------------------------------------------
+
+APPROVAL_POLICY = (
+    "# Policies\n\n## Loan Amount Cap\nThe loan must not exceed $75,000.\n\n"
+    "Fallback: loan_amount <= 75000\nApplies to: runtime\n\n"
+    "## Large Loan Human Approval\nLoans above $50,000 need a human approver.\n\n"
+    "Fallback: loan_amount <= 50000\nApproval: required\nApplies to: runtime\n"
+)
+
+
+def approval_stack(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["policy"] = APPROVAL_POLICY
+    stack["workflow"] = (
+        "# Workflows\n\n## Underwriting Workflow\n\n"
+        "1. Decide approve or decline. (Credit Risk Guru)\n"
+    )
+    return write_stack(tmp_path / "stack", **stack)
+
+
+def test_loader_reads_the_approval_field_and_rejects_the_unreadable(tmp_path):
+    runtime = load_runtime(approval_stack(tmp_path))
+    by_name = {policy.name: policy for policy in runtime.policies}
+    assert by_name["Large Loan Human Approval"].approval_required is True
+    assert by_name["Loan Amount Cap"].approval_required is False
+
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = "# Workflows\n\n## Underwriting Workflow\n\n1. Decide. (Credit Risk Guru)\n"
+    stack["policy"] = "# Policies\n\n## Odd Gate\nSomething.\n\nApproval: perhaps\n"
+    with pytest.raises(ValueError, match="unreadable Approval field"):
+        load_runtime(write_stack(tmp_path / "unreadable", **stack))
+
+    stack["policy"] = "# Policies\n\n## Ungated\nSomething.\n\nApproval: not required\n"
+    runtime = load_runtime(write_stack(tmp_path / "negated", **stack))
+    assert runtime.policies[0].approval_required is False
+
+
+def test_violated_approval_gate_parks_the_cycle_on_the_record(tmp_path):
+    from ear import ApprovalRequired
+
+    runtime = load_runtime(approval_stack(tmp_path))
+    with pytest.raises(ApprovalRequired, match="Large Loan Human Approval") as parked:
+        runtime.reason(Intent(text="Underwrite a large loan", context={"loan_amount": 60000}))
+
+    assert isinstance(parked.value, PermissionError)  # existing handlers keep working
+    policy_record = next(
+        record for record in runtime.reasoning_log.for_stage("policy")
+        if record.inputs["policy"] == "Large Loan Human Approval"
+    )
+    assert policy_record.output == "PENDING APPROVAL"
+    pending = runtime.reasoning_log.for_stage("approval")[0]
+    assert "PENDING -- human approval required" in pending.output
+    assert runtime.reasoning_log.for_stage("usage")  # a parked cycle is accounted too
+    assert len(runtime.memory) == 0  # nothing was decided, nothing is remembered
+
+
+def test_approved_verdict_releases_the_gate_and_is_on_the_record(tmp_path):
+    from ear import Approval
+
+    runtime = load_runtime(approval_stack(tmp_path))
+    approval = Approval(verdict=True, approver="lakshmi@gigkri.com", note="Collateral covers it.")
+    decision = runtime.reason(Intent(text="Underwrite a large loan", context={"loan_amount": 60000}), approval=approval)
+
+    assert decision
+    released = runtime.reasoning_log.for_stage("approval")[0]
+    assert released.output == "approved by lakshmi@gigkri.com"
+    assert "Collateral covers it." in released.rationale
+    assert len(runtime.memory) == 1
+
+
+def test_rejected_verdict_blocks_like_any_violation(tmp_path):
+    from ear import Approval, ApprovalRequired
+
+    runtime = load_runtime(approval_stack(tmp_path))
+    approval = Approval(verdict=False, approver="lakshmi@gigkri.com")
+    with pytest.raises(PermissionError, match="Large Loan Human Approval") as blocked:
+        runtime.reason(Intent(text="Underwrite a large loan", context={"loan_amount": 60000}), approval=approval)
+    assert not isinstance(blocked.value, ApprovalRequired)  # a rejection is a block, not a park
+    assert runtime.reasoning_log.for_stage("approval")[0].output == "REJECTED by lakshmi@gigkri.com"
+
+
+def test_hard_block_wins_over_a_pending_gate(tmp_path):
+    runtime = load_runtime(approval_stack(tmp_path))
+    from ear import ApprovalRequired
+
+    with pytest.raises(PermissionError, match="Loan Amount Cap") as blocked:
+        runtime.reason(Intent(text="Underwrite a huge loan", context={"loan_amount": 90000}))
+    assert not isinstance(blocked.value, ApprovalRequired)
+
+
+def test_approval_document_round_trips():
+    from ear import Approval
+
+    text = Approval(verdict=True, approver="lakshmi@gigkri.com", note="Fine by me.").to_markdown("A big loan")
+    read = Approval.from_markdown(text)
+    assert read.verdict is True
+    assert read.approver == "lakshmi@gigkri.com"
+    assert read.note == "Fine by me."
+    assert Approval.from_markdown("# Approval\n\nVerdict: perhaps\n").verdict is None
+
+
+def test_exchange_parks_releases_and_stays_idempotent(tmp_path):
+    directory = approval_stack(tmp_path)
+    (directory / "intents").mkdir()
+    (directory / "intents" / "big-loan.md").write_text(
+        "# Underwrite a $60,000 loan\n\n## Context\n\n- loan_amount: 60000\n",
+        encoding="utf-8",
+    )
+    runtime = load_runtime(directory)
+    exchange = Exchange(directory)
+
+    exchange.run(runtime)
+    parked = (directory / "decisions" / "big-loan.md").read_text(encoding="utf-8")
+    assert "Status: PENDING APPROVAL" in parked
+    assert "## Awaiting approval" in parked and "Large Loan Human Approval" in parked
+
+    # No approval document yet: nothing to do.
+    assert exchange.run(runtime) == []
+
+    (directory / "approvals").mkdir()
+    (directory / "approvals" / "big-loan.md").write_text(
+        "# Approval -- Underwrite a $60,000 loan\n\n"
+        "Verdict: approved\nApprover: lakshmi@gigkri.com\n\n> Collateral covers it.\n",
+        encoding="utf-8",
+    )
+    written = exchange.run(runtime)
+    assert [path.name for path in written] == ["big-loan.md"]
+    released = (directory / "decisions" / "big-loan.md").read_text(encoding="utf-8")
+    assert "Status: decided" in released
+    assert "## Approval" in released and "lakshmi@gigkri.com" in released
+
+    # Released cycles are settled: a third run replays nothing.
+    assert exchange.run(runtime) == []
+
+
+def test_exchange_writes_blocked_document_on_a_rejected_verdict(tmp_path):
+    directory = approval_stack(tmp_path)
+    (directory / "intent.md").write_text(
+        "# Underwrite a $60,000 loan\n\n## Context\n\n- loan_amount: 60000\n", encoding="utf-8"
+    )
+    runtime = load_runtime(directory)
+    exchange = Exchange(directory)
+    exchange.run(runtime)
+    (directory / "approval.md").write_text("# Approval\n\nVerdict: rejected\nApprover: lakshmi\n", encoding="utf-8")
+    exchange.run(runtime)
+    final = (directory / "decision.md").read_text(encoding="utf-8")
+    assert "Status: BLOCKED" in final and "Large Loan Human Approval" in final
+
+
+def test_exchange_refuses_an_unreadable_approval_verdict(tmp_path):
+    directory = approval_stack(tmp_path)
+    (directory / "intent.md").write_text(
+        "# Underwrite a $60,000 loan\n\n## Context\n\n- loan_amount: 60000\n", encoding="utf-8"
+    )
+    runtime = load_runtime(directory)
+    exchange = Exchange(directory)
+    exchange.run(runtime)
+    (directory / "approval.md").write_text("# Approval\n\nVerdict: perhaps\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="no readable Verdict"):
+        exchange.run(runtime)
+
+
+@requires_anthropic_key
+def test_approval_gate_parks_and_releases_live(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["policy"] = APPROVAL_POLICY
+    stack["memory"] = LIVE_MEMORY
+    directory = write_stack(tmp_path / "stack", **stack)
+    (directory / "intent.md").write_text(
+        "# Underwrite a $62,000 personal loan for a strong applicant\n\n"
+        "## Context\n\n- loan_amount: 62000\n- credit_score: 790\n- debt_to_income: 0.15\n",
+        encoding="utf-8",
+    )
+    runtime = load_runtime(directory)
+    exchange = Exchange(directory)
+    exchange.run(runtime)
+    assert "Status: PENDING APPROVAL" in (directory / "decision.md").read_text(encoding="utf-8")
+
+    (directory / "approval.md").write_text(
+        "# Approval\n\nVerdict: approved\nApprover: lakshmi@gigkri.com\n\n> Reviewed; proceed.\n",
+        encoding="utf-8",
+    )
+    exchange.run(runtime)
+    released = (directory / "decision.md").read_text(encoding="utf-8")
+    assert "Status: decided" in released and "## Approval" in released
+    approvals = [record.output for record in runtime.reasoning_log.for_stage("approval")]
+    assert "approved by lakshmi@gigkri.com" in approvals
+
+
+# ---------------------------------------------------------------------------
 # Observability: the trail fans out to exporters, cycles carry usage, and
 # the OpenTelemetry adapter maps records to spans (one cycle per trace).
 # ---------------------------------------------------------------------------
@@ -1348,7 +1541,8 @@ def test_example_credit_risk_stack_loads_and_reasons(tmp_path, monkeypatch):
     assert len(workflow.steps) == 4
     assert workflow.steps[3].persona.name == "Customer Advocate"
     assert [policy.name for policy in runtime.policies] == ["Debt-to-Income Ceiling", "Fair Lending Control"]
-    assert [policy.name for policy in workflow.policies] == ["Loan Amount Cap"]
+    assert [policy.name for policy in workflow.policies] == ["Loan Amount Cap", "Large Loan Human Approval"]
+    assert workflow.policies[1].approval_required is True
 
     decision = runtime.reason(
         Intent(

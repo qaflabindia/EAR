@@ -177,6 +177,47 @@ print(runtime.reasoning_log.render())                      # the skim view
 runtime.reasoning_log.for_stage("deliberation")[-1].inputs  # the full prompt material
 ```
 
+### Approval gates — human-in-the-loop governance, in markdown
+
+A policy authored with `Approval: required` converts its hard block into a
+parkable gate:
+
+```markdown
+## Large Loan Human Approval
+
+Loan amounts above $50,000 must be approved by a human approver.
+
+Fallback: loan_amount <= 50000
+Approval: required
+Applies to: Underwriting Workflow
+```
+
+When such a policy is violated, the cycle raises `ApprovalRequired`
+(a `PermissionError`, so existing handlers keep working) and the Exchange
+writes the decision document with `Status: PENDING APPROVAL`, naming the
+policies awaiting a verdict and how to give one. A human releases the
+cycle by dropping an approval document beside it (`approval.md`, or
+`approvals/<name>.md` for `intents/<name>.md`):
+
+```markdown
+# Approval -- Underwrite a $60,000 loan
+
+Verdict: approved
+Approver: lakshminarasimhan.santhanam@gigkri.com
+
+> Reviewed the exception; the collateral covers it.
+```
+
+The next `Exchange.run` finishes the cycle: approved passes the gate — on
+the record, with the approver's name and note (trail stage `approval`, an
+`## Approval` section in the final document) — and rejected blocks it like
+any violation. The split is deliberate: the model judges *whether* the
+gate triggers, only a human can *waive* it, and code enforces both. A
+hard (ungated) violation always wins over a pending gate, an unreadable
+verdict fails loudly rather than leaving the cycle silently parked, and a
+parked cycle is fully accounted (usage, trail) but writes no memory —
+nothing was decided yet.
+
 ### Knowledge — RAG with citations, declared in natural language
 
 Reference material is stacked in memory.md under a Knowledge section, one
@@ -469,6 +510,7 @@ ear/
   persona.py       Persona       — a stack of Skills plus standing instructions
   step.py          Step          — one narrated instruction in a Workflow, delegated to a Persona
   workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies
+  approval.py      Approval      — a human's verdict on a parked cycle; ApprovalRequired parks it
   contract.py      Contract      — a workflow's Deliverable: fields with plain-English meanings, extracted and judged at runtime
   examiner.py      Examiner      — examine: run markdown-native evaluations and grade them, honestly offline
   knowledge.py     Knowledge     — the declared reference corpus, chunked through the Section parser
