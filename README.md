@@ -151,6 +151,10 @@ what the model actually reasoned with:
 intent        the cycle opened, with the intent and its context
 policy        each Policy judgment, with the judge's rationale (pass AND block)
 discovery     which processes were found relevant, and from what catalogue
+selection     which candidates were chosen to run, when there was a choice
+scheduling    the execution order chosen, when there was more than one workflow
+delegation    which persona each undelegated step was assigned to, and why it
+              was available -- the runtime completing the authoring, on record
 deliberation  the Reasoner's decision, with the full stacked capabilities
               block and memory context -- the exact prompt material to review
 explanation   the Explainer's prose and the evidence it rested on
@@ -169,13 +173,16 @@ print(runtime.reasoning_log.render())                      # the skim view
 runtime.reasoning_log.for_stage("deliberation")[-1].inputs  # the full prompt material
 ```
 
-Judgment-laden stages — `Policy` compliance, `Discoverer` relevance
-ranking, the `Reasoner`'s decision, the `Explainer`'s prose — reason in
-natural language against a live LLM (via [DSPy](https://github.com/stanfordnlp/dspy)),
-each with a deterministic, dependency-free fallback so the package stays
-fully usable and testable with no LLM configured at all. Structural
-stages (`Selector`, `Composer`, `Scheduler`) have no judgment call to
-make, so they stay plain Python.
+Every judgment is made dynamically at runtime, in natural language against
+a live LLM (via [DSPy](https://github.com/stanfordnlp/dspy)) — `Policy`
+compliance, `Discoverer` relevance ranking, `Selector` choice among
+candidates, `Scheduler` ordering, `Delegator` step delegation, the
+`Reasoner`'s decision, the `Explainer`'s prose — each with a
+deterministic, dependency-free fallback so the package stays fully usable
+and testable with no LLM configured at all, and each judgment written to
+the `ReasoningLog`. Only mechanics with no judgment content stay plain
+Python — the `Composer`'s flattening, the `Validator`'s shape checks, and
+enforcement itself: **the LLM judges; code enforces and records.**
 
 `ModelBinding` is the LLM provider binding — model, credentials, call
 parameters — read from an environment variable, never hardcoded.
@@ -205,9 +212,10 @@ operations — each its own class instead of logic folded into one method:
 Governor     → govern       enforce Policy gates (LLM-judged, safe-eval fallback)
 Initializer  → initialize   activate the ModelBinding
 Discoverer   → discover     find Processes relevant to the Intent (LLM-ranked, keyword fallback)
-Selector     → select       choose among discovered processes
+Selector     → select       choose among candidates (LLM-chosen, dedupe fallback)
 Composer     → compose      assemble their Workflows into a plan
-Scheduler    → schedule     order the composed plan
+Scheduler    → schedule     order the plan (LLM-ordered, composition-order fallback)
+Delegator    → delegate     assign undelegated steps to personas (LLM-judged at runtime)
 Orchestrator → orchestrate  coordinate a cycle's execution end to end
 Executor     → execute      run the cycle's Performer action
 Performer    → perform      deliberate, decide, validate
@@ -360,7 +368,8 @@ ear/
   governor.py      Governor      — govern: enforce Policy gates
   initializer.py   Initializer   — initialize: activate the ModelBinding
   discoverer.py    Discoverer    — discover: find Processes relevant to an Intent
-  selector.py      Selector      — select: choose among discovered processes
+  selector.py      Selector      — select: choose among candidates (LLM-chosen, dedupe fallback)
+  delegator.py     Delegator     — delegate: assign undelegated steps to personas at runtime
   composer.py      Composer      — compose: assemble selected processes' Workflows into a plan
   scheduler.py     Scheduler     — schedule: order the composed plan
   orchestrator.py  Orchestrator  — orchestrate: coordinate a cycle's execution end to end

@@ -39,6 +39,37 @@ class DiscoverRelevantProcesses(dspy.Signature):
     relevant_process_names: list[str] = dspy.OutputField(desc="Names of the relevant processes, most relevant first")
 
 
+class SelectProcesses(dspy.Signature):
+    """Choose which of the candidate processes should actually run for the
+    given intent, most relevant first. Select every process genuinely
+    needed to serve the intent and omit the rest."""
+
+    intent_text: str = dspy.InputField()
+    candidate_processes: str = dspy.InputField(desc="One 'name: description' pair per line")
+    selected_process_names: list[str] = dspy.OutputField(desc="Names of the processes to run, most relevant first")
+
+
+class ScheduleWorkflows(dspy.Signature):
+    """Order the composed plan's workflows into the best execution order
+    for the given intent -- prerequisites and information-producing
+    workflows first. Keep every workflow: ordering is the only judgment
+    being made here, never omission."""
+
+    intent_text: str = dspy.InputField()
+    workflows: str = dspy.InputField(desc="One 'name: step summary' pair per line, in current order")
+    ordered_workflow_names: list[str] = dspy.OutputField(desc="Every workflow name, in execution order")
+
+
+class DelegateSteps(dspy.Signature):
+    """Assign each undelegated workflow step to the persona best suited to
+    carry it out, judged from the step's instruction against each persona's
+    standing instructions and stacked skills."""
+
+    steps: str = dspy.InputField(desc="One 'number: instruction' line per undelegated step")
+    personas: str = dspy.InputField(desc="One 'name: instructions and skills' line per available persona")
+    assignments: list[str] = dspy.OutputField(desc="One 'number: persona name' entry per step")
+
+
 class ReasonAboutIntent(dspy.Signature):
     """Resolve an intent into a final, concrete decision given its context.
 

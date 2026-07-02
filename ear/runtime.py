@@ -3,17 +3,22 @@ rather than one opaque `reason()` call --
 
     Governor (govern) -> Initializer (initialize) -> Discoverer (discover)
     -> Selector (select) -> Composer (compose) -> Scheduler (schedule) ->
-    Orchestrator (orchestrate) -> [Executor (execute) -> Performer
-    (perform) -> Deliberator (deliberate) -> Decider (decide) -> Validator
-    (validate)] -> Recaller (remember) -> Explainer (explain) -> Auditor
-    (audit) -> Memory (store) -> Learner (learn) -> Adapter (adapt)
+    Delegator (delegate) -> Orchestrator (orchestrate) -> [Executor
+    (execute) -> Performer (perform) -> Deliberator (deliberate) ->
+    Decider (decide) -> Validator (validate)] -> Recaller (remember) ->
+    Explainer (explain) -> Auditor (audit) -> Memory (store) -> Learner
+    (learn) -> Adapter (adapt)
 
 so each operation that AI runtimes often blur together stays a separate,
-inspectable, swappable step. Judgment-laden steps (Policy compliance,
-process Discovery, the Reasoner's decision, the Explainer's prose) reason
-in natural language against whichever ModelBinding (e.g. Claude) is
-active; structural steps (Selector, Composer, Scheduler) have no judgment
-call to make, so they stay plain Python."""
+inspectable, swappable step. Every judgment is made dynamically at
+runtime against whichever ModelBinding (e.g. Claude) is active -- Policy
+compliance, process Discovery, Selection among candidates, Scheduling
+order, step Delegation, the Reasoner's decision, the Explainer's prose --
+each with a deterministic fallback so the runtime stays usable offline,
+and each judgment written to the ReasoningLog. Only the mechanics with no
+judgment content (the Composer's flattening, the Validator's shape
+checks, enforcement itself) stay plain Python: the LLM judges, code
+enforces and records."""
 
 from __future__ import annotations
 
@@ -25,6 +30,7 @@ from .adapter import Adapter
 from .auditor import Auditor
 from .composer import Composer
 from .decider import Decider
+from .delegator import Delegator
 from .deliberator import Deliberator
 from .discoverer import Discoverer
 from .evidence import Evidence
@@ -88,6 +94,7 @@ class Runtime:
     selector: Selector = field(default_factory=Selector)
     composer: Composer = field(default_factory=Composer)
     scheduler: Scheduler = field(default_factory=Scheduler)
+    delegator: Delegator = field(default_factory=Delegator)
     validator: Validator = field(default_factory=Validator)
     orchestrator: Orchestrator = field(default_factory=Orchestrator)
     recaller: Recaller = field(default_factory=Recaller)
@@ -135,9 +142,9 @@ class Runtime:
         self.initializer.initialize(self)
 
         candidates = self.validator.validate_candidates(self.discoverer.discover(self, intent))
-        selected = self.validator.validate_selection(self.selector.select(self, candidates))
+        selected = self.validator.validate_selection(self.selector.select(self, candidates, intent=intent))
         plan = self.validator.validate_plan(self.composer.compose(selected))
-        scheduled = self.validator.validate_schedule(self.scheduler.schedule(plan))
+        scheduled = self.validator.validate_schedule(self.scheduler.schedule(plan, runtime=self, intent=intent))
 
         workflow_violations = self.governor.govern_workflows(self, intent, scheduled)
         if workflow_violations:
@@ -145,6 +152,7 @@ class Runtime:
             self.reasoning_log.flush()
             raise PermissionError(f"Workflow policy violated: {names}")
 
+        self.delegator.delegate(self, intent, scheduled)
         recalled = self.recaller.recall(self.memory, intent)
 
         decision = self.orchestrator.orchestrate(self, intent, plan=scheduled)

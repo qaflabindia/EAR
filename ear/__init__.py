@@ -15,9 +15,10 @@ own class so operations AI runtimes often blur together stay distinct:
     Governor     -> govern       (enforce Policy gates; LLM-judged, with a safe-eval fallback)
     Initializer  -> initialize   (activate the ModelBinding)
     Discoverer   -> discover     (find relevant Processes; LLM-ranked, with a keyword fallback)
-    Selector     -> select       (choose among discovered processes)
+    Selector     -> select       (choose among candidates; LLM-chosen, with a dedupe fallback)
     Composer     -> compose      (assemble their Workflows into a plan)
-    Scheduler    -> schedule     (order the composed plan)
+    Scheduler    -> schedule     (order the plan; LLM-ordered, with a composition-order fallback)
+    Delegator    -> delegate     (assign undelegated steps to personas; LLM-judged at runtime)
     Orchestrator -> orchestrate  (coordinate execution of the plan)
     Executor     -> execute      (run the cycle's Performer action)
     Performer    -> perform      (deliberate, decide, validate)
@@ -56,6 +57,7 @@ from .adapter import Adapter
 from .auditor import Auditor
 from .composer import Composer
 from .decider import Decider
+from .delegator import Delegator
 from .deliberator import Deliberator
 from .discoverer import Discoverer
 from .evidence import Evidence
@@ -119,6 +121,7 @@ __all__ = [
     "Selector",
     "Composer",
     "Scheduler",
+    "Delegator",
     "Orchestrator",
     "Executor",
     "Performer",

@@ -26,6 +26,7 @@ natural language against the active ModelBinding at reasoning time.
 
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -275,7 +276,9 @@ def _resolve(mapping: dict, reference: str, kind: str):
     key = normalize(reference)
     if key not in mapping:
         known = ", ".join(sorted(item.name for item in mapping.values())) or "none"
-        raise ValueError(f"Unknown {kind} '{reference}' referenced in the stack -- known {kind}s: {known}")
+        close = difflib.get_close_matches(key, list(mapping), n=1)
+        hint = f" -- did you mean '{mapping[close[0]].name}'?" if close else ""
+        raise ValueError(f"Unknown {kind} '{reference}' referenced in the stack{hint} -- known {kind}s: {known}")
     return mapping[key]
 
 

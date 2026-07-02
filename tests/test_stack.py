@@ -9,6 +9,7 @@ policy.md -> memory.md -> Runtime -- is testable with no LLM configured.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -28,6 +29,11 @@ from ear import (
 from ear.section import parse_document
 
 EXAMPLE_STACK = Path(__file__).resolve().parent.parent / "examples" / "credit_risk_stack"
+
+requires_anthropic_key = pytest.mark.skipif(
+    not os.environ.get("ANTHROPIC_API_KEY"),
+    reason="ANTHROPIC_API_KEY is not set in the environment -- live-LLM tests are skipped",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -607,6 +613,134 @@ def test_policy_judge_returns_the_rationale_offline():
     assert complies is True and "amount <= 10" in rationale
     complies, rationale = policy.judge(amount=50)
     assert complies is False
+
+
+# ---------------------------------------------------------------------------
+# Dynamic-at-runtime stages: selection, scheduling and delegation are
+# judgments the LLM makes per cycle, with deterministic fallbacks offline
+# and an audit record either way.
+# ---------------------------------------------------------------------------
+
+
+def test_selector_falls_back_to_dedupe_and_logs_the_choice_offline():
+    from ear import Process
+
+    runtime = Runtime(name="Choosing-Runtime")
+    first, second = Process(name="Underwrite Loan"), Process(name="Close Account")
+    selected = runtime.selector.select(runtime, [first, second, first], intent=Intent(text="underwrite"))
+
+    assert selected == [first, second]
+    record = runtime.reasoning_log.for_stage("selection")[0]
+    assert record.output == "Underwrite Loan, Close Account"
+    assert record.model == "deterministic-fallback"
+
+
+def test_selector_stays_silent_when_there_is_no_choice():
+    from ear import Process
+
+    runtime = Runtime(name="Quiet-Runtime")
+    runtime.selector.select(runtime, [Process(name="Only Process")], intent=Intent(text="x"))
+    assert runtime.reasoning_log.for_stage("selection") == []
+
+
+def test_scheduler_falls_back_to_composition_order_and_logs_offline():
+    from ear import Workflow
+
+    runtime = Runtime(name="Ordering-Runtime")
+    plan = [Workflow(name="Banding"), Workflow(name="Deciding")]
+    scheduled = runtime.scheduler.schedule(plan, runtime=runtime, intent=Intent(text="underwrite"))
+
+    assert scheduled == plan and scheduled is not plan
+    record = runtime.reasoning_log.for_stage("scheduling")[0]
+    assert record.output == "Banding, Deciding"
+    assert record.model == "deterministic-fallback"
+
+
+def test_delegator_leaves_steps_as_authored_offline():
+    from ear import Workflow
+
+    runtime = Runtime(name="Delegating-Runtime")
+    persona = Persona(name="Credit Risk Guru")
+    workflow = Workflow(name="Underwriting Workflow")
+    workflow.add_step("Band the profile.", persona=persona)
+    workflow.add_step("Write the customer note.")  # left undelegated by the author
+
+    runtime.delegator.delegate(runtime, Intent(text="underwrite"), [workflow])
+    assert workflow.steps[1].persona is None
+    assert runtime.reasoning_log.for_stage("delegation") == []
+
+
+def test_delegator_apply_only_binds_resolvable_assignments():
+    from ear.delegator import Delegator
+    from ear import Workflow
+
+    persona = Persona(name="Customer Advocate")
+    workflow = Workflow(name="W")
+    workflow.add_step("Write the customer note.")
+    undelegated = [(1, workflow.steps[0])]
+
+    applied = Delegator._apply(undelegated, [persona], ["1: Customer Advocate", "9: Nobody", "garbage"])
+    assert applied == [(1, persona)]
+    assert workflow.steps[0].persona is persona
+
+
+def test_runtime_reason_records_selection_between_processes(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["process"] = (
+        "# Credit Risk Runtime\n\n## Underwrite Consumer Loan\nEvaluates a loan application.\n\n"
+        "Workflows: Underwriting Workflow\n\n## Close Dormant Account\nCloses a dormant account.\n"
+    )
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    runtime.reason(Intent(text="anything ambiguous", context={"loan_amount": 5000}))
+    assert runtime.reasoning_log.for_stage("selection")
+
+
+def test_unknown_reference_error_suggests_the_close_match(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["persona"] = "# Personas\n\n## Guru\nBe careful.\n\nSkills: risk_grad\n"
+    with pytest.raises(ValueError, match="did you mean 'risk_grade'"):
+        load_runtime(write_stack(tmp_path / "stack", **stack))
+
+
+@requires_anthropic_key
+def test_selector_chooses_the_relevant_process_with_llm():
+    from ear import ModelBinding, Process
+
+    binding = ModelBinding(provider="anthropic", model=os.environ.get("ANTHROPIC_TEST_MODEL", "claude-haiku-4-5"))
+    binding.activate()
+    runtime = Runtime(name="Choosing-Runtime", model_binding=binding)
+    loan = Process(name="Underwrite Consumer Loan", description="Reviews a loan applicant's credit to decide approval.")
+    lunch = Process(name="Cancel Lunch Reservation", description="Cancels a booked cafeteria lunch reservation.")
+
+    selected = runtime.selector.select(runtime, [loan, lunch], intent=Intent(text="Review this loan applicant's credit"))
+    assert loan in selected
+    assert lunch not in selected
+    record = runtime.reasoning_log.for_stage("selection")[0]
+    assert record.model == binding.model_id
+
+
+@requires_anthropic_key
+def test_delegator_assigns_the_best_suited_persona_with_llm():
+    from ear import ModelBinding, Skill, Workflow
+
+    binding = ModelBinding(provider="anthropic", model=os.environ.get("ANTHROPIC_TEST_MODEL", "claude-haiku-4-5"))
+    binding.activate()
+    runtime = Runtime(name="Delegating-Runtime", model_binding=binding)
+
+    guru = Persona(name="Credit Risk Guru", instructions="Underwrite conservatively.")
+    guru.add_skill(Skill(name="assign_risk_grade", prompt="Grade the credit profile A-E."))
+    advocate = Persona(name="Customer Advocate", instructions="Write plainly and kindly to applicants.")
+    advocate.add_skill(Skill(name="write_customer_note", prompt="Draft a courteous decision note."))
+
+    workflow = Workflow(name="Underwriting Workflow")
+    workflow.add_step("Assign a risk grade.", persona=guru)
+    workflow.add_persona(advocate)
+    workflow.add_step("Write the customer note announcing the decision.")  # undelegated
+
+    runtime.delegator.delegate(runtime, Intent(text="Underwrite a loan"), [workflow])
+    assert workflow.steps[1].persona is advocate
+    record = runtime.reasoning_log.for_stage("delegation")[0]
+    assert "Customer Advocate" in record.output
 
 
 # ---------------------------------------------------------------------------
