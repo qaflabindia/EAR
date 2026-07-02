@@ -891,6 +891,93 @@ def test_examiner_grades_the_example_suite_live(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# LangGraph: the stack compiled to a graph -- every node a full governed
+# cycle, halting at the first non-decided status, checkpointable.
+# ---------------------------------------------------------------------------
+
+
+def test_compiled_graph_runs_each_step_as_a_governed_cycle(tmp_path):
+    pytest.importorskip("langgraph", reason="langgraph not installed")
+    from ear.integrations.langgraph_backend import compile_to_graph
+
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    graph = compile_to_graph(runtime)
+    final = graph.invoke({"intent": "Underwrite a consumer loan", "context": {"loan_amount": 5000}})
+
+    assert final["status"] == "decided"
+    assert [entry["step"] for entry in final["steps"]] == [
+        "Band the profile and assign a risk grade.",
+        "Decide approve or decline against the grade.",
+    ]
+    assert "Credit Risk Runtime" in final["decision"]
+    # Second step reasoned with the first step's conclusion in view.
+    assert "Earlier steps concluded" not in final["steps"][0]["decision"]
+    # Each node was a full governed cycle: two cycles on the trail, two
+    # memories, policies judged in both.
+    assert runtime.reasoning_log.cycle == 2
+    assert len(runtime.memory.working) == 2
+    assert len(runtime.reasoning_log.for_stage("policy")) >= 2
+
+
+def test_compiled_graph_halts_at_the_first_blocked_step(tmp_path):
+    pytest.importorskip("langgraph", reason="langgraph not installed")
+    from ear.integrations.langgraph_backend import compile_to_graph
+
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    final = compile_to_graph(runtime).invoke(
+        {"intent": "Underwrite an oversized loan", "context": {"loan_amount": 90000}}
+    )
+    assert final["status"] == "BLOCKED"
+    assert "Loan Amount Cap" in final["decision"]
+    assert len(final["steps"]) == 1  # the gate stopped the graph, not just the step
+
+
+def test_compiled_graph_checkpoints_between_steps(tmp_path):
+    pytest.importorskip("langgraph", reason="langgraph not installed")
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from ear.integrations.langgraph_backend import compile_to_graph
+
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    graph = compile_to_graph(runtime, checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "underwriting-1"}}
+    graph.invoke({"intent": "Underwrite a consumer loan", "context": {"loan_amount": 5000}}, config)
+
+    saved = graph.get_state(config).values
+    assert saved["status"] == "decided"
+    assert len(saved["steps"]) == 2
+
+
+def test_runtime_node_routes_governance_as_status(tmp_path):
+    pytest.importorskip("langgraph", reason="langgraph not installed")
+    from langgraph.graph import END, StateGraph
+
+    from ear.integrations.langgraph_backend import StackState, runtime_node
+
+    runtime = load_runtime(approval_stack(tmp_path))
+    graph = StateGraph(StackState)
+    graph.add_node("ear", runtime_node(runtime))
+    graph.set_entry_point("ear")
+    graph.add_edge("ear", END)
+    compiled = graph.compile()
+
+    decided = compiled.invoke({"intent": "Underwrite a small loan", "context": {"loan_amount": 5000}})
+    assert decided["status"] == "decided"
+
+    parked = compiled.invoke({"intent": "Underwrite a large loan", "context": {"loan_amount": 60000}})
+    assert parked["status"] == "PENDING APPROVAL"
+    assert "Large Loan Human Approval" in parked["decision"]
+
+
+def test_compile_to_graph_refuses_an_empty_stack():
+    pytest.importorskip("langgraph", reason="langgraph not installed")
+    from ear.integrations.langgraph_backend import compile_to_graph
+
+    with pytest.raises(ValueError, match="no workflow steps"):
+        compile_to_graph(Runtime(name="Empty-Runtime"))
+
+
+# ---------------------------------------------------------------------------
 # Executable tools: declarations meet handlers in the ToolBinder, the model
 # decides when to call, and every invocation lands on the trail.
 # ---------------------------------------------------------------------------

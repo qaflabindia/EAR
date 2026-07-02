@@ -181,6 +181,31 @@ print(runtime.reasoning_log.render())                      # the skim view
 runtime.reasoning_log.for_stage("deliberation")[-1].inputs  # the full prompt material
 ```
 
+### LangGraph — the stack as a graph, governance intact
+
+`pip install 'ear[langgraph]'` and the authored stack compiles to a
+LangGraph — one node per workflow step, in authored order, each carrying
+the overall intent and the earlier steps' conclusions:
+
+```python
+from langgraph.checkpoint.memory import MemorySaver
+from ear.integrations.langgraph_backend import compile_to_graph, runtime_node
+
+graph = compile_to_graph(runtime, checkpointer=MemorySaver())
+final = graph.invoke({"intent": "Underwrite a consumer loan",
+                      "context": {"loan_amount": 5000}},
+                     {"configurable": {"thread_id": "underwriting-1"}})
+```
+
+The rule that makes it safe: **a graph node never bypasses governance** —
+every node runs a full governed cycle on the runtime, so the Governor
+(approval gates included), knowledge, bound tools, the trail and memory
+all apply inside each node exactly as they do natively. A refusal or a
+parked approval becomes a routable `status` and the graph halts at the
+first non-decided step; LangGraph contributes checkpointing between steps
+and interop — `runtime_node(runtime)` drops a whole EAR runtime into any
+larger graph as one governed node.
+
 ### Tools — execution on the record
 
 Tools stay *declared* in memory.md; the `ToolBinder` is where a
@@ -598,5 +623,6 @@ ear/
     otel_backend.py      OpenTelemetryExporter — the trail as OTLP spans (Langfuse/Phoenix/any)
     llamaindex_backend.py LlamaIndexRetriever  — a LlamaIndex retriever on the Librarian's seam
     langchain_backend.py bind_langchain_tool   — a LangChain tool behind a declared tool name
+    langgraph_backend.py compile_to_graph      — the stack as a LangGraph; every node a governed cycle
 ```
 </content>
