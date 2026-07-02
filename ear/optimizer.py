@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
-from .section import labelled_blocks, normalize, parse_document, unquote
+from .section import labelled_blocks, normalize, parse_document, quote, unquote
 
 # The verdict vocabulary a reviewer's `Verdict:` line is read with --
 # symmetrical with `coerce`'s yes/no reading. An unrecognized verdict is
@@ -50,6 +50,20 @@ class Example:
     decision: str = ""
     verdict: Optional[bool] = None
     note: str = ""
+
+
+@dataclass
+class SearchOutcome:
+    """What an instruction search found: the winning instruction, how it
+    scored against the baseline on the held-out examples, and what the
+    search spent finding it."""
+
+    instruction: str
+    baseline_score: float
+    best_score: float
+    generations: int
+    candidates_tried: int
+    evaluations: int
 
 
 @dataclass
@@ -162,6 +176,174 @@ class Optimizer:
         if not examples:
             raise ValueError(f"No usable examples found in trail '{trail_path}'")
         return self.refine(ReasonAboutIntent, examples, getattr(runtime, "model_binding", None))
+
+    # -- iterative instruction search --------------------------------------------
+
+    def search(
+        self,
+        judgment: Any,
+        examples: list[Example],
+        model_binding: Any,
+        metric: Optional[Callable[[str, str], float]] = None,
+        generations: int = 2,
+        candidates: int = 2,
+        holdout: float = 0.5,
+    ) -> SearchOutcome:
+        """Iteratively improve a Judgment's instruction: each generation the
+        model proposes `candidates` rewrites (reflecting on the current best
+        and the failures), each candidate is graded on held-out reference
+        examples by the shared quality metric, and the best survives. The
+        loop, the split and the selection are code; the proposals and the
+        grading are the model. Requires a live model -- optimization is
+        judgment, so offline it refuses rather than pretending."""
+        if model_binding is None or getattr(model_binding, "lm", None) is None:
+            raise ValueError("search needs a live model -- optimization is judgment, and nobody made one offline")
+        references = [example for example in examples if example.decision and example.verdict is not False]
+        failures = [example for example in examples if example.verdict is False]
+        if not references:
+            raise ValueError("search needs at least one reference example (a decision not judged incorrect)")
+        held_out = references[: max(1, int(len(references) * holdout))]
+        reflect_on = references[len(held_out):] + failures or references
+
+        grade = metric or self.metric(model_binding)
+        primary = judgment.outputs[0]
+        evaluations = 0
+
+        def score(instruction: str) -> float:
+            nonlocal evaluations
+            original = judgment.instruction
+            judgment.instruction = instruction
+            try:
+                total = 0.0
+                for example in held_out:
+                    values = {
+                        spec.name: getattr(example, spec.name, "")
+                        for spec in judgment.inputs
+                        if getattr(example, spec.name, "")
+                    }
+                    result = judgment.run(model_binding.lm, **values)
+                    reference = getattr(example, primary.name, "") or example.decision
+                    total += grade(str(reference), str(getattr(result, primary.name, "")))
+                    evaluations += 1
+                return total / len(held_out)
+            finally:
+                judgment.instruction = original
+
+        baseline = judgment.instruction
+        best, best_score = baseline, score(baseline)
+        baseline_score = best_score
+        tried = 0
+        from .signatures import RefineInstruction
+
+        for _ in range(generations):
+            proposed_this_generation: list[str] = []
+            for _ in range(candidates):
+                rendered = "\n\n".join(self._render_example(example) for example in reflect_on)
+                if proposed_this_generation:
+                    rendered += "\n\nAlready proposed this round (propose something meaningfully different):\n" + "\n---\n".join(
+                        proposal[:300] for proposal in proposed_this_generation
+                    )
+                result = RefineInstruction.run(
+                    model_binding.lm, current_instruction=best, examples=rendered
+                )
+                proposal = str(result.improved_instruction).strip()
+                if not proposal or proposal == best:
+                    continue
+                proposed_this_generation.append(proposal)
+                tried += 1
+                candidate_score = score(proposal)
+                if candidate_score > best_score:
+                    best, best_score = proposal, candidate_score
+        # The winner is applied only if it did not lose to the baseline --
+        # a search that found nothing better changes nothing.
+        judgment.instruction = best if best_score >= baseline_score else baseline
+        return SearchOutcome(
+            instruction=judgment.instruction,
+            baseline_score=baseline_score,
+            best_score=max(best_score, baseline_score),
+            generations=generations,
+            candidates_tried=tried,
+            evaluations=evaluations,
+        )
+
+    # -- worked-example demos -----------------------------------------------------
+
+    def select_demos(self, judgment: Any, examples: list[Example], budget_chars: int = 4000) -> list[dict]:
+        """Choose which worked examples earn a place in the judgment's
+        prompt: reviewer-approved first, then unreviewed, never ones judged
+        incorrect, within a character budget enforced in code. Sets
+        `judgment.demos` and returns them."""
+        ranked = [e for e in examples if e.verdict is True] + [e for e in examples if e.verdict is None]
+        field_names = [spec.name for spec in judgment.inputs + judgment.outputs]
+        demos: list[dict] = []
+        spent = 0
+        for example in ranked:
+            demo = {
+                name: getattr(example, name)
+                for name in field_names
+                if str(getattr(example, name, "") or "").strip()
+            }
+            if not any(spec.name in demo for spec in judgment.outputs):
+                continue  # a worked example without its answer teaches nothing
+            size = sum(len(str(value)) for value in demo.values())
+            if spent + size > budget_chars:
+                break
+            demos.append(demo)
+            spent += size
+        judgment.demos = demos
+        return demos
+
+    # -- persisted instructions ------------------------------------------------------
+
+    def save_instructions(self, path: Union[str, Path], judgments: Optional[dict[str, Any]] = None) -> str:
+        """Write every judgment's instruction (and demos) to a reviewable
+        markdown file -- a persisted, diffable override of the shipped
+        defaults in signatures.py."""
+        if judgments is None:
+            from .signatures import REGISTRY as judgments  # noqa: N811
+        path = Path(path)
+        lines = ["# Instructions -- refined", ""]
+        for name, judgment in judgments.items():
+            lines += [f"## {name}", "", "Instruction:", quote(judgment.instruction), ""]
+            for number, demo in enumerate(judgment.demos, start=1):
+                lines += [f"### {name} demo {number}", ""]
+                for spec in judgment.inputs + judgment.outputs:
+                    if spec.name in demo:
+                        lines += [f"{spec.heading.capitalize()}:", quote(str(demo[spec.name])), ""]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return str(path)
+
+    def load_instructions(self, path: Union[str, Path], judgments: Optional[dict[str, Any]] = None) -> list[str]:
+        """Apply a persisted instructions file back onto the judgments.
+        Refined instructions apply to the running process's judgments (the
+        same scope as editing signatures.py, which is what this file is: a
+        reviewable override of it). Returns the names applied."""
+        if judgments is None:
+            from .signatures import REGISTRY as judgments  # noqa: N811
+        by_key = {normalize(name): (name, judgment) for name, judgment in judgments.items()}
+        applied: list[str] = []
+        current: Optional[Any] = None
+        for section in parse_document(Path(path).read_text(encoding="utf-8")).sections:
+            key = normalize(section.name)
+            if key in by_key:
+                name, current = by_key[key]
+                blocks = labelled_blocks(section.lines)
+                instruction = blocks.get("instruction", "")
+                if instruction:
+                    current.instruction = instruction
+                    current.demos = []
+                    applied.append(name)
+            elif "demo" in key and current is not None:
+                blocks = labelled_blocks(section.lines)
+                demo = {}
+                for spec in current.inputs + current.outputs:
+                    value = blocks.get(normalize(spec.heading))
+                    if value:
+                        demo[spec.name] = value
+                if demo:
+                    current.demos.append(demo)
+        return applied
 
     @staticmethod
     def _render_example(example: Example) -> str:

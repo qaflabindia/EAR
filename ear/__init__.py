@@ -90,7 +90,7 @@ from .mcp_server import McpServer
 from .memory import Memory, MemoryEntry
 from .model_binding import ModelBinding
 from .ontology import Ontology
-from .optimizer import Optimizer
+from .optimizer import Example, Optimizer, SearchOutcome
 from .orchestrator import Orchestrator
 from .panel import Panel, Turn
 from .performer import Performer
@@ -154,6 +154,8 @@ __all__ = [
     "Learner",
     "Adapter",
     "Optimizer",
+    "Example",
+    "SearchOutcome",
     "Exchange",
     "Approval",
     "ApprovalRequired",

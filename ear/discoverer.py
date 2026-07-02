@@ -13,7 +13,7 @@ from typing import Any
 
 from .intent import Intent
 from .process import Process
-from .reasoning_log import model_name
+from .reasoning_log import calls_so_far, model_name, usage_since
 from .section import normalize
 
 
@@ -37,6 +37,7 @@ class Discoverer:
 
     def discover(self, runtime: Any, intent: Intent) -> list[Process]:
         model_binding = getattr(runtime, "model_binding", None)
+        start = calls_so_far(getattr(model_binding, "lm", None))
         if model_binding is not None and getattr(model_binding, "lm", None) is not None:
             found = self._discover_with_llm(runtime.processes, intent, model_binding.lm, self._guidance(runtime))
         else:
@@ -52,6 +53,7 @@ class Discoverer:
                 },
                 output=", ".join(process.name for process in found) or "none",
                 model=model_name(model_binding),
+                usage=usage_since(getattr(model_binding, "lm", None), start),
             )
         return found
 

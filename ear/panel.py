@@ -29,7 +29,7 @@ from typing import Any
 
 from .intent import Intent
 from .persona import Persona
-from .reasoning_log import model_name
+from .reasoning_log import calls_so_far, model_name, usage_since
 
 
 @dataclass
@@ -55,8 +55,10 @@ class Panel:
 
         transcript: list[Turn] = []
         budget = min(self.rounds * len(personas), self.max_turns)
+        lm = getattr(model_binding, "lm", None)
         for turn_number in range(budget):
             persona = personas[turn_number % len(personas)]
+            start = calls_so_far(lm)
             if live:
                 statement = self._speak_with_llm(intent, persona, transcript, style, model_binding.lm)
             else:
@@ -76,8 +78,10 @@ class Panel:
                     },
                     output=statement,
                     model=model_name(model_binding),
+                    usage=usage_since(lm, start),
                 )
 
+        synthesis_start = calls_so_far(lm)
         if live:
             decision = self._synthesize_with_llm(intent, transcript, style, model_binding.lm)
         else:
@@ -99,6 +103,7 @@ class Panel:
                 },
                 output=decision,
                 model=model_name(model_binding),
+                usage=usage_since(lm, synthesis_start),
             )
         return decision
 

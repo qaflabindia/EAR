@@ -48,6 +48,33 @@ def model_name(model_binding: Any) -> str:
     return "deterministic-fallback"
 
 
+def calls_so_far(lm: Any) -> int:
+    """Where an LM's call history stands now -- the start mark for
+    attributing a stage's usage to its record."""
+    history = getattr(lm, "history", None)
+    return len(history) if history is not None else 0
+
+
+def usage_since(lm: Any, start: int) -> Optional[dict[str, int]]:
+    """The tokens, latency and retries the LM spent since `start`, summed
+    -- or None when no call actually happened, so a fallback judgment is
+    never billed for a model it didn't use."""
+    history = getattr(lm, "history", None) or []
+    calls = history[start:]
+    if not calls:
+        return None
+    usage = {"input_tokens": 0, "output_tokens": 0, "latency_ms": 0, "retries": 0}
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        tokens = call.get("usage") or {}
+        usage["input_tokens"] += int(tokens.get("prompt_tokens") or 0)
+        usage["output_tokens"] += int(tokens.get("completion_tokens") or 0)
+        usage["latency_ms"] += int(call.get("latency_ms") or 0)
+        usage["retries"] += int(call.get("retries") or 0)
+    return usage
+
+
 @dataclass
 class ReasoningRecord:
     """One logged judgment: which cycle and stage, what the stage reasoned
@@ -60,12 +87,17 @@ class ReasoningRecord:
     output: str = ""
     rationale: str = ""
     model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    latency_ms: int = 0
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def render(self, width: int = 160) -> str:
         line = f"[{self.stage}] -> {_clip(self.output, width)}"
         if self.model:
             line += f"  ({self.model})"
+        if self.input_tokens or self.output_tokens:
+            line += f"  [{self.input_tokens}+{self.output_tokens} tok, {self.latency_ms} ms]"
         if self.rationale:
             line += f"\n    why: {_clip(self.rationale, width)}"
         return line
@@ -80,6 +112,9 @@ class ReasoningRecord:
                 "inputs": self.inputs,
                 "output": self.output,
                 "rationale": self.rationale,
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "latency_ms": self.latency_ms,
             },
             default=str,
         )
@@ -105,6 +140,8 @@ class ReasoningRecord:
             lines += ["Why:", quote(self.rationale), ""]
         if "\n" in self.output or len(self.output) > 80:
             lines += ["Output:", quote(self.output), ""]
+        if self.input_tokens or self.output_tokens:
+            lines += [f"Spent: {self.input_tokens}+{self.output_tokens} tokens, {self.latency_ms} ms", ""]
         return "\n".join(lines)
 
 
@@ -170,6 +207,7 @@ class ReasoningLog:
         output: Any = "",
         rationale: str = "",
         model: str = "",
+        usage: Optional[dict[str, int]] = None,
     ) -> ReasoningRecord:
         entry = ReasoningRecord(
             cycle=self.cycle,
@@ -178,6 +216,9 @@ class ReasoningLog:
             output=str(output),
             rationale=str(rationale),
             model=model,
+            input_tokens=int((usage or {}).get("input_tokens") or 0),
+            output_tokens=int((usage or {}).get("output_tokens") or 0),
+            latency_ms=int((usage or {}).get("latency_ms") or 0),
         )
         self.records.append(entry)
         return entry

@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import ssl
+import time
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -33,9 +34,21 @@ from typing import Any, Optional
 DEFAULT_MAX_TOKENS = 2048
 ANTHROPIC_VERSION = "2023-06-01"
 
+# Transient-failure handling: retried statuses (rate limits, overload,
+# gateway trouble), total attempts, and the pause before each retry.
+# Mechanics constants -- auth and malformed-request errors fail fast.
+RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504, 529})
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = (1.0, 2.0)
+
 
 class LMError(RuntimeError):
-    """A provider call failed -- network, auth or a malformed response."""
+    """A provider call failed -- network, auth or a malformed response.
+    `retryable` marks failures worth another attempt (rate limits,
+    overload, network) as opposed to ones that never will be (auth,
+    malformed requests)."""
+
+    retryable: bool = False
 
 
 @dataclass
@@ -56,9 +69,16 @@ class LM:
             url, headers, body, parse = self._anthropic(prompt, system)
         else:
             url, headers, body, parse = self._openai(prompt, system)
-        raw = self._post(url, headers, body)
+        started = time.monotonic()
+        raw, retries = self._post_with_retries(url, headers, body)
         text, usage = parse(raw)
-        self.history.append({"usage": usage, "cost": 0.0})
+        self.history.append(
+            {
+                "usage": usage,
+                "latency_ms": int((time.monotonic() - started) * 1000),
+                "retries": retries,
+            }
+        )
         return text
 
     # -- provider wire formats ------------------------------------------------
@@ -123,6 +143,24 @@ class LM:
 
     # -- transport ------------------------------------------------------------
 
+    @classmethod
+    def _post_with_retries(cls, url: str, headers: dict[str, str], body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        """POST with retry on transient failures only -- rate limits,
+        overload, gateway errors, network drops -- backing off between
+        attempts. Auth and malformed-request errors fail fast. Returns the
+        parsed response and how many retries it took, so the retry count is
+        on the record, never silent."""
+        last_error: Optional[LMError] = None
+        for attempt in range(MAX_ATTEMPTS):
+            try:
+                return cls._post(url, headers, body), attempt
+            except LMError as error:
+                last_error = error
+                if not error.retryable or attempt == MAX_ATTEMPTS - 1:
+                    raise
+                time.sleep(RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)])
+        raise last_error if last_error is not None else LMError(f"LLM call to {url} failed")
+
     @staticmethod
     def _post(url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         payload = json.dumps(body).encode("utf-8")
@@ -133,9 +171,17 @@ class LM:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:  # noqa: PERF203 -- surface the provider's message
             detail = error.read().decode("utf-8", "replace")[:500]
-            raise LMError(f"LLM call to {url} failed ({error.code}): {detail}") from error
-        except (urllib.error.URLError, TimeoutError, ValueError) as error:
-            raise LMError(f"LLM call to {url} failed: {error}") from error
+            failure = LMError(f"LLM call to {url} failed ({error.code}): {detail}")
+            failure.retryable = error.code in RETRYABLE_STATUS
+            raise failure from error
+        except (urllib.error.URLError, TimeoutError) as error:
+            failure = LMError(f"LLM call to {url} failed: {error}")
+            failure.retryable = True
+            raise failure from error
+        except ValueError as error:
+            failure = LMError(f"LLM call to {url} returned malformed JSON: {error}")
+            failure.retryable = False
+            raise failure from error
 
 
 def _ssl_context() -> ssl.SSLContext:

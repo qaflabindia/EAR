@@ -334,6 +334,14 @@ remains the canonical record. The protocol is native and two methods
 small, so shipping the trail to any external system is a few lines of your
 own code — never a dependency of EAR's.
 
+Accounting is per judgment, not just per cycle: every stage record carries
+the tokens and latency its own model calls spent (fallback judgments are
+never billed for a model they didn't use), and the LM client retries
+transient failures with backoff — retry counts on the record, auth errors
+failing fast. Declare a `Pricing` section in memory.md ("Input tokens cost
+$3 per million; output tokens cost $15 per million.") and usage records
+carry real dollars; a figure nobody declared is never invented.
+
 Every cycle also closes with a `usage` record — model calls, tokens,
 approximate cost and wall-clock latency, read from the bound LM's own call
 history — written for blocked cycles too: a refusal costs whatever it
@@ -397,6 +405,19 @@ and `refine` has the model reflectively rewrite a reasoning instruction
 against those examples, graded by the same `JudgeDecisionQuality`-backed
 metric the Examiner uses — evaluation and optimization share one notion of
 quality, natively.
+
+Beyond one-shot refinement, `Optimizer.search(judgment, examples,
+model_binding, generations=…, candidates=…)` runs an iterative search:
+each generation the model proposes candidate rewrites (reflecting on the
+current best and the failures), each candidate is graded on held-out
+reference examples, and the best survives — the loop, split and selection
+are code; the proposals and grading are the model; a search that finds
+nothing better changes nothing. `select_demos` picks reviewer-approved
+worked examples into the judgment's prompt within a character budget, and
+`save_instructions`/`load_instructions` persist the refined instructions
+and demos as reviewable markdown (`.ear/instructions.md`, applied
+automatically by the loader) — optimization survives restarts and is
+itself diffable.
 
 Every judgment is made dynamically at runtime, in natural language
 against a live LLM — through EAR's own structured prompting (a `Judgment`

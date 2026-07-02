@@ -117,6 +117,12 @@ class Strategy:
     knowledge: str = ""
     knowledge_sources: list[tuple[str, str]] = field(default_factory=list)
 
+    # Pricing -> dollars on usage records. Rates are the author's
+    # declaration, never a price table shipped in code.
+    pricing: str = ""
+    input_rate_per_million: Optional[float] = None
+    output_rate_per_million: Optional[float] = None
+
     # Ontological settings -> the reasoning vocabulary.
     ontology: Ontology = field(default_factory=Ontology)
 
@@ -133,6 +139,8 @@ class Strategy:
                 strategy._read_audit(prose)
             elif "knowledge" in heading:
                 strategy._read_knowledge(body)
+            elif "pricing" in heading or "price" in heading or "cost" in heading:
+                strategy._read_pricing(prose)
             elif "mcp" in heading:
                 strategy._read_mcp(body)
             elif "discover" in heading:
@@ -181,6 +189,46 @@ class Strategy:
             if not pattern:
                 raise ValueError(f"Knowledge source '{name}' declares no path -- write '- name: path-or-glob'")
             self.knowledge_sources.append((name, pattern))
+
+    def _read_pricing(self, prose: str) -> None:
+        """Read token rates from prose. The reliable form is per million:
+        'Input tokens cost $3 per million; output tokens cost $15 per
+        million.' -- each sentence names input or output, a $ amount, and
+        the scale word (million / thousand / token)."""
+        self.pricing = prose
+        for sentence in prose.replace(";", ".").split("."):
+            words = sentence.lower().split()
+            amounts = []
+            for word in words:
+                cleaned = word.strip("$,()")
+                if word.startswith("$"):
+                    try:
+                        amounts.append(float(cleaned))
+                    except ValueError:
+                        continue
+            if not amounts:
+                continue
+            rate = amounts[0]
+            if "thousand" in words or "1k" in words:
+                rate *= 1000
+            elif "token" in words and "million" not in words and "1m" not in words:
+                rate *= 1_000_000
+            if "input" in words:
+                self.input_rate_per_million = rate
+            if "output" in words:
+                self.output_rate_per_million = rate
+
+    def dollars(self, input_tokens: int, output_tokens: int) -> Optional[float]:
+        """The declared cost of a token spend, or None when no pricing was
+        authored -- a dollar figure nobody declared is never invented."""
+        if self.input_rate_per_million is None and self.output_rate_per_million is None:
+            return None
+        cost = 0.0
+        if self.input_rate_per_million is not None:
+            cost += input_tokens * self.input_rate_per_million / 1_000_000
+        if self.output_rate_per_million is not None:
+            cost += output_tokens * self.output_rate_per_million / 1_000_000
+        return cost
 
     def _read_subagents(self, prose: str) -> None:
         self.subagent_spawning = prose

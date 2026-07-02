@@ -317,6 +317,12 @@ class Loader:
                     knowledge.add_document(name, path.name, path.read_text(encoding="utf-8"))
             runtime.librarian.knowledge = knowledge
 
+        instructions = self.directory / ".ear" / "instructions.md"
+        if instructions.exists():
+            # A persisted, reviewable override of the shipped instructions
+            # (see Optimizer.load_instructions for scope).
+            runtime.optimizer.load_instructions(instructions)
+
 
     def _knowledge_paths(self, name: str, pattern: str) -> list[Path]:
         """Resolve one declared knowledge source to real files, loudly:

@@ -25,7 +25,7 @@ from typing import Any
 
 from .intent import Intent
 from .persona import Persona
-from .reasoning_log import model_name
+from .reasoning_log import calls_so_far, model_name, usage_since
 from .section import normalize
 from .step import Step
 from .workflow import Workflow
@@ -47,6 +47,7 @@ class Delegator:
             pool = workflow.delegated_personas()
             if not undelegated or not pool:
                 continue
+            start = calls_so_far(model_binding.lm)
             assignments = self._infer_with_llm(undelegated, pool, model_binding.lm)
             applied = self._apply(undelegated, pool, assignments)
             if applied and log is not None:
@@ -59,6 +60,7 @@ class Delegator:
                     },
                     output="; ".join(f"step {number} -> {persona.name}" for number, persona in applied),
                     model=model_name(model_binding),
+                    usage=usage_since(model_binding.lm, start),
                 )
         return plan
 

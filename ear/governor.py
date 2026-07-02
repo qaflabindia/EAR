@@ -9,7 +9,7 @@ from typing import Any
 
 from .intent import Intent
 from .policy import Policy
-from .reasoning_log import model_name
+from .reasoning_log import calls_so_far, model_name, usage_since
 
 
 @dataclass
@@ -49,8 +49,10 @@ class Governor:
         -- only by a human's approved verdict; a rejected verdict leaves it
         a violation like any other. The waiver never comes from the model."""
         log = getattr(runtime, "reasoning_log", None)
+        lm = getattr(model_binding, "lm", None)
         violations: list[Policy] = []
         for policy in policies:
+            start = calls_so_far(lm)
             complies, rationale = policy.judge(model_binding=model_binding, **intent.context)
 
             gated = not complies and policy.approval_required
@@ -81,6 +83,7 @@ class Governor:
                     output=output,
                     rationale=rationale,
                     model=model_name(model_binding),
+                    usage=usage_since(lm, start),
                 )
             if not complies and not waived:
                 violations.append(policy)

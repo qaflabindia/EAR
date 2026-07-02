@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .intent import Intent
+from .reasoning_log import calls_so_far, usage_since
 
 
 @dataclass
@@ -35,6 +36,7 @@ class Reasoner:
         model_binding = getattr(runtime, "model_binding", None)
         binder = getattr(runtime, "tool_binder", None)
         bound_tools = binder.bound_tools(runtime, plan) if binder is not None else []
+        deliberation_start = calls_so_far(getattr(model_binding, "lm", None))
         if model_binding is not None and model_binding.lm is not None:
             max_iterations = binder.max_iterations if binder is not None else 6
             decision = self._reason_with_llm(
@@ -64,6 +66,7 @@ class Reasoner:
                 },
                 output=str(decision),
                 model=model,
+                usage=usage_since(getattr(model_binding, "lm", None), deliberation_start),
             )
         return decision
 

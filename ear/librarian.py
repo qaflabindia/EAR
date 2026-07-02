@@ -27,7 +27,7 @@ from typing import Any, Optional
 
 from .intent import Intent
 from .knowledge import Knowledge, Passage
-from .reasoning_log import model_name
+from .reasoning_log import calls_so_far, model_name, usage_since
 
 
 @dataclass
@@ -55,6 +55,7 @@ class Librarian:
         if not candidates:
             return None
         model_binding = getattr(runtime, "model_binding", None)
+        start = calls_so_far(getattr(model_binding, "lm", None))
         if model_binding is not None and getattr(model_binding, "lm", None) is not None:
             chosen, rationale = self._judge_with_llm(intent, candidates, model_binding.lm)
         else:
@@ -77,6 +78,7 @@ class Librarian:
                 output="; ".join(research.citations) or "nothing judged relevant",
                 rationale=rationale,
                 model=model_name(model_binding),
+                usage=usage_since(getattr(model_binding, "lm", None), start),
             )
         return research
 

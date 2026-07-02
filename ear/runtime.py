@@ -52,7 +52,7 @@ from .performer import Performer
 from .policy import Policy
 from .process import Process
 from .reasoner import Reasoner
-from .reasoning_log import ReasoningLog, model_name
+from .reasoning_log import ReasoningLog, calls_so_far, model_name, usage_since
 from .recaller import Recaller
 from .scheduler import Scheduler
 from .selector import Selector
@@ -163,6 +163,8 @@ class Runtime:
             evidence.sources["data"] = data
         if research is not None and research.citations:
             evidence.sources["citations"] = list(research.citations)
+        active_lm = self.model_binding.lm if self.model_binding is not None else None
+        explanation_start = calls_so_far(active_lm)
         explanation = self.explainer.explain(evidence, decision, model_binding=self.model_binding)
         evidence.sources["explanation"] = explanation
         self.reasoning_log.record(
@@ -170,14 +172,15 @@ class Runtime:
             inputs={"basis": evidence.basis, "decision": str(decision)},
             output=str(explanation),
             model=model_name(self.model_binding),
+            usage=usage_since(active_lm, explanation_start),
         )
         self.auditor.audit(evidence, runtime=self, decision=decision)
 
-        active_lm = self.model_binding.lm if self.model_binding is not None else None
         entry = self.memory.record(
             intent.text, decision, context=intent.context, evidence=evidence, summarizer=active_lm
         )
         self.learner.learn(self.experience, entry)
+        adaptation_start = calls_so_far(active_lm)
         learned = self.adapter.adapt(self.adaptations, self.experience, summarizer=active_lm)
         if learned is not None:
             self.reasoning_log.record(
@@ -185,6 +188,7 @@ class Runtime:
                 inputs={"experience": self.experience.summary()},
                 output=learned.insight,
                 model=model_name(self.model_binding),
+                usage=usage_since(active_lm, adaptation_start),
             )
         if self.session_store is not None:
             self.session_store.save(self)
@@ -235,19 +239,22 @@ class Runtime:
         lm = self.model_binding.lm if self.model_binding is not None else None
         history = getattr(lm, "history", None) or []
         cycle_calls = history[calls_before:]
-        input_tokens = output_tokens = 0
-        cost = 0.0
+        input_tokens = output_tokens = retries = 0
         for call in cycle_calls:
             usage = call.get("usage") or {} if isinstance(call, dict) else {}
             input_tokens += int(usage.get("prompt_tokens") or 0)
             output_tokens += int(usage.get("completion_tokens") or 0)
-            call_cost = call.get("cost") if isinstance(call, dict) else None
-            cost += float(call_cost or 0.0)
+            retries += int(call.get("retries") or 0) if isinstance(call, dict) else 0
+        # Dollars only when the author declared Pricing in memory.md -- a
+        # figure nobody declared is never invented.
+        cost = self.strategy.dollars(input_tokens, output_tokens) if self.strategy is not None else None
         if cycle_calls:
-            summary = (
-                f"{len(cycle_calls)} model calls, {input_tokens}+{output_tokens} tokens, "
-                f"~${cost:.6f}, {latency_ms} ms"
-            )
+            summary = f"{len(cycle_calls)} model calls, {input_tokens}+{output_tokens} tokens"
+            if cost is not None:
+                summary += f", ~${cost:.6f}"
+            if retries:
+                summary += f", {retries} retried"
+            summary += f", {latency_ms} ms"
         elif lm is not None:
             # A bound model with no new history entries means the calls were
             # answered from the LM's cache -- which costs nothing, and the
@@ -261,7 +268,8 @@ class Runtime:
                 "model_calls": len(cycle_calls),
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
-                "cost": cost,
+                "retries": retries,
+                "cost": 0.0 if cost is None else cost,
                 "latency_ms": latency_ms,
             },
             output=summary,
@@ -303,6 +311,7 @@ class Runtime:
                     model=model_name(self.model_binding),
                 )
                 continue
+            start = calls_so_far(self.model_binding.lm)
             extracted = contract.extract(decision, intent, self.model_binding)
             conforms, rationale = contract.judge(extracted, self.model_binding)
             if not conforms:
@@ -314,6 +323,7 @@ class Runtime:
                 output="conformant" if conforms else "NONCONFORMING -- data withheld from the decision",
                 rationale=rationale,
                 model=model_name(self.model_binding),
+                usage=usage_since(self.model_binding.lm, start),
             )
             if conforms:
                 data.update(extracted)

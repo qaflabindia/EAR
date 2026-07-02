@@ -282,3 +282,7 @@ ChooseToolAction = Judgment(
         Field("decision", "The final decision, given only when no tool is called", "text"),
     ],
 )
+
+# The registry of every declared Judgment in this module, by name -- what
+# the Optimizer refines and what persisted instructions apply to.
+REGISTRY = {name: value for name, value in list(globals().items()) if isinstance(value, Judgment)}

@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 from .intent import Intent
 from .process import Process
-from .reasoning_log import model_name
+from .reasoning_log import calls_so_far, model_name, usage_since
 
 
 @dataclass
@@ -31,6 +31,7 @@ class Selector:
     def select(self, runtime: Any, candidates: list[Process], intent: Optional[Intent] = None) -> list[Process]:
         deduped = self._dedupe(candidates)
         model_binding = getattr(runtime, "model_binding", None)
+        start = calls_so_far(getattr(model_binding, "lm", None))
         selected = deduped
         if len(deduped) > 1 and intent is not None and model_binding is not None and model_binding.lm is not None:
             selected = self._select_with_llm(deduped, intent, model_binding.lm)
@@ -46,6 +47,7 @@ class Selector:
                 },
                 output=", ".join(process.name for process in selected),
                 model=model_name(model_binding),
+                usage=usage_since(getattr(model_binding, "lm", None), start),
             )
         return selected
 

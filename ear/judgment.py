@@ -56,11 +56,18 @@ class Field:
 class Judgment:
     """A declared reasoning task, rendered to a prompt and parsed from a
     markdown-section reply. Nothing here hardcodes an answer: the
-    instruction and field descriptions frame the task, the model decides."""
+    instruction and field descriptions frame the task, the model decides.
+
+    `demos` are worked examples -- dicts of field name -> value covering
+    the judgment's inputs and outputs -- rendered into the prompt in the
+    same section shape the model must answer in. The Optimizer selects
+    them from the runtime's own record (`select_demos`), and refined
+    instructions/demos persist as markdown (`save_instructions`)."""
 
     instruction: str
     inputs: list[Field] = field(default_factory=list)
     outputs: list[Field] = field(default_factory=list)
+    demos: list[dict[str, Any]] = field(default_factory=list)
 
     def run(self, lm: Any, **values: Any) -> SimpleNamespace:
         reply = lm.complete(self.render_prompt(values), system=self.instruction)
@@ -70,6 +77,13 @@ class Judgment:
 
     def render_prompt(self, values: dict[str, Any]) -> str:
         lines: list[str] = [self.instruction, ""]
+        for number, demo in enumerate(self.demos, start=1):
+            lines += [f"Worked example {number}:", ""]
+            for spec in self.inputs + self.outputs:
+                if spec.name in demo:
+                    lines += [f"## {spec.heading}", "", str(demo[spec.name]).strip(), ""]
+        if self.demos:
+            lines += ["Now the task at hand:", ""]
         for spec in self.inputs:
             lines += [f"## {spec.heading}", "", str(values.get(spec.name, "")).strip(), ""]
         lines += [

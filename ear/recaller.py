@@ -20,7 +20,7 @@ from typing import Any
 
 from .intent import Intent
 from .memory import Memory
-from .reasoning_log import model_name
+from .reasoning_log import calls_so_far, model_name, usage_since
 
 
 @dataclass
@@ -33,6 +33,7 @@ class Recaller:
         model_binding = getattr(runtime, "model_binding", None)
         if not window or model_binding is None or model_binding.lm is None:
             return window
+        start = calls_so_far(model_binding.lm)
         recalled = self._recall_with_llm(intent, window, model_binding.lm)
         log = getattr(runtime, "reasoning_log", None)
         if log is not None:
@@ -41,6 +42,7 @@ class Recaller:
                 inputs={"intent": intent.text, "history": window},
                 output=recalled or window,
                 model=model_name(model_binding),
+                usage=usage_since(model_binding.lm, start),
             )
         # An empty recall falls back to the full window: forgetting
         # everything is never the right reading of "nothing was relevant".

@@ -1430,6 +1430,232 @@ def test_approval_gate_parks_and_releases_live(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# N1: LM hardening, per-judgment accounting, pricing, instruction search,
+# demos and persisted instructions -- reasoning & optimization depth.
+# ---------------------------------------------------------------------------
+
+
+class FakeReply:
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    def read(self):
+        return json.dumps(self._payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+ANTHROPIC_REPLY = {
+    "content": [{"type": "text", "text": "## decision\n\nfine\n"}],
+    "usage": {"input_tokens": 12, "output_tokens": 5},
+}
+
+
+def test_lm_retries_transient_failures_and_records_them(monkeypatch):
+    import urllib.error
+
+    from ear.llm import LM
+
+    attempts = {"count": 0}
+
+    def flaky_urlopen(request, context=None, timeout=None):
+        attempts["count"] += 1
+        if attempts["count"] <= 2:
+            raise urllib.error.HTTPError(request.full_url, 529, "overloaded", {}, None)
+        return FakeReply(ANTHROPIC_REPLY)
+
+    monkeypatch.setattr("ear.llm.urllib.request.urlopen", flaky_urlopen)
+    monkeypatch.setattr("ear.llm.time.sleep", lambda seconds: None)
+
+    lm = LM(model="anthropic/test-model", api_key="k")
+    reply = lm.complete("anything")
+    assert "fine" in reply
+    assert attempts["count"] == 3
+    entry = lm.history[-1]
+    assert entry["retries"] == 2
+    assert entry["usage"] == {"prompt_tokens": 12, "completion_tokens": 5}
+    assert entry["latency_ms"] >= 0
+
+
+def test_lm_fails_fast_on_non_retryable_errors(monkeypatch):
+    import urllib.error
+
+    from ear.llm import LM, LMError
+
+    attempts = {"count": 0}
+
+    def unauthorized(request, context=None, timeout=None):
+        attempts["count"] += 1
+        raise urllib.error.HTTPError(request.full_url, 401, "unauthorized", {}, None)
+
+    monkeypatch.setattr("ear.llm.urllib.request.urlopen", unauthorized)
+    with pytest.raises(LMError, match="401"):
+        LM(model="anthropic/test-model", api_key="bad").complete("anything")
+    assert attempts["count"] == 1  # auth errors never retry
+
+
+class ScriptedLM:
+    """A stub LM answering with fixed markdown sections and recording
+    history the way the real one does."""
+
+    def __init__(self, replies=None):
+        self.replies = list(replies or [])
+        self.history = []
+        self.prompts = []
+
+    def complete(self, prompt, system=""):
+        self.prompts.append(prompt)
+        reply = self.replies.pop(0) if self.replies else "## decision\n\nok\n"
+        self.history.append(
+            {"usage": {"prompt_tokens": 10, "completion_tokens": 3}, "latency_ms": 7, "retries": 0}
+        )
+        return reply
+
+
+def test_per_judgment_usage_rides_the_stage_record():
+    from ear import ModelBinding, Policy
+
+    binding = ModelBinding(provider="anthropic", model="test")
+    binding.lm = ScriptedLM(["## complies\n\nyes\n\n## rationale\n\nWithin the cap.\n"])
+    runtime = Runtime(name="Accounted-Runtime", model_binding=binding)
+    runtime.add_policy(Policy(name="Cap", statement="Stay under the cap."))
+
+    runtime.governor.govern(runtime, Intent(text="check", context={"amount": 5}))
+    record = runtime.reasoning_log.for_stage("policy")[0]
+    assert record.input_tokens == 10 and record.output_tokens == 3
+    assert record.latency_ms == 7
+    assert "10+3 tok" in record.render()
+
+
+def test_fallback_judgments_are_never_billed(tmp_path):
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    runtime.reason(Intent(text="Underwrite a consumer loan", context={"loan_amount": 5000}))
+    for record in runtime.reasoning_log.records:
+        assert record.input_tokens == 0 and record.output_tokens == 0
+
+
+def test_pricing_is_declared_in_prose_and_prices_usage():
+    strategy = Strategy.from_markdown(
+        "## Pricing\n\nInput tokens cost $3 per million; output tokens cost $15 per million.\n"
+    )
+    assert strategy.input_rate_per_million == 3.0
+    assert strategy.output_rate_per_million == 15.0
+    assert strategy.dollars(1_000_000, 200_000) == pytest.approx(6.0)
+    assert Strategy().dollars(1000, 1000) is None  # undeclared -> never invented
+
+
+def test_usage_record_carries_dollars_only_when_priced():
+    from ear import ModelBinding
+
+    binding = ModelBinding(provider="anthropic", model="test")
+    binding.lm = ScriptedLM()
+    binding.lm.history.append({"usage": {"prompt_tokens": 1_000_000, "completion_tokens": 0}, "retries": 1})
+    runtime = Runtime(name="Priced-Runtime", model_binding=binding)
+    runtime.strategy = Strategy.from_markdown("## Pricing\n\nInput tokens cost $3 per million.\n")
+
+    runtime._record_usage(started=time.monotonic(), calls_before=0)
+    usage = runtime.reasoning_log.for_stage("usage")[0]
+    assert usage.inputs["cost"] == pytest.approx(3.0)
+    assert "~$3.0" in usage.output and "1 retried" in usage.output
+
+
+def test_search_refuses_without_a_model():
+    from ear import Optimizer
+    from ear.judgment import Field, Judgment
+    from ear.optimizer import Example
+
+    judgment = Judgment(instruction="Decide.", inputs=[Field("intent")], outputs=[Field("decision")])
+    with pytest.raises(ValueError, match="optimization is judgment"):
+        Optimizer().search(judgment, [Example(intent="x", decision="y")], model_binding=None)
+
+
+def test_demos_render_into_the_prompt_in_answer_shape():
+    from ear.judgment import Field, Judgment
+
+    judgment = Judgment(
+        instruction="Decide.",
+        inputs=[Field("intent")],
+        outputs=[Field("decision")],
+        demos=[{"intent": "a small loan", "decision": "approve"}],
+    )
+    prompt = judgment.render_prompt({"intent": "a big loan"})
+    assert "Worked example 1:" in prompt
+    assert prompt.index("a small loan") < prompt.index("Now the task at hand:") < prompt.index("a big loan")
+
+
+def test_select_demos_prefers_reviewed_examples_within_budget():
+    from ear import Optimizer
+    from ear.judgment import Field, Judgment
+    from ear.optimizer import Example
+    from ear.signatures import ReasonAboutIntent
+
+    judgment = Judgment(
+        instruction=ReasonAboutIntent.instruction,
+        inputs=list(ReasonAboutIntent.inputs),
+        outputs=list(ReasonAboutIntent.outputs),
+    )
+    examples = [
+        Example(intent="unreviewed", decision="maybe"),
+        Example(intent="approved one", decision="approve", verdict=True),
+        Example(intent="wrong one", decision="nonsense", verdict=False),
+    ]
+    demos = Optimizer().select_demos(judgment, examples, budget_chars=200)
+    assert demos[0]["intent"] == "approved one"  # reviewed first
+    assert all(demo["intent"] != "wrong one" for demo in demos)  # never the judged-wrong
+    assert judgment.demos == demos
+
+
+def test_instructions_persist_and_reload_with_demos(tmp_path):
+    from ear import Optimizer
+    from ear.judgment import Field, Judgment
+
+    judgment = Judgment(
+        instruction="The refined instruction.",
+        inputs=[Field("intent")],
+        outputs=[Field("decision")],
+        demos=[{"intent": "a loan", "decision": "approve"}],
+    )
+    optimizer = Optimizer()
+    path = optimizer.save_instructions(tmp_path / ".ear" / "instructions.md", {"MyJudgment": judgment})
+
+    fresh = Judgment(instruction="The shipped default.", inputs=[Field("intent")], outputs=[Field("decision")])
+    applied = optimizer.load_instructions(path, {"MyJudgment": fresh})
+    assert applied == ["MyJudgment"]
+    assert fresh.instruction == "The refined instruction."
+    assert fresh.demos == [{"intent": "a loan", "decision": "approve"}]
+
+
+@requires_anthropic_key
+def test_search_improves_or_keeps_the_baseline_live():
+    from ear import ModelBinding, Optimizer
+    from ear.judgment import Field, Judgment
+    from ear.optimizer import Example
+
+    binding = ModelBinding(provider="anthropic", model=os.environ.get("ANTHROPIC_TEST_MODEL", "claude-haiku-4-5"))
+    binding.activate()
+    # A scratch copy so the search never mutates the shared registry.
+    judgment = Judgment(
+        instruction="Decide approve or decline for the loan intent. Answer with one word.",
+        inputs=[Field("intent", "The loan request")],
+        outputs=[Field("decision", "approve or decline, one word", "str")],
+    )
+    examples = [
+        Example(intent="A $5,000 loan, credit score 790, no debts", decision="approve", verdict=True),
+        Example(intent="A $9,000 loan for a defaulted borrower with no income", decision="decline", verdict=True),
+    ]
+    outcome = Optimizer().search(
+        judgment, examples, model_binding=binding, generations=1, candidates=2, holdout=1.0
+    )
+    assert outcome.best_score >= outcome.baseline_score
+    assert outcome.evaluations >= 2
+    assert judgment.instruction  # the winner (or the kept baseline) is in place
+
+
+# ---------------------------------------------------------------------------
 # Observability: the trail fans out to exporters (a native protocol --
 # anything with export(record)) and every cycle carries usage accounting.
 # ---------------------------------------------------------------------------

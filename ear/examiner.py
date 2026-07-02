@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from .intent import Intent
-from .reasoning_log import model_name
+from .reasoning_log import calls_so_far, model_name, usage_since
 from .section import coerce, normalize, parse_document, quote
 
 REPORT_FILENAME = "report.md"
@@ -123,6 +123,8 @@ class Examiner:
             f"- {name}: {value}" for name, value in data.items()
         )
 
+        model_binding = getattr(runtime, "model_binding", None)
+        grade_start = calls_so_far(getattr(model_binding, "lm", None))
         passed, rationale = self._grade(runtime, expected_prose, expected_fields, graded_outcome, data)
         result = EvaluationResult(
             name=path.stem,
@@ -136,7 +138,8 @@ class Examiner:
             inputs={"evaluation": result.name, "expected": result.expected},
             output=result.verdict,
             rationale=rationale,
-            model="" if passed is None else model_name(getattr(runtime, "model_binding", None)),
+            model="" if passed is None else model_name(model_binding),
+            usage=usage_since(getattr(model_binding, "lm", None), grade_start),
         )
         runtime.reasoning_log.flush()
         return result

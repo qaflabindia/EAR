@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .evidence import Evidence
-from .reasoning_log import model_name
+from .reasoning_log import calls_so_far, model_name, usage_since
 
 
 @dataclass
@@ -32,6 +32,7 @@ class Auditor:
     def audit(self, evidence: Evidence, runtime: Any = None, decision: Any = None) -> Evidence:
         model_binding = getattr(runtime, "model_binding", None)
         if model_binding is not None and model_binding.lm is not None:
+            start = calls_so_far(model_binding.lm)
             assessment = self._assess_with_llm(evidence, decision, model_binding.lm)
             evidence.sources["audit_assessment"] = assessment
             log = getattr(runtime, "reasoning_log", None)
@@ -41,6 +42,7 @@ class Auditor:
                     inputs={"basis": evidence.basis, "decision": str(decision)},
                     output=assessment,
                     model=model_name(model_binding),
+                    usage=usage_since(model_binding.lm, start),
                 )
         evidence.sources.setdefault("audited", True)
         return evidence
