@@ -8,11 +8,18 @@ Instructor, evaluation in LangSmith/Phoenix, observability in Langfuse,
 tool ecosystems in LangChain. Adopting them all today means ten mental
 models, ten config formats, ten places governance can leak.
 
-EAR's position: **the stack the user authors never changes** — six
-natural-language markdown files, intents in, decisions out, every judgment
-on the audit trail — and each best-in-class capability plugs in *behind*
-an existing pipeline seam as an optional backend. The platforms compete on
-execution; EAR owns authoring, governance and the record.
+EAR's position — sharpened during Phase 4: **every capability is built as
+a native feature of EAR itself**, on its one core dependency (dspy). The
+stack the user authors never changes — six natural-language markdown
+files, intents in, decisions out, every judgment on the audit trail — and
+the capabilities live in `ear/` proper: Contracts, the Examiner, the
+ReasoningLog and usage accounting, Knowledge/Librarian, approval gates,
+the ToolBinder, Panels (multi-persona deliberation) and Journeys (durable
+step-wise execution). The modules under `ear/integrations/` are **optional
+interop only** — thin, lazily-imported bridges for teams that already run
+one of these platforms — never the capability itself, and never a core
+dependency. No further platform adapters are planned unless interop is
+explicitly needed.
 
 ```text
 Category              Best-in-class        EAR seam it plugs into              Extra
@@ -336,7 +343,7 @@ all          = [everything above]        # plus existing: evolve, skillopt, dev
 | **1 — Deepen the core** ✅ shipped | 1–3 | Contracts/structured outputs (3.2 — DSPy-native path; Instructor extra still open), trail→GEPA trainsets + verdicts + shared metric (3.1), Examiner + md evals (3.3) | eval suite in CI ✅; Data sections round-trip ✅ (offline codec + live extraction); GEPA improvement run: pending a labelled corpus |
 | **2 — Measure & retrieve** ✅ shipped | 4–6 | Trace exporters (3.4 — OTel adapter, one cycle per trace; Langfuse/Phoenix via their native OTLP ingestion; per-cycle usage records), Knowledge/RAG recall (3.5 — core Librarian + LlamaIndex retriever seam; URL sources and `[rag]` embedding indices still open), evaluation export (3.3 — evaluation records ride the trail exporters; LangSmith dataset push still open) | decisions carry citations ✅ (live); trail ↔ OTLP span equivalence ✅ (in-memory provider test); Langfuse round-trip against a live account: pending credentials |
 | **3 — Durable enterprise** ◐ approval gates shipped | 7–10 | Approval gates (3.7 ✅ on the markdown-native backend: `Approval: required` parks via `ApprovalRequired`, `approvals/<name>.md` releases through the Exchange, verdicts on the trail; verified offline + live). Temporal backend (3.6) ⏳ open: the dev-server binary cannot be downloaded in the build environment (temporal.download unreachable through the proxy), and unverifiable workflow code does not ship -- implement when a Temporal endpoint or vendored dev server is available | human approval releases a parked cycle ✅; mid-cycle crash recovery: pending the Temporal backend |
-| **4 — Ecosystem** ◐ tools, seam, graphs shipped | 11–14 | ToolBinder + LangChain tool binding (3.11 ✅: declared tools meet executables, ReAct deliberation, every invocation on the trail, failures contained; per-call policy denial of a specific tool still open). Deliberator `backend` seam (3.10 ✅ the seam, on the trail; the PydanticAI adapter itself ⏳ open). LangGraph compile (3.8 ✅: one node per authored step, every node a full governed cycle, halt-on-block routing, checkpointing verified with MemorySaver; a SessionStore-backed checkpointer ⏳ open). AutoGen patterns (3.9) ⏳ open — next slice | live: the model called the bound amortization calculator mid-deliberation, on the record ✅; graph execution preserves per-cycle trails and governance ✅ (offline, deterministic); backend-equivalent trails: pending the remaining adapters |
+| **4 — Ecosystem → native** ✅ reframed and shipped | 11–14 | ToolBinder + LangChain tool binding (3.11 ✅ native; per-call policy denial of a specific tool still open). Deliberator `backend` seam (3.10 ✅; **native Contracts already cover typed outputs — a PydanticAI adapter is dropped from scope**, the seam stays for teams that bring one). Multi-agent (3.9 ✅ **native `Panel`**: prose-authored deliberation patterns, turns on the trail, code-enforced budgets; **an AutoGen adapter is dropped from scope**). Stateful/durable execution (3.8 + 3.6 durability ✅ **native `Journey`**: leg-per-governed-cycle, markdown state, crash-resume, approval park/release, changed-stack refusal; LangGraph compile remains as optional interop; Temporal remains optional interop, environment-blocked). | live: a real four-turn adversarial panel debate on the record ✅; crash mid-journey resumed from the markdown record with one cycle ✅ (offline, deterministic); tools called mid-deliberation ✅ |
 
 Order rationale: Phase 1 makes quality measurable before anything else
 changes; Phase 2 makes it observable; Phase 3 makes it durable; Phase 4

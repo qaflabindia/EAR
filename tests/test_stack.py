@@ -891,6 +891,194 @@ def test_examiner_grades_the_example_suite_live(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Panels: multi-persona deliberation, native -- the pattern is prose in
+# workflow.md, turns and synthesis land on the trail, budgets are code.
+# ---------------------------------------------------------------------------
+
+PANEL_STACK = dict(
+    MINIMAL_STACK,
+    persona=(
+        "# Personas\n\n## Credit Risk Guru\nUnderwrite conservatively.\n\n"
+        "Skills: risk_grade\n\n"
+        "## Customer Advocate\nArgue the applicant's side plainly.\n\nSkills: decide\n"
+    ),
+    workflow=(
+        "# Workflows\n\n## Underwriting Workflow\n\n"
+        "Pattern: adversarial debate; the Credit Risk Guru has the last word\n\n"
+        "1. Assess the risk. (Credit Risk Guru)\n"
+        "2. Make the applicant's case. (Customer Advocate)\n"
+    ),
+)
+
+
+def test_pattern_is_authored_as_prose_on_the_workflow(tmp_path):
+    runtime = load_runtime(write_stack(tmp_path / "stack", **PANEL_STACK))
+    workflow = runtime.processes[0].workflows[0]
+    assert workflow.pattern == "adversarial debate; the Credit Risk Guru has the last word"
+
+
+def test_patterned_workflow_convenes_a_panel_offline(tmp_path):
+    runtime = load_runtime(write_stack(tmp_path / "stack", **PANEL_STACK))
+    decision = runtime.reason(Intent(text="Underwrite a marginal loan", context={"loan_amount": 5000}))
+
+    turns = runtime.reasoning_log.for_stage("conversation")
+    assert len(turns) == 4  # two rounds around a two-persona table
+    assert {record.inputs["speaker"] for record in turns} == {"Credit Risk Guru", "Customer Advocate"}
+    assert all("no model bound" in record.output for record in turns)
+
+    assert "Credit Risk Guru" in decision and "Customer Advocate" in decision
+    assert "no model bound" in decision  # the offline panel never fakes a judgment
+    deliberation = runtime.reasoning_log.for_stage("deliberation")[0]
+    assert deliberation.inputs["style"] == "adversarial debate; the Credit Risk Guru has the last word"
+    assert "[Credit Risk Guru]" in deliberation.inputs["transcript"]
+
+
+def test_pattern_with_a_single_persona_stays_single_voiced(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = (
+        "# Workflows\n\n## Underwriting Workflow\n\nPattern: debate\n\n"
+        "1. Decide approve or decline. (Credit Risk Guru)\n"
+    )
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    runtime.reason(Intent(text="Underwrite a loan", context={"loan_amount": 5000}))
+    assert runtime.reasoning_log.for_stage("conversation") == []
+
+
+def test_panel_budget_is_enforced_in_code():
+    from ear import Panel
+
+    runtime = Runtime(name="Budgeted-Runtime")
+    personas = [Persona(name="A"), Persona(name="B")]
+    Panel(rounds=50, max_turns=5).convene(runtime, personas, Intent(text="anything"))
+    assert len(runtime.reasoning_log.for_stage("conversation")) == 5
+
+
+@requires_anthropic_key
+def test_panel_debates_live(tmp_path):
+    stack = dict(PANEL_STACK)
+    stack["memory"] = LIVE_MEMORY
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    decision = runtime.reason(
+        Intent(
+            text="Underwrite a $9,000 personal loan for a marginal applicant",
+            context={"loan_amount": 9000, "credit_score": 668, "debt_to_income": 0.41},
+        )
+    )
+    turns = runtime.reasoning_log.for_stage("conversation")
+    assert len(turns) == 4
+    assert {record.inputs["speaker"] for record in turns} == {"Credit Risk Guru", "Customer Advocate"}
+    assert all(record.model == "anthropic/claude-haiku-4-5" for record in turns)
+    assert decision and "no model bound" not in decision
+
+
+# ---------------------------------------------------------------------------
+# Journeys: durable, resumable, step-wise execution -- every leg a full
+# governed cycle, the state a markdown record, native.
+# ---------------------------------------------------------------------------
+
+
+def test_journey_completes_and_is_settled(tmp_path):
+    from ear import Journey
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    runtime = load_runtime(directory)
+    journey = Journey(directory / "journeys" / "loan.md")
+
+    status = journey.run(runtime, Intent(text="Underwrite a consumer loan", context={"loan_amount": 5000}))
+    assert status == "completed"
+    assert [leg.status for leg in journey.legs] == ["decided", "decided"]
+    assert "Credit Risk Runtime" in journey.decision
+    record = (directory / "journeys" / "loan.md").read_text(encoding="utf-8")
+    assert "Status: completed" in record and "## Leg 2" in record
+    assert runtime.reasoning_log.cycle == 2  # every leg was a full governed cycle
+
+    # Settled: running again replays nothing.
+    again = Journey(directory / "journeys" / "loan.md")
+    assert again.run(runtime) == "completed"
+    assert runtime.reasoning_log.cycle == 2
+
+
+def test_journey_survives_a_crash_and_resumes_where_the_record_ends(tmp_path):
+    from ear import Journey
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    runtime = load_runtime(directory)
+    calls = {"count": 0}
+    orchestrate = runtime.orchestrator.orchestrate
+
+    def crash_on_second(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("worker died mid-journey")
+        return orchestrate(*args, **kwargs)
+
+    runtime.orchestrator.orchestrate = crash_on_second
+    journey = Journey(directory / "journeys" / "loan.md")
+    with pytest.raises(RuntimeError, match="worker died"):
+        journey.run(runtime, Intent(text="Underwrite a consumer loan", context={"loan_amount": 5000}))
+
+    record = (directory / "journeys" / "loan.md").read_text(encoding="utf-8")
+    assert "Status: in progress" in record and "## Leg 1" in record and "## Leg 2" not in record
+
+    # A fresh runtime resumes exactly where the record ends.
+    recovered = load_runtime(directory)
+    resumed = Journey(directory / "journeys" / "loan.md")
+    assert resumed.run(recovered) == "completed"
+    assert recovered.reasoning_log.cycle == 1  # only the lost leg was walked
+    assert resumed.legs[0].decision  # leg one's decision came from the record, not a replay
+
+
+def test_journey_blocks_hard_and_parks_for_approval(tmp_path):
+    from ear import Approval, Journey
+
+    directory = approval_stack(tmp_path)
+    runtime = load_runtime(directory)
+    journey = Journey(directory / "journeys" / "big-loan.md")
+    status = journey.run(runtime, Intent(text="Underwrite a large loan", context={"loan_amount": 60000}))
+    assert status == "PENDING APPROVAL"
+    cycles_when_parked = runtime.reasoning_log.cycle
+
+    # Without a verdict the journey stays parked and replays nothing.
+    assert Journey(journey.path).run(runtime) == "PENDING APPROVAL"
+    assert runtime.reasoning_log.cycle == cycles_when_parked
+
+    released = Journey(journey.path)
+    assert released.run(runtime, approval=Approval(verdict=True, approver="lakshmi@gigkri.com")) == "completed"
+    assert "approved by lakshmi@gigkri.com" in [r.output for r in runtime.reasoning_log.for_stage("approval")]
+
+    blocked = Journey(directory / "journeys" / "huge-loan.md")
+    assert blocked.run(runtime, Intent(text="Underwrite a huge loan", context={"loan_amount": 90000})) == "BLOCKED"
+    assert "Status: BLOCKED" in blocked.path.read_text(encoding="utf-8")
+
+
+def test_journey_refuses_to_resume_over_a_changed_stack(tmp_path):
+    from ear import Journey
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    runtime = load_runtime(directory)
+    journey = Journey(directory / "journeys" / "loan.md")
+    journey.run(runtime, Intent(text="Underwrite a consumer loan", context={"loan_amount": 5000}))
+
+    changed = (directory / "workflow.md").read_text(encoding="utf-8").replace(
+        "Band the profile and assign a risk grade.", "Do something entirely different."
+    )
+    (directory / "workflow.md").write_text(changed, encoding="utf-8")
+    with pytest.raises(ValueError, match="forge the record"):
+        Journey(journey.path).run(load_runtime(directory))
+
+
+def test_journey_first_run_needs_an_intent_and_a_stack(tmp_path):
+    from ear import Journey
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    runtime = load_runtime(directory)
+    with pytest.raises(ValueError, match="needs an intent"):
+        Journey(directory / "journeys" / "empty.md").run(runtime)
+    with pytest.raises(ValueError, match="no workflow steps"):
+        Journey(tmp_path / "nowhere.md").run(Runtime(name="Empty-Runtime"), Intent(text="x"))
+
+
+# ---------------------------------------------------------------------------
 # LangGraph: the stack compiled to a graph -- every node a full governed
 # cycle, halting at the first non-decided status, checkpointable.
 # ---------------------------------------------------------------------------

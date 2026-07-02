@@ -159,6 +159,7 @@ deliberation  the Reasoner's decision, with the full stacked capabilities
               block and memory context -- the exact prompt material to review
 recall        what was recalled from memory as relevant to this intent
 retrieval     which knowledge passages were consulted, with citations
+conversation  each panel turn: speaker, round, statement
 tool          each tool invocation: arguments, result, duration (failures too)
 approval      a human verdict on a parked gate, or the park itself
 usage         the cycle's accounting: model calls, tokens, cost, latency
@@ -181,7 +182,53 @@ print(runtime.reasoning_log.render())                      # the skim view
 runtime.reasoning_log.for_stage("deliberation")[-1].inputs  # the full prompt material
 ```
 
-### LangGraph — the stack as a graph, governance intact
+### Panels — multi-persona deliberation, native
+
+A workflow authored with a `Pattern:` line convenes its personas as a
+panel instead of reasoning single-voiced — and the pattern is **prose,
+not an enum**: it goes into the prompt verbatim, so the deliberation
+style is itself a natural-language instruction, never a hardcoded
+protocol:
+
+```markdown
+## Underwriting Workflow
+
+Pattern: adversarial debate; the Credit Risk Guru has the last word
+
+1. Assess the risk. (Credit Risk Guru)
+2. Make the applicant's case. (Customer Advocate)
+```
+
+Each turn one persona speaks — instructions and stacked skills in hand,
+the transcript in view — and a synthesis concludes the panel into the one
+decision the pipeline continues with. Governance is untouched: the
+Governor gated the cycle before the panel sat, the Validator and
+Contracts still check the synthesis, every turn is a trail record (stage
+`conversation`) and the synthesis is the cycle's `deliberation`. Budgets
+are code: `rounds` and a hard `max_turns` cap. Offline the panel never
+fakes a debate — it reports who would have deliberated, and says so.
+
+### Journeys — durable, resumable execution, native
+
+`Journey` walks the authored stack one step at a time, each leg a **full
+governed cycle** (gates, knowledge, tools, trail, memory all apply),
+writing its state to a markdown record after every leg:
+
+```python
+from ear import Journey
+journey = Journey("journeys/big-loan.md")
+journey.run(runtime, intent)      # crash mid-journey? the record has every walked leg
+journey.run(fresh_runtime)        # resumes exactly where the record ends
+```
+
+A hard block ends the journey (`BLOCKED`); an approval gate parks it
+(`PENDING APPROVAL`) until `run` is called again with the human's
+`Approval`; a completed journey is settled and replays nothing. The
+record is the same natural language as everything else — and a journey
+refuses to resume over a stack whose steps no longer match the legs it
+already walked: continuing a changed plan would forge the record.
+
+### LangGraph — the same stack as a graph, for interop only
 
 `pip install 'ear[langgraph]'` and the authored stack compiles to a
 LangGraph — one node per workflow step, in authored order, each carrying
@@ -571,6 +618,8 @@ ear/
   workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies
   approval.py      Approval      — a human's verdict on a parked cycle; ApprovalRequired parks it
   tool_binder.py   ToolBinder    — declared tools meet executables; every invocation on the trail
+  panel.py         Panel         — multi-persona deliberation in authored prose patterns, native
+  journey.py       Journey       — durable, resumable step-wise execution; the state a markdown record
   contract.py      Contract      — a workflow's Deliverable: fields with plain-English meanings, extracted and judged at runtime
   examiner.py      Examiner      — examine: run markdown-native evaluations and grade them, honestly offline
   knowledge.py     Knowledge     — the declared reference corpus, chunked through the Section parser

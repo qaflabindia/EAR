@@ -38,4 +38,26 @@ class Deliberator:
                     model=f"backend:{type(self.backend).__name__}",
                 )
             return decision
+        style, personas = self._panel_call(plan)
+        if style and len(personas) >= 2:
+            return runtime.panel.convene(runtime, personas, intent, style=style)
         return runtime.reasoner.reason(intent, runtime=runtime, plan=plan, research=research)
+
+    @staticmethod
+    def _panel_call(plan: Any) -> tuple[str, list]:
+        """The authored deliberation pattern of the scheduled plan, if any,
+        and the personas it convenes. A pattern with fewer than two
+        personas has nobody to deliberate with, so single-voiced reasoning
+        proceeds as usual."""
+        styles: list[str] = []
+        personas: list[Any] = []
+        seen: set[int] = set()
+        for workflow in plan or []:
+            if not getattr(workflow, "pattern", ""):
+                continue
+            styles.append(workflow.pattern)
+            for persona in workflow.delegated_personas():
+                if id(persona) not in seen:
+                    seen.add(id(persona))
+                    personas.append(persona)
+        return "; ".join(styles), personas

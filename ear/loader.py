@@ -202,8 +202,8 @@ class Loader:
                     )
                 last_workflow.contract = self._load_contract(section, last_workflow)
                 continue
-            body = section.body(field_keys=("persona", "delegate to", "delegate", "policies", "policy"))
-            workflow = Workflow(name=section.name)
+            body = section.body(field_keys=("persona", "delegate to", "delegate", "policies", "policy", "pattern"))
+            workflow = Workflow(name=section.name, pattern=body.field("pattern"))
             default_persona: Optional[Persona] = None
             default_reference = body.field("persona", "delegate to", "delegate")
             if default_reference:

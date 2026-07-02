@@ -123,6 +123,32 @@ class SelectRelevantPassages(dspy.Signature):
     rationale: str = dspy.OutputField(desc="One sentence explaining the choice")
 
 
+class SpeakInPanel(dspy.Signature):
+    """Speak one turn in a panel deliberation, entirely as the given
+    persona: follow its standing instructions and stacked skills, engage
+    concretely with what earlier speakers said (agree, challenge, or add
+    -- never merely restate), honor the authored deliberation pattern, and
+    keep the turn to a few sentences."""
+
+    intent_text: str = dspy.InputField(desc="What the panel is deliberating")
+    persona: str = dspy.InputField(desc="Who is speaking: instructions and stacked skills")
+    pattern: str = dspy.InputField(desc="The authored deliberation pattern, in plain English")
+    transcript: str = dspy.InputField(desc="The turns so far, speakers bracketed")
+    statement: str = dspy.OutputField(desc="This persona's turn, a few sentences")
+
+
+class SynthesizePanel(dspy.Signature):
+    """Conclude a panel deliberation into one decision: weigh what each
+    speaker established, resolve disagreements the way the authored
+    pattern directs, and state the single concrete outcome with the
+    decisive reasoning -- never a hedge between positions."""
+
+    intent_text: str = dspy.InputField(desc="What the panel deliberated")
+    pattern: str = dspy.InputField(desc="The authored deliberation pattern, in plain English")
+    transcript: str = dspy.InputField(desc="The full deliberation, speakers bracketed")
+    decision: str = dspy.OutputField(desc="The panel's single concluded decision, with its reasoning")
+
+
 class RecallRelevantMemory(dspy.Signature):
     """From the runtime's remembered history, recall what is genuinely
     relevant to the intent at hand -- prior decisions, amounts and

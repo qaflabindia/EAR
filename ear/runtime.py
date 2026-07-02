@@ -47,6 +47,7 @@ from .librarian import Librarian
 from .memory import Memory
 from .model_binding import ModelBinding
 from .orchestrator import Orchestrator
+from .panel import Panel
 from .performer import Performer
 from .policy import Policy
 from .process import Process
@@ -85,6 +86,7 @@ class Runtime:
     session_store: Optional[Any] = None
     spawner: Spawner = field(default_factory=Spawner)
     tool_binder: ToolBinder = field(default_factory=ToolBinder)
+    panel: Panel = field(default_factory=Panel)
 
     # The audit trail of every reasoning step -- policy judgments with
     # their rationale, discovery, the deliberation with the full stacked

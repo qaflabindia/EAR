@@ -32,6 +32,10 @@ class Workflow:
     steps: list[Step] = field(default_factory=list)
     policies: list[Policy] = field(default_factory=list)
     contract: Optional[Contract] = None
+    # A deliberation pattern in plain English (`Pattern:` in workflow.md),
+    # e.g. "adversarial debate, the risk officer has the last word" --
+    # prose the Panel follows, never an enum.
+    pattern: str = ""
 
     def add_persona(self, persona: Persona) -> "Workflow":
         self.personas.append(persona)

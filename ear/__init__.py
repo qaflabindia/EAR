@@ -74,6 +74,7 @@ from .explainer import Explainer
 from .governor import Governor
 from .initializer import Initializer
 from .intent import Intent
+from .journey import Journey, Leg
 from .knowledge import Knowledge, Passage
 from .learner import Learner
 from .librarian import Librarian, Research
@@ -84,6 +85,7 @@ from .model_binding import ModelBinding
 from .ontology import Ontology
 from .optimizer import Optimizer
 from .orchestrator import Orchestrator
+from .panel import Panel, Turn
 from .performer import Performer
 from .persona import Persona
 from .policy import Policy
@@ -152,6 +154,10 @@ __all__ = [
     "Passage",
     "Librarian",
     "Research",
+    "Journey",
+    "Leg",
+    "Panel",
+    "Turn",
     "Examiner",
     "Examination",
     "EvaluationResult",
