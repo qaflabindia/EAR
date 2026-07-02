@@ -115,10 +115,11 @@ class ReasoningLog:
     file at `path` and fanned out to any attached `exporters`.
 
     An exporter is anything with `export(record)` (and optionally
-    `flush()`) -- e.g. `ear.integrations.otel_backend.OpenTelemetryExporter`
-    for Langfuse/Phoenix/any OTLP backend. The file on disk stays the
-    canonical record: an exporter that raises never breaks a cycle, its
-    failure is kept visible in `export_errors` instead."""
+    `flush()`) -- a native protocol, so shipping the trail to any external
+    system is a few lines of your own code, never a dependency of EAR's.
+    The file on disk stays the canonical record: an exporter that raises
+    never breaks a cycle, its failure is kept visible in `export_errors`
+    instead."""
 
     path: str = ""
     records: list[ReasoningRecord] = field(default_factory=list)

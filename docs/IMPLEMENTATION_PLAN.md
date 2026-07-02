@@ -8,33 +8,47 @@ Instructor, evaluation in LangSmith/Phoenix, observability in Langfuse,
 tool ecosystems in LangChain. Adopting them all today means ten mental
 models, ten config formats, ten places governance can leak.
 
-EAR's position — sharpened during Phase 4: **every capability is built as
-a native feature of EAR itself**, on its one core dependency (dspy). The
-stack the user authors never changes — six natural-language markdown
-files, intents in, decisions out, every judgment on the audit trail — and
-the capabilities live in `ear/` proper: Contracts, the Examiner, the
-ReasoningLog and usage accounting, Knowledge/Librarian, approval gates,
-the ToolBinder, Panels (multi-persona deliberation) and Journeys (durable
-step-wise execution). The modules under `ear/integrations/` are **optional
-interop only** — thin, lazily-imported bridges for teams that already run
-one of these platforms — never the capability itself, and never a core
-dependency. No further platform adapters are planned unless interop is
-explicitly needed.
+EAR's position — final form: **EAR is an independent package with zero
+dependencies, and every capability is a native feature of EAR itself.**
+The LLM is spoken to directly over HTTPS from the Python standard library
+(`ear/llm.py`: Anthropic natively, any OpenAI-compatible endpoint);
+structured prompting is native (`ear/judgment.py`: the model answers in
+markdown sections, parsed by the same Section codec the stack is authored
+with); and the capabilities live in `ear/` proper: Contracts, the
+Examiner, the ReasoningLog and usage accounting, Knowledge/Librarian,
+approval gates, the ToolBinder with its native tool loop, Panels
+(multi-persona deliberation), Journeys (durable step-wise execution) and
+native reflective instruction refinement. The former `ear/integrations/`
+directory is **removed**: the seams those adapters sat on (the exporter
+protocol, the Librarian's retriever, the Deliberator's backend, the
+ToolBinder's callables) are native and open, so anyone can bridge a
+platform in a few lines of their own code — but EAR ships none and
+depends on none. The stack the user authors never changed shape through
+any of this.
 
 ```text
-Category              Best-in-class        EAR seam it plugs into              Extra
---------------------  -------------------  ----------------------------------  --------------
-Prompt Optimization   DSPy + GEPA          Reasoner / Optimizer / ReasoningLog  (core today)
-Structured Outputs    Instructor           Decider / Validator / Exchange       [structured]
-Evaluation            LangSmith / Phoenix  Examiner (new) / ReasoningLog        [evals]
-Observability         Langfuse             ReasoningLog exporters               [observability]
-RAG                   LlamaIndex           Recaller / memory.md Knowledge       [rag]
-Workflow Runtime      Temporal             Orchestrator / Executor              [temporal]
-Enterprise Governance Temporal             Governor approval gates              [temporal]
-Stateful Agent Graphs LangGraph            Composer/Scheduler -> graph compile  [langgraph]
-Multi-Agent           AutoGen              Spawner / Workflow personas          [autogen]
-Typed Agents          PydanticAI           Deliberator / Persona                [typed]
-Integrations          LangChain            Tool & McpServer execution binding   [langchain]
+Category              Inspired by           EAR-native feature (shipped, zero-dep)
+--------------------  --------------------  -----------------------------------------------
+Prompt Optimization   DSPy + GEPA           Optimizer: trail-fed examples, reviewer verdicts,
+                                            native reflective instruction refinement
+Structured Outputs    Instructor            Contracts: Deliverable sections, judged conformance,
+                                            ## Data round-trip
+Evaluation            LangSmith / Phoenix   Examiner: markdown evals, honest offline grading
+Observability         Langfuse              ReasoningLog: md/JSONL trail, exporter protocol,
+                                            per-cycle usage accounting
+RAG                   LlamaIndex            Knowledge + Librarian: cited retrieval, open
+                                            retriever seam
+Workflow Runtime      Temporal              Journey: durable leg-per-cycle execution, markdown
+                                            state, crash-resume
+Enterprise Governance Temporal              Approval gates: parked cycles, approvals/*.md
+Stateful Agent Graphs LangGraph             Journey (sequential today; branching authored in
+                                            prose is the open sliver)
+Multi-Agent           AutoGen               Panel: prose-authored deliberation patterns,
+                                            budgeted, on the trail
+Typed Agents          PydanticAI            Contracts + the Deliberator backend seam
+Tool Ecosystems       LangChain             ToolBinder + the native tool loop; any callable binds
+LLM Access            LiteLLM / SDKs        ear/llm.py: stdlib HTTPS client, provider wire formats
+Structured Prompting  DSPy                  ear/judgment.py: markdown-section answers, one codec
 ```
 
 ---
@@ -53,8 +67,9 @@ Integrations          LangChain            Tool & McpServer execution binding   
   record.
 - **Memory**: Evidence / Memory / Experience / Adaptation layers,
   cross-session `SessionStore` (.md), subagent `Spawner` with budgets.
-- **Optimization hooks**: GEPA on the Reasoner, openevolve (`[evolve]`),
-  SkillOpt (`[skillopt]`).
+- **Optimization**: native — trail-fed examples, reviewer verdicts, and
+  reflective instruction refinement (`Optimizer.refine` /
+  `refine_reasoner`).
 
 ## 2. Non-negotiables — every integration obeys these
 
@@ -65,22 +80,26 @@ Integrations          LangChain            Tool & McpServer execution binding   
    reason, but policy blocks, budgets, validation and audit writing stay
    in EAR code, whatever platform runs underneath.
 3. **Deterministic fallback always.** Every capability degrades cleanly
-   when its platform (or a model) is absent — the core package keeps
-   exactly one hard dependency (dspy).
-4. **Everything lands on the trail.** A backend that reasons, retrieves,
+   when a model is absent — and never fakes a judgment nobody made.
+4. **Everything lands on the trail.** Anything that reasons, retrieves,
    converses or executes writes stage-labelled `ReasoningLog` records; a
    capability that can't be audited doesn't ship.
-5. **Adapters, not bindings.** One file per platform under
-   `ear/integrations/`, imported lazily, installed via extras
-   (`pip install ear[temporal]`), tested behind skip-markers. EAR classes
-   never subclass platform classes; platform objects are built *from*
-   EAR's stack at the seam.
+5. **Zero dependencies, open seams.** EAR ships no platform code and takes
+   no third-party dependency; external systems attach through native seams
+   (exporters, retriever, deliberation backend, tool callables) written by
+   the user, in the user's code.
 6. **Secrets by environment-variable name only** — in memory.md prose and
-   in adapter config alike.
+   everywhere else.
 
 ---
 
 ## 3. Capability plans
+
+> **Historical design notes.** These sections were written when the plan
+> mapped capabilities onto platform adapters. Where they describe an
+> adapter or an extra, the capability shipped **native** instead — see the
+> table in the introduction for what actually exists. They are kept as the
+> rationale record for each capability's requirements.
 
 ### 3.1 Prompt Optimization — DSPy + GEPA (deepen what's core)
 
@@ -316,25 +335,17 @@ blocks the call.
 ## 4. Packaging & dependency policy
 
 ```toml
+dependencies = []                 # EAR is an independent package
 [project.optional-dependencies]
-structured   = ["instructor>=1.4"]
-evals        = ["langsmith>=0.1", "arize-phoenix-otel>=0.6"]
-observability= ["langfuse>=2.50", "opentelemetry-sdk>=1.25"]
-rag          = ["llama-index-core>=0.11"]
-temporal     = ["temporalio>=1.6"]
-langgraph    = ["langgraph>=0.2"]
-autogen      = ["autogen-agentchat>=0.4"]
-typed        = ["pydantic-ai>=0.0.30"]
-langchain    = ["langchain-core>=0.3"]
-all          = [everything above]        # plus existing: evolve, skillopt, dev
+dev = ["pytest>=7"]               # tests only; nothing else, ever
 ```
 
-- Core dependency remains **dspy only**. Every adapter is one module in
-  `ear/integrations/`, lazily imported, with a `RuntimeError` naming the
-  extra to install when missing.
-- Version policy: floor-pin (`>=`), adapter test suites marked
-  `@requires_<platform>`, run in a CI matrix so ecosystem churn breaks a
-  matrix cell, never the core.
+- **Zero runtime dependencies** is a shipping invariant, verified in CI by
+  running the full suite in an environment with every third-party package
+  uninstalled.
+- Bridging to an external platform is the *user's* few lines against a
+  native seam (exporters, retriever, deliberation backend, tool
+  callables), never a module EAR ships or a dependency EAR takes.
 
 ## 5. Phasing
 

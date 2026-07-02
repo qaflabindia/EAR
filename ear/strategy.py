@@ -49,7 +49,7 @@ _TEMPERATURE = re.compile(r"temperature\s*(?:of|=|:|at)?\s*([0-9]*\.?[0-9]+)", r
 _URL = re.compile(r"\bhttps?://[^\s`,)]+", re.IGNORECASE)
 
 # Vocabulary for reading a provider out of prose ("Reason with anthropic's
-# claude-opus-4-8..."). The unambiguous form is the LiteLLM id with a slash
+# claude-opus-4-8..."). The unambiguous form is the provider/model id with a slash
 # ("anthropic/claude-opus-4-8"), which needs no vocabulary at all.
 _PROVIDERS = (
     "anthropic",
@@ -108,11 +108,10 @@ class Strategy:
     # Skills discovery guidance -> Discoverer.
     skills_discovery: str = ""
 
-    # Reasoning audit trail -> ReasoningLog persistence (and export).
+    # Reasoning audit trail -> ReasoningLog persistence.
     audit_trail: str = ""
     audit_enabled: bool = False
     audit_path: str = ""
-    audit_export_requested: bool = False
 
     # Knowledge -> the Librarian's reference corpus.
     knowledge: str = ""
@@ -167,10 +166,6 @@ class Strategy:
         self.audit_trail = prose
         self.audit_enabled = not _DISABLED.search(prose)
         self.audit_path = _declared_path(prose)
-        # Naming an OTLP-ingesting platform in the audit prose asks the
-        # loader to attach the OpenTelemetry exporter alongside the file.
-        words = {word.strip(".,;:()`'\"") for word in prose.lower().split()}
-        self.audit_export_requested = bool(words & {"opentelemetry", "otlp", "otel", "langfuse", "phoenix"})
 
     def _read_knowledge(self, body: Body) -> None:
         self.knowledge = body.prose

@@ -25,11 +25,7 @@ class Explainer:
 
     @staticmethod
     def _explain_with_llm(evidence: Evidence, decision: Any, lm: Any) -> str:
-        import dspy
-
         from .signatures import ExplainDecision
 
-        explainer = dspy.Predict(ExplainDecision)
-        with dspy.context(lm=lm):
-            result = explainer(basis=evidence.basis, decision=str(decision))
+        result = ExplainDecision.run(lm, basis=evidence.basis, decision=str(decision))
         return result.explanation

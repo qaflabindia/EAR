@@ -48,11 +48,7 @@ class Recaller:
 
     @staticmethod
     def _recall_with_llm(intent: Intent, window: str, lm: Any) -> str:
-        import dspy
-
         from .signatures import RecallRelevantMemory
 
-        recaller = dspy.Predict(RecallRelevantMemory)
-        with dspy.context(lm=lm):
-            result = recaller(intent_text=intent.text, history=window)
+        result = RecallRelevantMemory.run(lm, intent_text=intent.text, history=window)
         return str(result.relevant_context).strip()

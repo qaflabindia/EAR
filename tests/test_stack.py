@@ -826,13 +826,38 @@ def test_optimizer_reads_reviewer_verdicts_and_excludes_the_unlabelled(tmp_path)
 
 
 def test_optimizer_metric_offline_uses_normalized_containment():
-    from types import SimpleNamespace
-
     from ear import Optimizer
 
     metric = Optimizer().metric(None)
-    assert metric(SimpleNamespace(decision="approve the loan"), "I would approve the loan today.") == 1.0
-    assert metric(SimpleNamespace(decision="approve the loan"), "Declined outright.") == 0.0
+    assert metric("approve the loan", "I would approve the loan today.") == 1.0
+    assert metric("approve the loan", "Declined outright.") == 0.0
+
+
+def test_optimizer_refine_is_a_no_op_without_a_model():
+    from ear import Optimizer
+    from ear.optimizer import Example
+    from ear.signatures import ReasonAboutIntent
+
+    before = ReasonAboutIntent.instruction
+    result = Optimizer().refine(ReasonAboutIntent, [Example(intent="x", decision="y")], model_binding=None)
+    assert result == before  # reflection is a judgment; no model, no change
+
+
+def test_native_judgment_parses_markdown_sections_from_a_stub_lm():
+    from ear.judgment import Field, Judgment
+
+    class StubLM:
+        def complete(self, prompt, system=""):
+            return "## complies\n\nyes\n\n## rationale\n\nThe amount is within the limit.\n"
+
+    judgment = Judgment(
+        instruction="Judge it.",
+        inputs=[Field("context")],
+        outputs=[Field("complies", kind="bool"), Field("rationale", kind="text")],
+    )
+    result = judgment.run(StubLM(), context="amount 5")
+    assert result.complies is True
+    assert "within the limit" in result.rationale
 
 
 # ---------------------------------------------------------------------------
@@ -1078,92 +1103,6 @@ def test_journey_first_run_needs_an_intent_and_a_stack(tmp_path):
         Journey(tmp_path / "nowhere.md").run(Runtime(name="Empty-Runtime"), Intent(text="x"))
 
 
-# ---------------------------------------------------------------------------
-# LangGraph: the stack compiled to a graph -- every node a full governed
-# cycle, halting at the first non-decided status, checkpointable.
-# ---------------------------------------------------------------------------
-
-
-def test_compiled_graph_runs_each_step_as_a_governed_cycle(tmp_path):
-    pytest.importorskip("langgraph", reason="langgraph not installed")
-    from ear.integrations.langgraph_backend import compile_to_graph
-
-    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
-    graph = compile_to_graph(runtime)
-    final = graph.invoke({"intent": "Underwrite a consumer loan", "context": {"loan_amount": 5000}})
-
-    assert final["status"] == "decided"
-    assert [entry["step"] for entry in final["steps"]] == [
-        "Band the profile and assign a risk grade.",
-        "Decide approve or decline against the grade.",
-    ]
-    assert "Credit Risk Runtime" in final["decision"]
-    # Second step reasoned with the first step's conclusion in view.
-    assert "Earlier steps concluded" not in final["steps"][0]["decision"]
-    # Each node was a full governed cycle: two cycles on the trail, two
-    # memories, policies judged in both.
-    assert runtime.reasoning_log.cycle == 2
-    assert len(runtime.memory.working) == 2
-    assert len(runtime.reasoning_log.for_stage("policy")) >= 2
-
-
-def test_compiled_graph_halts_at_the_first_blocked_step(tmp_path):
-    pytest.importorskip("langgraph", reason="langgraph not installed")
-    from ear.integrations.langgraph_backend import compile_to_graph
-
-    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
-    final = compile_to_graph(runtime).invoke(
-        {"intent": "Underwrite an oversized loan", "context": {"loan_amount": 90000}}
-    )
-    assert final["status"] == "BLOCKED"
-    assert "Loan Amount Cap" in final["decision"]
-    assert len(final["steps"]) == 1  # the gate stopped the graph, not just the step
-
-
-def test_compiled_graph_checkpoints_between_steps(tmp_path):
-    pytest.importorskip("langgraph", reason="langgraph not installed")
-    from langgraph.checkpoint.memory import MemorySaver
-
-    from ear.integrations.langgraph_backend import compile_to_graph
-
-    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
-    graph = compile_to_graph(runtime, checkpointer=MemorySaver())
-    config = {"configurable": {"thread_id": "underwriting-1"}}
-    graph.invoke({"intent": "Underwrite a consumer loan", "context": {"loan_amount": 5000}}, config)
-
-    saved = graph.get_state(config).values
-    assert saved["status"] == "decided"
-    assert len(saved["steps"]) == 2
-
-
-def test_runtime_node_routes_governance_as_status(tmp_path):
-    pytest.importorskip("langgraph", reason="langgraph not installed")
-    from langgraph.graph import END, StateGraph
-
-    from ear.integrations.langgraph_backend import StackState, runtime_node
-
-    runtime = load_runtime(approval_stack(tmp_path))
-    graph = StateGraph(StackState)
-    graph.add_node("ear", runtime_node(runtime))
-    graph.set_entry_point("ear")
-    graph.add_edge("ear", END)
-    compiled = graph.compile()
-
-    decided = compiled.invoke({"intent": "Underwrite a small loan", "context": {"loan_amount": 5000}})
-    assert decided["status"] == "decided"
-
-    parked = compiled.invoke({"intent": "Underwrite a large loan", "context": {"loan_amount": 60000}})
-    assert parked["status"] == "PENDING APPROVAL"
-    assert "Large Loan Human Approval" in parked["decision"]
-
-
-def test_compile_to_graph_refuses_an_empty_stack():
-    pytest.importorskip("langgraph", reason="langgraph not installed")
-    from ear.integrations.langgraph_backend import compile_to_graph
-
-    with pytest.raises(ValueError, match="no workflow steps"):
-        compile_to_graph(Runtime(name="Empty-Runtime"))
-
 
 # ---------------------------------------------------------------------------
 # Executable tools: declarations meet handlers in the ToolBinder, the model
@@ -1254,36 +1193,6 @@ def test_logged_tool_wrapper_contains_failures_on_the_record():
     assert record.output.startswith("FAILED")
     assert record.inputs["tool"] == "credit_bureau_check"
     assert "duration_ms" in record.inputs
-
-
-def test_langchain_adapter_binds_duck_typed_tools(tmp_path):
-    from ear.integrations.langchain_backend import bind_langchain_tool
-
-    class InvokeTool:
-        name = "amortization_calculator"
-        description = "computes payments"
-
-        def invoke(self, query):
-            return f"invoked: {query}"
-
-    class RunTool:
-        name = "amortization_calculator"
-        description = "computes payments"
-
-        def run(self, query):
-            return f"ran: {query}"
-
-    stack = dict(MINIMAL_STACK)
-    stack["memory"] = TOOLS_MEMORY
-    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
-
-    bind_langchain_tool(runtime.tool_binder, InvokeTool())
-    bound = runtime.tool_binder.bound_tools(runtime)
-    assert bound[0].handler("q") == "invoked: q"
-
-    bind_langchain_tool(runtime.tool_binder, RunTool())
-    bound = runtime.tool_binder.bound_tools(runtime)
-    assert bound[0].handler("q") == "ran: q"
 
 
 def test_deliberator_backend_seam_stays_on_the_trail():
@@ -1521,8 +1430,8 @@ def test_approval_gate_parks_and_releases_live(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Observability: the trail fans out to exporters, cycles carry usage, and
-# the OpenTelemetry adapter maps records to spans (one cycle per trace).
+# Observability: the trail fans out to exporters (a native protocol --
+# anything with export(record)) and every cycle carries usage accounting.
 # ---------------------------------------------------------------------------
 
 
@@ -1583,46 +1492,6 @@ def test_usage_is_recorded_on_blocked_cycles_too(tmp_path):
     with pytest.raises(PermissionError):
         runtime.reason(Intent(text="Underwrite", context={"debt_to_income": 0.60}))
     assert runtime.reasoning_log.for_stage("usage")
-
-
-def test_otel_exporter_maps_cycles_to_traces_and_records_to_spans():
-    sdk = pytest.importorskip("opentelemetry.sdk.trace", reason="opentelemetry-sdk not installed")
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    from ear.integrations.otel_backend import OpenTelemetryExporter
-
-    memory_exporter = InMemorySpanExporter()
-    provider = sdk.TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(memory_exporter))
-
-    runtime = Runtime(name="Traced-Runtime")
-    runtime.reasoning_log.exporters.append(OpenTelemetryExporter(tracer_provider=provider))
-    runtime.reason(Intent(text="a traced cycle"))
-
-    spans = memory_exporter.get_finished_spans()
-    by_name = {span.name for span in spans}
-    assert {"cycle 1", "intent", "deliberation", "explanation", "usage"} <= by_name
-    root = next(span for span in spans if span.name == "cycle 1")
-    children = [span for span in spans if span.name != "cycle 1"]
-    assert all(span.context.trace_id == root.context.trace_id for span in children)
-    deliberation = next(span for span in spans if span.name == "deliberation")
-    assert deliberation.attributes["ear.cycle"] == 1
-    assert "a traced cycle" in deliberation.attributes["ear.inputs"]
-
-
-def test_loader_attaches_otel_exporter_when_the_audit_prose_names_it(tmp_path):
-    pytest.importorskip(
-        "opentelemetry.exporter.otlp.proto.http.trace_exporter",
-        reason="opentelemetry-exporter-otlp not installed",
-    )
-    stack = dict(MINIMAL_STACK)
-    stack["memory"] = (
-        "## Reasoning Audit Trail\nLog every reasoning step to `.ear/reasoning.md` "
-        "and export the trail over OpenTelemetry as well.\n"
-    )
-    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
-    assert [type(exporter).__name__ for exporter in runtime.reasoning_log.exporters] == ["OpenTelemetryExporter"]
 
 
 # ---------------------------------------------------------------------------
@@ -1700,35 +1569,15 @@ def test_librarian_retrieves_structurally_offline_with_citations(tmp_path):
     assert "must be declined" in deliberation.inputs["knowledge"]
 
 
-def test_llamaindex_adapter_maps_nodes_by_duck_typing():
-    from ear.integrations.llamaindex_backend import LlamaIndexRetriever
+def test_librarian_retriever_seam_accepts_any_passage_source():
     from ear import Passage
 
-    class StubNode:
-        def __init__(self, text, metadata):
-            self.text = text
-            self.metadata = metadata
-
-    class StubWrapper:
-        def __init__(self, node):
-            self.node = node
-
-    class StubRetriever:
+    class CustomRetriever:
         def retrieve(self, query):
-            return [
-                StubWrapper(StubNode("Section one text.", {"file_name": "manual.md"})),
-                StubNode("Loose node text.", {}),
-            ]
+            return [Passage(source="manual.md", text="Section one text.")]
 
-    passages = LlamaIndexRetriever(StubRetriever(), source_label="corpus").retrieve("anything")
-    assert passages == [
-        Passage(source="manual.md", text="Section one text."),
-        Passage(source="corpus", text="Loose node text."),
-    ]
-
-    # And the same object drops straight into the Librarian's seam.
     runtime = Runtime(name="Retriever-Runtime")
-    runtime.librarian.retriever = LlamaIndexRetriever(StubRetriever())
+    runtime.librarian.retriever = CustomRetriever()
     research = runtime.librarian.research(runtime, Intent(text="anything"))
     assert research is not None and research.citations[0] == "manual.md"
     assert runtime.reasoning_log.for_stage("retrieval")

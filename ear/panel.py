@@ -113,30 +113,24 @@ class Panel:
         return "\n\n".join(f"[{turn.speaker}]\n{turn.statement}" for turn in transcript) or "no turns yet"
 
     def _speak_with_llm(self, intent: Intent, persona: Persona, transcript: list[Turn], style: str, lm: Any) -> str:
-        import dspy
-
         from .signatures import SpeakInPanel
 
-        speaker = dspy.Predict(SpeakInPanel)
-        with dspy.context(lm=lm):
-            result = speaker(
-                intent_text=intent.text,
-                persona=self._render_persona(persona),
-                pattern=style or "an open deliberation",
-                transcript=self._render_transcript(transcript),
-            )
+        result = SpeakInPanel.run(
+            lm,
+            intent_text=intent.text,
+            persona=self._render_persona(persona),
+            pattern=style or "an open deliberation",
+            transcript=self._render_transcript(transcript),
+        )
         return str(result.statement).strip()
 
     def _synthesize_with_llm(self, intent: Intent, transcript: list[Turn], style: str, lm: Any) -> str:
-        import dspy
-
         from .signatures import SynthesizePanel
 
-        synthesizer = dspy.Predict(SynthesizePanel)
-        with dspy.context(lm=lm):
-            result = synthesizer(
-                intent_text=intent.text,
-                pattern=style or "an open deliberation",
-                transcript=self._render_transcript(transcript),
-            )
+        result = SynthesizePanel.run(
+            lm,
+            intent_text=intent.text,
+            pattern=style or "an open deliberation",
+            transcript=self._render_transcript(transcript),
+        )
         return str(result.decision).strip()

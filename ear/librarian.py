@@ -15,10 +15,9 @@ into the decision's Evidence and its decision document (`## Sources`), and
 the retrieved text reaches the Reasoner marked as reference material --
 knowledge informs a decision, it never instructs the runtime.
 
-A custom retriever (e.g. a LlamaIndex retriever behind
-`ear.integrations.llamaindex_backend.LlamaIndexRetriever`) can replace the
-structural narrowing; the model's relevance judgment and the audit record
-stay the same either way.
+A custom retriever -- anything with `retrieve(query) -> list[Passage]` --
+can replace the structural narrowing; the model's relevance judgment and
+the audit record stay the same either way.
 """
 
 from __future__ import annotations
@@ -91,14 +90,10 @@ class Librarian:
 
     @staticmethod
     def _judge_with_llm(intent: Intent, candidates: list[Passage], lm: Any) -> tuple[list[Passage], str]:
-        import dspy
-
         from .signatures import SelectRelevantPassages
 
         numbered = "\n\n".join(f"{number}. {passage.render()}" for number, passage in enumerate(candidates, start=1))
-        selector = dspy.Predict(SelectRelevantPassages)
-        with dspy.context(lm=lm):
-            result = selector(intent_text=intent.text, passages=numbered)
+        result = SelectRelevantPassages.run(lm, intent_text=intent.text, passages=numbered)
         chosen: list[Passage] = []
         for number in result.relevant_numbers:
             try:

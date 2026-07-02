@@ -188,13 +188,9 @@ class Examiner:
 
     @staticmethod
     def _grade_with_llm(expectation: str, outcome: str, lm: Any) -> tuple[bool, str]:
-        import dspy
-
         from .signatures import JudgeDecisionQuality
 
-        judge = dspy.Predict(JudgeDecisionQuality)
-        with dspy.context(lm=lm):
-            result = judge(expected=expectation, actual=outcome)
+        result = JudgeDecisionQuality.run(lm, expected=expectation, actual=outcome)
         return bool(result.passed), str(result.rationale)
 
     @staticmethod

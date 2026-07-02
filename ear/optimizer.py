@@ -1,87 +1,93 @@
-"""Optimizer -- dev-time refinement of what the runtime reasons with.
+"""Optimizer -- dev-time improvement of what the runtime reasons with,
+native to EAR and fed by the artifacts the runtime already produces: the
+reasoning trail and reviewer-labelled decision documents. No third-party
+optimizer, no dataset format to maintain.
 
-Two loops live here, both fed by artifacts the runtime already produces --
-no hand-built datasets:
+Three parts:
 
-1. **Trail -> GEPA.** `trainset_from_trail` turns the ReasoningLog's
-   deliberation records (markdown or JSONL) into `dspy.Example`s -- the
-   exact intent, context and stacked capabilities the model reasoned with,
-   and the decision it reached. `optimize_from_trail` feeds them to the
-   Reasoner's GEPA hook, with `metric` grading candidates the same way the
-   Examiner grades evaluations (`JudgeDecisionQuality`), so evaluation and
-   optimization share one notion of quality. Reviewer judgments enter the
-   loop as markdown too: `verdicts_from_documents` reads decision documents
-   to which a reviewer added a `## Review` section with a `Verdict:` line.
+1. **Read the trail as a corpus.** `trainset_from_trail` turns the
+   ReasoningLog's deliberation records (markdown or JSONL) into `Example`s
+   -- the exact intent, context and stacked capabilities the model
+   reasoned with, and the decision it reached.
+2. **Read reviewer judgments as labels.** `verdicts_from_documents` reads
+   decision documents a reviewer marked with a `## Review` section and a
+   `Verdict:` line.
+3. **Refine, natively.** `refine` reflectively improves a `Judgment`'s
+   instruction against those examples -- the model reads what the current
+   instruction produced (and any wrong verdicts) and rewrites the
+   instruction, graded by the same `JudgeDecisionQuality`-backed `metric`
+   the Examiner uses, so evaluation and optimization share one notion of
+   quality. `refine_reasoner` applies this to the Reasoner's core prompt.
 
-2. **SkillOpt.** The pre-existing ReflACT loop for refining a Persona's
-   skill document (`optimize`/`apply`), unchanged.
-
-Both are structural, dev-time operations, kept outside the per-cycle
-pipeline for the same reason Evolver is.
+All dev-time, kept outside the per-cycle pipeline.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
-from .persona import Persona
 from .section import labelled_blocks, normalize, parse_document, unquote
 
 # The verdict vocabulary a reviewer's `Verdict:` line is read with --
 # symmetrical with `coerce`'s yes/no reading. An unrecognized verdict is
-# excluded from the trainset rather than guessed at.
+# excluded rather than guessed at.
 _POSITIVE_VERDICTS = {"correct", "pass", "passed", "yes", "true", "good", "approved"}
 _NEGATIVE_VERDICTS = {"incorrect", "fail", "failed", "no", "false", "wrong", "bad"}
 
 
 @dataclass
+class Example:
+    """One worked example drawn from the runtime's own record: what the
+    model reasoned with and what it decided, plus an optional reviewer
+    verdict. Dependency-free -- a plain record, not a framework object."""
+
+    intent: str = ""
+    context: dict = field(default_factory=dict)
+    capabilities: str = ""
+    decision: str = ""
+    verdict: Optional[bool] = None
+    note: str = ""
+
+
+@dataclass
 class Optimizer:
-    """Optimizer curates trainsets and metrics from the runtime's own
-    markdown artifacts and drives the sanctioned optimization hooks; plus
-    the SkillOpt trainer/apply pair for Persona skill documents."""
+    """Curates trainsets and metrics from the runtime's markdown artifacts
+    and refines reasoning instructions natively against them."""
 
-    # -- trail -> GEPA --------------------------------------------------------
+    # -- read the trail --------------------------------------------------------
 
-    def trainset_from_trail(self, path: Union[str, Path]) -> list[Any]:
-        """Turn a reasoning trail's deliberation records into
-        `dspy.Example`s (intent, context, capabilities -> decision).
-
+    def trainset_from_trail(self, path: Union[str, Path]) -> list[Example]:
+        """Turn a reasoning trail's deliberation records into Examples.
         Reads both trail codecs by extension: `.md` through the Section
         parser, anything else as JSONL. A markdown record whose output
-        survives only in clipped form (no `Output:` block and a shortened
-        heading) is omitted -- a truncated label is not a training label.
-        """
+        survives only clipped (no `Output:` block, a shortened heading) is
+        omitted -- a truncated label is not a training label."""
         path = Path(path)
         text = path.read_text(encoding="utf-8")
         records = self._records_from_markdown(text) if path.suffix == ".md" else self._records_from_jsonl(text)
-        import dspy
-
-        examples = []
+        examples: list[Example] = []
         for record in records:
             if record["stage"] != "deliberation" or not record["decision"]:
                 continue
             examples.append(
-                dspy.Example(
-                    intent=record["inputs"].get("intent", ""),
-                    context=record["inputs"].get("context", {}),
-                    capabilities=record["inputs"].get("capabilities", ""),
+                Example(
+                    intent=str(record["inputs"].get("intent", "")),
+                    context=record["inputs"].get("context", {}) if isinstance(record["inputs"].get("context"), dict) else {},
+                    capabilities=str(record["inputs"].get("capabilities", "")),
                     decision=record["decision"],
-                ).with_inputs("intent", "context", "capabilities")
+                )
             )
         return examples
 
-    def verdicts_from_documents(self, directory: Union[str, Path]) -> list[Any]:
-        """Read reviewer-labelled decision documents: any `decisions/*.md`
-        carrying a `## Review` section with a `Verdict:` line (and an
-        optional blockquoted note). Returns `dspy.Example`s with intent,
-        decision, verdict (bool) and note. Documents with no review, or a
-        verdict outside the vocabulary, are excluded, never guessed."""
-        import dspy
-
-        labelled = []
+    def verdicts_from_documents(self, directory: Union[str, Path]) -> list[Example]:
+        """Read reviewer-labelled decision documents: any `*.md` carrying a
+        `## Review` section with a `Verdict:` line (and an optional
+        blockquoted note). Documents with no review, or a verdict outside
+        the vocabulary, are excluded -- never guessed."""
+        labelled: list[Example] = []
         for path in sorted(Path(directory).glob("*.md")):
             document = parse_document(path.read_text(encoding="utf-8"))
             intent_text = decision_text = note = ""
@@ -90,61 +96,83 @@ class Optimizer:
                 key = normalize(section.name)
                 blocks = labelled_blocks(section.lines)
                 if key == "intent":
-                    intent_text = self._quoted_text(section.lines)
+                    intent_text = unquote(section.lines)
                 elif key == "decision":
-                    decision_text = self._quoted_text(section.lines)
+                    decision_text = unquote(section.lines)
                 elif "review" in key:
                     verdict = self._read_verdict(section.body(field_keys=("verdict",)).field("verdict"))
-                    note = blocks.get("note", "") or self._quoted_text(section.lines)
+                    note = blocks.get("note", "") or unquote(section.lines)
             if verdict is None or not decision_text:
                 continue
-            labelled.append(
-                dspy.Example(intent=intent_text, decision=decision_text, verdict=verdict, note=note).with_inputs(
-                    "intent"
-                )
-            )
+            labelled.append(Example(intent=intent_text, decision=decision_text, verdict=verdict, note=note))
         return labelled
 
-    def metric(self, model_binding: Optional[Any] = None) -> Callable[..., float]:
-        """A GEPA/Examiner-shared metric: with a model, the candidate
+    # -- the shared quality metric ---------------------------------------------
+
+    def metric(self, model_binding: Optional[Any] = None) -> Callable[[str, str], float]:
+        """A metric shared with the Examiner: with a model, a candidate
         decision is graded against the reference by `JudgeDecisionQuality`;
         without one, by normalized-containment equivalence -- structural,
         and only fit for smoke runs, which is exactly what no-model means."""
 
-        def grade(gold: Any, prediction: Any, trace: Any = None, *args: Any, **kwargs: Any) -> float:
-            expected = str(getattr(gold, "decision", gold))
-            actual = str(getattr(prediction, "decision", prediction))
+        def grade(expected: str, actual: str) -> float:
             if model_binding is not None and getattr(model_binding, "lm", None) is not None:
-                import dspy
-
                 from .signatures import JudgeDecisionQuality
 
-                judge = dspy.Predict(JudgeDecisionQuality)
-                with dspy.context(lm=model_binding.lm):
-                    result = judge(expected=expected, actual=actual)
+                result = JudgeDecisionQuality.run(model_binding.lm, expected=str(expected), actual=str(actual))
                 return 1.0 if result.passed else 0.0
-            expected_key, actual_key = normalize(expected), normalize(actual)
+            expected_key, actual_key = normalize(str(expected)), normalize(str(actual))
             return 1.0 if expected_key and (expected_key in actual_key or actual_key in expected_key) else 0.0
 
         return grade
 
-    def optimize_from_trail(
-        self,
-        runtime: Any,
-        trail_path: Union[str, Path],
-        metric: Optional[Callable[..., float]] = None,
-        **gepa_kwargs: Any,
-    ) -> Any:
-        """The whole loop in one call: trail -> trainset -> GEPA on the
-        runtime's Reasoner, graded by the shared metric against the
-        runtime's own model binding."""
-        trainset = self.trainset_from_trail(trail_path)
-        if not trainset:
-            raise ValueError(f"No usable deliberation records found in trail '{trail_path}'")
-        chosen_metric = metric or self.metric(getattr(runtime, "model_binding", None))
-        return runtime.reasoner.optimize_with_gepa(trainset, chosen_metric, **gepa_kwargs)
+    # -- native refinement ------------------------------------------------------
 
-    # -- trail codecs ----------------------------------------------------------
+    def refine(self, judgment: Any, examples: list[Example], model_binding: Any) -> str:
+        """Reflectively improve a Judgment's instruction against worked
+        examples, in place. Requires a live model -- reflection is itself a
+        judgment; with none bound this is a no-op returning the unchanged
+        instruction. Returns the (possibly new) instruction."""
+        if model_binding is None or getattr(model_binding, "lm", None) is None:
+            return judgment.instruction
+        if not examples:
+            raise ValueError("refine needs at least one example to reflect on")
+        from .signatures import RefineInstruction
+
+        rendered = "\n\n".join(self._render_example(example) for example in examples)
+        result = RefineInstruction.run(
+            model_binding.lm, current_instruction=judgment.instruction, examples=rendered
+        )
+        improved = str(result.improved_instruction).strip()
+        if improved:
+            judgment.instruction = improved
+        return judgment.instruction
+
+    def refine_reasoner(
+        self, runtime: Any, trail_path: Union[str, Path], reviews_directory: Optional[Union[str, Path]] = None
+    ) -> str:
+        """Refine the Reasoner's core instruction (`ReasonAboutIntent`)
+        against the trail -- and reviewer verdicts, when a reviews
+        directory is given -- in one call. Returns the refined instruction."""
+        from .signatures import ReasonAboutIntent
+
+        examples = self.trainset_from_trail(trail_path)
+        if reviews_directory is not None:
+            examples += self.verdicts_from_documents(reviews_directory)
+        if not examples:
+            raise ValueError(f"No usable examples found in trail '{trail_path}'")
+        return self.refine(ReasonAboutIntent, examples, getattr(runtime, "model_binding", None))
+
+    @staticmethod
+    def _render_example(example: Example) -> str:
+        lines = [f"Intent: {example.intent}", f"Decision: {example.decision}"]
+        if example.verdict is not None:
+            lines.append(f"Reviewer verdict: {'correct' if example.verdict else 'incorrect'}")
+        if example.note:
+            lines.append(f"Reviewer note: {example.note}")
+        return "\n".join(lines)
+
+    # -- trail codecs -----------------------------------------------------------
 
     @staticmethod
     def _records_from_jsonl(text: str) -> list[dict[str, Any]]:
@@ -203,10 +231,6 @@ class Optimizer:
         return stage, output.strip()
 
     @staticmethod
-    def _quoted_text(lines: list[str]) -> str:
-        return unquote(lines)
-
-    @staticmethod
     def _read_verdict(value: str) -> Optional[bool]:
         """Read a reviewer's verdict word against the vocabulary; anything
         outside it is None -- excluded, never guessed."""
@@ -218,18 +242,3 @@ class Optimizer:
         if words[0] in _NEGATIVE_VERDICTS:
             return False
         return None
-
-    # -- SkillOpt (unchanged) ---------------------------------------------------
-
-    def optimize(self, config: Union[str, dict], adapter: Any) -> Any:
-        """Build a SkillOpt trainer: call `.train()` yourself, then `apply`
-        the trained document -- SkillOpt has no one-call API, and this
-        mirrors that rather than inventing one."""
-        from .integrations.skillopt_backend import build_trainer
-
-        return build_trainer(config, adapter)
-
-    def apply(self, persona: Persona, skill_name: str, trained_document: str) -> Persona:
-        from .integrations.skillopt_backend import apply_trained_skill
-
-        return apply_trained_skill(persona, skill_name, trained_document)

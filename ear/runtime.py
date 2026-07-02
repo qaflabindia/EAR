@@ -111,15 +111,10 @@ class Runtime:
     learner: Learner = field(default_factory=Learner)
     adapter: Adapter = field(default_factory=Adapter)
 
-    # Standalone, dev-time operations -- not part of the per-cycle pipeline.
-    evolver: Any = None
+    # Standalone, dev-time operation -- not part of the per-cycle pipeline.
     optimizer: Any = None
 
     def __post_init__(self) -> None:
-        if self.evolver is None:
-            from .evolver import Evolver
-
-            self.evolver = Evolver()
         if self.optimizer is None:
             from .optimizer import Optimizer
 
@@ -328,9 +323,7 @@ class Runtime:
         """Capture why this decision was reached -- separately from what
         was decided (Memory) or any pattern drawn from repeating it
         (Experience)."""
-        if self.reasoner.program is not None:
-            basis = "Resolved via a compiled DSPy program"
-        elif self.model_binding is not None and self.model_binding.lm is not None:
+        if self.model_binding is not None and self.model_binding.lm is not None:
             basis = f"Resolved via ModelBinding LM '{self.model_binding.model_id}'"
         else:
             basis = "Resolved via the Reasoner's dependency-free default"

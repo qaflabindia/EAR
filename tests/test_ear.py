@@ -515,10 +515,11 @@ def test_runtime_reason_blocks_on_llm_judged_policy_violation():
 
 
 @requires_anthropic_key
-def test_reasoner_compiles_default_dspy_program_with_llm():
+def test_native_lm_completes_and_accounts_usage():
     binding = claude_binding()
-    binding.activate()
-    reasoner = Reasoner().compile_with_dspy()
+    lm = binding.activate()
 
-    decision = reasoner.reason(Intent(text="Approve a $5,000 loan for an applicant with credit score 780"))
-    assert decision is not None
+    reply = lm.complete("Answer with one word: what colour is a clear daytime sky?")
+    assert reply.strip()
+    assert lm.history[-1]["usage"]["prompt_tokens"] > 0
+    assert lm.history[-1]["usage"]["completion_tokens"] > 0

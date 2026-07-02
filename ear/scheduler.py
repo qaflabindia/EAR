@@ -47,21 +47,18 @@ class Scheduler:
 
     @staticmethod
     def _order_with_llm(plan: list[Workflow], intent: Intent, lm: Any) -> list[Workflow]:
-        import dspy
-
+        from .section import normalize
         from .signatures import ScheduleWorkflows
 
         summaries = "\n".join(
             f"{workflow.name}: " + ("; ".join(step.instruction for step in workflow.steps[:4]) or "no steps")
             for workflow in plan
         )
-        orderer = dspy.Predict(ScheduleWorkflows)
-        with dspy.context(lm=lm):
-            result = orderer(intent_text=intent.text, workflows=summaries)
-        by_name = {workflow.name: workflow for workflow in plan}
+        result = ScheduleWorkflows.run(lm, intent_text=intent.text, workflows=summaries)
+        by_key = {normalize(workflow.name): workflow for workflow in plan}
         ordered: list[Workflow] = []
         for name in result.ordered_workflow_names:
-            workflow = by_name.get(name)
+            workflow = by_key.get(normalize(str(name)))
             if workflow is not None and all(workflow is not placed for placed in ordered):
                 ordered.append(workflow)
         # Every workflow the Composer produced stays in the schedule: any

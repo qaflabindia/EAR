@@ -64,8 +64,6 @@ class Delegator:
 
     @staticmethod
     def _infer_with_llm(undelegated: list[tuple[int, Step]], pool: list[Persona], lm: Any) -> list[str]:
-        import dspy
-
         from .signatures import DelegateSteps
 
         steps = "\n".join(f"{number}: {step.instruction}" for number, step in undelegated)
@@ -74,9 +72,7 @@ class Delegator:
             + (f" -- skills: {', '.join(skill.name for skill in persona.skills)}" if persona.skills else "")
             for persona in pool
         )
-        delegator = dspy.Predict(DelegateSteps)
-        with dspy.context(lm=lm):
-            result = delegator(steps=steps, personas=personas)
+        result = DelegateSteps.run(lm, steps=steps, personas=personas)
         return list(result.assignments)
 
     @staticmethod

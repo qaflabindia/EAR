@@ -56,11 +56,7 @@ class Policy:
     def _judge_with_llm(self, lm: Any, context: dict[str, Any]) -> tuple[bool, str]:
         if not self.statement:
             return True, "policy has no statement to judge"
-        import dspy
-
         from .signatures import JudgePolicyCompliance
 
-        judge = dspy.Predict(JudgePolicyCompliance)
-        with dspy.context(lm=lm):
-            result = judge(policy_statement=self.statement, context=context)
+        result = JudgePolicyCompliance.run(lm, policy_statement=self.statement, context=context)
         return bool(result.complies), str(result.rationale)

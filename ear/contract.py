@@ -8,7 +8,7 @@ type annotations -- the meaning *is* the specification, and the same
 `coerce` codec that types intent context values types the delivered
 values.
 
-At runtime the extraction is a model judgment: a DSPy signature is built
+At runtime the extraction is a model judgment: an extraction prompt is built
 dynamically from the contract's fields (one output per field, the authored
 meaning as its description), the model reads the prose decision and fills
 the fields, and the model then *judges its own filling against the
@@ -66,28 +66,32 @@ class Contract:
         """Fill the contract's fields from the prose decision with the
         bound model. Returns authored-name -> typed value. Raises nothing
         on a poor answer -- conformance is judged separately -- but
-        requires a live model: with none bound the caller records a skip."""
-        import dspy
+        requires a live model: with none bound the caller records a skip.
 
-        instructions = (
+        The extraction Judgment is built dynamically from the contract's
+        own fields -- one output section per field, the authored meaning as
+        its description -- so the model returns exactly the declared shape,
+        parsed back through the shared Section codec."""
+        from .judgment import Field, Judgment
+
+        instruction = (
             "Fill the deliverable's fields from the decision, exactly as the "
             "decision states them -- never invent a value the decision does "
             "not support. Each field's description is its authored meaning."
         )
         if hint:
-            instructions += f"\nA prior attempt was judged nonconforming: {hint}"
-        signature_fields: dict[str, Any] = {
-            "intent": dspy.InputField(desc="The intent the decision resolves"),
-            "decision": dspy.InputField(desc="The prose decision to fill the fields from"),
-        }
-        for contract_field in self.fields:
-            signature_fields[contract_field.identifier] = dspy.OutputField(
-                desc=contract_field.meaning or contract_field.name
-            )
-        signature = dspy.Signature(signature_fields, instructions)
-        extractor = dspy.Predict(signature)
-        with dspy.context(lm=model_binding.lm):
-            result = extractor(intent=str(intent), decision=str(decision))
+            instruction += f"\nA prior attempt was judged nonconforming: {hint}"
+        extraction = Judgment(
+            instruction=instruction,
+            inputs=[
+                Field("intent", "The intent the decision resolves"),
+                Field("decision", "The prose decision to fill the fields from"),
+            ],
+            outputs=[
+                Field(field.identifier, field.meaning or field.name, "str") for field in self.fields
+            ],
+        )
+        result = extraction.run(model_binding.lm, intent=str(intent), decision=str(decision))
         data: dict[str, Any] = {}
         for contract_field in self.fields:
             raw = getattr(result, contract_field.identifier, "")
@@ -112,12 +116,8 @@ class Contract:
         return True, "structural check only (no model bound): every declared field is present and non-empty"
 
     def _judge_with_llm(self, data: dict[str, Any], lm: Any) -> tuple[bool, str]:
-        import dspy
-
         from .signatures import JudgeContractConformance
 
         rendered = "\n".join(f"- {name}: {value}" for name, value in data.items())
-        judge = dspy.Predict(JudgeContractConformance)
-        with dspy.context(lm=lm):
-            result = judge(contract=self.render_fields(), data=rendered)
+        result = JudgeContractConformance.run(lm, contract=self.render_fields(), data=rendered)
         return bool(result.conforms), str(result.rationale)

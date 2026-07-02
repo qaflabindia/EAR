@@ -45,7 +45,7 @@ class AdaptationBank:
     def learn_from(self, experience: Experience, summarizer: Optional[Any] = None) -> Optional[Adaptation]:
         """Distill the current Experience into one new Adaptation.
 
-        Pass an activated `dspy.LM` (e.g. `runtime.model_binding.lm`) as
+        Pass an activated `LM` (e.g. `runtime.model_binding.lm`) as
         `summarizer` for an LLM-distilled insight; without one, the most
         frequently repeated decision in the experience is reported instead.
         """
@@ -69,11 +69,7 @@ class AdaptationBank:
 
     @staticmethod
     def _distill_with_llm(experience_summary: str, lm: Any) -> str:
-        import dspy
-
         from .signatures import DistillInsight
 
-        distiller = dspy.Predict(DistillInsight)
-        with dspy.context(lm=lm):
-            result = distiller(experience_summary=experience_summary)
+        result = DistillInsight.run(lm, experience_summary=experience_summary)
         return result.insight

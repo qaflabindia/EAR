@@ -27,9 +27,10 @@ workflow.add_policy(Policy(name="Loan Amount Cap", statement="The loan must not 
 For the intent at hand the runtime composes the workflow's ordered steps,
 the personas they delegate to and the stacked skill prompts into one
 assembled-capabilities block and reasons over it with the active LLM
-(any [LiteLLM](https://github.com/BerriAI/litellm) provider — Anthropic,
-OpenAI, Gemini, Bedrock, Ollama — selected by `ModelBinding`, never
-hardcoded), and enforces the workflow's policies before it runs. So what
+(Anthropic natively, or any OpenAI-compatible endpoint — Azure, Ollama,
+vLLM and the like — selected by `ModelBinding`, never hardcoded, spoken to
+directly over HTTPS by EAR's own dependency-free client), and enforces the
+workflow's policies before it runs. So what
 you stack is what the model actually reasons with. A deterministic Python
 `handler` on a Skill stays available for the advanced case, but it is
 optional, never required.
@@ -228,31 +229,6 @@ record is the same natural language as everything else — and a journey
 refuses to resume over a stack whose steps no longer match the legs it
 already walked: continuing a changed plan would forge the record.
 
-### LangGraph — the same stack as a graph, for interop only
-
-`pip install 'ear[langgraph]'` and the authored stack compiles to a
-LangGraph — one node per workflow step, in authored order, each carrying
-the overall intent and the earlier steps' conclusions:
-
-```python
-from langgraph.checkpoint.memory import MemorySaver
-from ear.integrations.langgraph_backend import compile_to_graph, runtime_node
-
-graph = compile_to_graph(runtime, checkpointer=MemorySaver())
-final = graph.invoke({"intent": "Underwrite a consumer loan",
-                      "context": {"loan_amount": 5000}},
-                     {"configurable": {"thread_id": "underwriting-1"}})
-```
-
-The rule that makes it safe: **a graph node never bypasses governance** —
-every node runs a full governed cycle on the runtime, so the Governor
-(approval gates included), knowledge, bound tools, the trail and memory
-all apply inside each node exactly as they do natively. A refusal or a
-parked approval becomes a routable `status` and the graph halts at the
-first non-decided step; LangGraph contributes checkpointing between steps
-and interop — `runtime_node(runtime)` drops a whole EAR runtime into any
-larger graph as one governed node.
-
 ### Tools — execution on the record
 
 Tools stay *declared* in memory.md; the `ToolBinder` is where a
@@ -266,16 +242,16 @@ The stack remains the source of what exists — binding a name nothing in
 the stack declares fails loudly, so code never grows the runtime a
 capability the natural-language authoring doesn't show. Skills that carry
 a Python handler bind automatically for the cycle's plan (an explicit
-binding overrides). With bound tools present, deliberation becomes a DSPy
-ReAct loop over them — *when* to call one is the model's judgment, within
-the binder's iteration budget — and every invocation is a trail record
-(stage `tool`: arguments, result, duration). A failing tool never breaks
-the cycle: the failure is recorded and handed back to the model as text.
-Declared-but-unbound tools stay context the model knows about, as before.
-LangChain tools bind through
-`ear.integrations.langchain_backend.bind_langchain_tool` (duck-typed —
-`.name`/`.description`/`.invoke`/`.run`), behind a declared name like
-everything else.
+binding overrides). With bound tools present, deliberation becomes EAR's
+native tool loop: the model is asked, one step at a time, whether to call
+a tool (told each tool's declared description and real parameter names,
+introspected from the handler) or to decide — *when* to call is the
+model's judgment, within the binder's iteration budget — and every
+invocation is a trail record (stage `tool`: arguments, result, duration).
+A failing tool never breaks the cycle: the failure is recorded and handed
+back to the model as text. Declared-but-unbound tools stay context the
+model knows about, as before. Any callable binds — including one that
+wraps a tool from another ecosystem, if you bring it.
 
 The deliberation engine itself is also a seam: attach a `backend` to the
 `Deliberator` (anything with `deliberate(runtime, intent, plan, research)`
@@ -343,11 +319,10 @@ actually consult — choosing none is a valid judgment, and it can only
 choose among real passages. What was consulted is first-class evidence:
 a `retrieval` trail record, `citations` in the Evidence, a `## Sources`
 section in the decision document, and the retrieved text reaches the
-Reasoner framed as reference material, never as instructions. A LlamaIndex
-retriever plugs into the same seam
-(`ear.integrations.llamaindex_backend.LlamaIndexRetriever`,
-`pip install 'ear[rag]'`) — the platform narrows, EAR's model still judges
-and cites.
+Reasoner framed as reference material, never as instructions. A custom
+retriever — anything with `retrieve(query) -> list[Passage]` — plugs into
+the same seam; your retriever narrows, EAR's model still judges and
+cites.
 
 ### Observability — exporters off the trail, usage on every cycle
 
@@ -355,12 +330,9 @@ The ReasoningLog is the native trace; observability is an exporter, never
 a second instrumentation path. Attach anything with `export(record)` to
 `runtime.reasoning_log.exporters` — an exporter that raises never breaks a
 cycle (failures stay visible in `export_errors`), and the file on disk
-remains the canonical record. `pip install 'ear[observability]'` provides
-`OpenTelemetryExporter` (one trace per cycle, one span per record), which
-covers Langfuse and Phoenix through their native OTLP ingestion — endpoint
-and credentials come exclusively from the standard `OTEL_EXPORTER_OTLP_*`
-environment variables. Declare it in prose: an audit-trail section that
-names OpenTelemetry/Langfuse/Phoenix gets the exporter attached at load.
+remains the canonical record. The protocol is native and two methods
+small, so shipping the trail to any external system is a few lines of your
+own code — never a dependency of EAR's.
 
 Every cycle also closes with a `usage` record — model calls, tokens,
 approximate cost and wall-clock latency, read from the bound LM's own call
@@ -380,8 +352,9 @@ describing the deliverable, one bullet per field as `name: what it means`:
 - risk grade: the letter grade from A to E the decision rests on
 ```
 
-At runtime the model fills the fields from the prose decision (a DSPy
-signature is built dynamically from the authored meanings) and then judges
+At runtime the model fills the fields from the prose decision (an
+extraction prompt is built dynamically from the authored meanings, one
+markdown section per field) and then judges
 the filling against those meanings — one hinted retry, then nonconforming
 data is withheld, on the record (trail stage `contract`). Conformant data
 travels as a `## Data` section in the decision document, typed by the same
@@ -414,17 +387,21 @@ from ear import Optimizer
 optimizer = Optimizer()
 trainset = optimizer.trainset_from_trail(".ear/reasoning.md")   # or .jsonl
 labels   = optimizer.verdicts_from_documents("decisions/")      # ## Review + Verdict: lines
-optimizer.optimize_from_trail(runtime, ".ear/reasoning.md")     # trail -> GEPA in one call
+optimizer.refine_reasoner(runtime, ".ear/reasoning.md", "reviews/")  # reflect and rewrite
 ```
 
-Deliberation records become `dspy.Example`s (the exact intent, context and
-stacked capabilities the model reasoned with); a reviewer labels a decision
-document by adding a `## Review` section with a `Verdict:` line; and the
-metric grades candidates with the same `JudgeDecisionQuality` the Examiner
-uses — evaluation and optimization share one notion of quality.
+Deliberation records become worked `Example`s (the exact intent, context
+and stacked capabilities the model reasoned with); a reviewer labels a
+decision document by adding a `## Review` section with a `Verdict:` line;
+and `refine` has the model reflectively rewrite a reasoning instruction
+against those examples, graded by the same `JudgeDecisionQuality`-backed
+metric the Examiner uses — evaluation and optimization share one notion of
+quality, natively.
 
-Every judgment is made dynamically at runtime, in natural language against
-a live LLM (via [DSPy](https://github.com/stanfordnlp/dspy)) — `Policy`
+Every judgment is made dynamically at runtime, in natural language
+against a live LLM — through EAR's own structured prompting (a `Judgment`
+declares inputs and outputs; the model answers in markdown sections; the
+same Section codec that parses the stack parses the answer) — `Policy`
 compliance, `Discoverer` relevance ranking, `Selector` choice among
 candidates, `Scheduler` ordering, `Delegator` step delegation, the
 `Reasoner`'s decision, the `Explainer`'s prose — each with a
@@ -484,25 +461,19 @@ Adapter      → adapt        periodically distill a new Adaptation (LLM-distill
 `Governor` raises `PermissionError` and stops the cycle before anything
 else runs if a `Policy` is violated. `Adapter` only distills a new
 `Adaptation` every `adapt_every` observed cycles (default 5), not on every
-single one. `Evolver` and `Optimizer` are structural, dev-time operations
-on a `Skill` or `Persona` — evolving or optimizing isn't part of running
-a cycle, so they sit outside this pipeline and are called directly:
-
-```python
-runtime.evolver.evolve(skill, evaluator="path/to/evaluator.py")            # openevolve
-trainer = runtime.optimizer.optimize(config="skillopt.yaml", adapter=my_env)
-runtime.optimizer.apply(persona, "skill-name", trainer.train())
-```
+single one. `Optimizer` is a structural, dev-time operation — optimizing
+isn't part of running a cycle, so it sits outside this pipeline and is
+called directly (see *Optimization — the trail is the training corpus*
+above).
 
 ## Roadmap
 
-[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) maps each
-best-in-class capability that exists in isolation elsewhere — DSPy+GEPA
-optimization, Instructor structured outputs, LangSmith/Phoenix evaluation,
-Langfuse observability, LlamaIndex RAG, Temporal durable workflows and
-approval gates, LangGraph graphs, AutoGen multi-agent, PydanticAI typed
-agents, LangChain tools — onto an existing EAR pipeline seam as an
-optional backend, phased so the authored stack never changes shape.
+[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) records how
+each capability that exists in isolation on other platforms — prompt
+optimization, structured outputs, evaluation, observability, RAG, durable
+workflows and approval gates, agent graphs, multi-agent deliberation,
+typed agents, executable tools — was built **natively into EAR**, on zero
+dependencies, without the authored stack ever changing shape.
 
 ## Install
 
@@ -510,14 +481,12 @@ optional backend, phased so the authored stack never changes shape.
 pip install -e .
 ```
 
-DSPy is included as the reasoning-programming dependency.
-
-Two optional extras add evolutionary and reflective skill optimization:
-
-```bash
-pip install -e '.[evolve]'    # openevolve — AlphaEvolve-style evolutionary coding
-pip install -e '.[skillopt]'  # skillopt   — Microsoft SkillOpt's ReflACT training loop
-```
+EAR is an independent package with **zero dependencies**: it speaks to LLM
+providers directly over HTTPS from the Python standard library
+(`ear/llm.py`), and its structured prompting is native (`ear/judgment.py`)
+— the model answers in markdown sections, parsed by the same Section codec
+the stack is authored with. `pip install -e '.[dev]'` adds pytest, and
+nothing else.
 
 ## Minimal example
 
@@ -556,7 +525,7 @@ runtime.model_binding = ModelBinding(provider="anthropic", model="claude-opus-4-
 result = runtime.reason(Intent(text="Create PO for laptops under approved budget"))
 ```
 
-`Runtime.reason` activates `runtime.model_binding` (configuring DSPy's LM)
+`Runtime.reason` activates `runtime.model_binding` (building EAR's own `LM`)
 before any judgment-laden stage runs, so `Policy`, `Discoverer`, the
 `Reasoner` and the `Explainer` all reason against the same live model.
 
@@ -627,13 +596,15 @@ ear/
   process.py       Process       — a stack of Workflows that performs an action
   policy.py        Policy        — governance rule, judged in natural language with a safe-eval fallback; attaches runtime-wide or to a Workflow
   runtime.py       Runtime       — runs every cycle through the full operation pipeline below
-  model_binding.py ModelBinding  — LLM provider binding (model, credentials, params -> a DSPy LM)
+  model_binding.py ModelBinding  — LLM provider binding (model, credentials, params -> EAR's own LM)
+  llm.py           LM            — the dependency-free LLM client: stdlib HTTPS, provider wire formats
+  judgment.py      Judgment      — native structured prompting: declared inputs/outputs, markdown answers
   evidence.py      Evidence      — why this decision was made
   memory.py        Memory        — persistent memory (working + compressed layers)
   experience.py    Experience    — the pattern aggregated from repeated Memory entries
   adaptation.py    Adaptation    — learned adaptations distilled from Experience
-  reasoner.py      Reasoner      — the deliberation step (DSPy-backed, with a GEPA optimization hook)
-  signatures.py    DSPy signatures shared across the LLM-judged stages
+  reasoner.py      Reasoner      — the deliberation step, with the native tool loop
+  signatures.py    the native Judgments shared across the LLM-judged stages
   governor.py      Governor      — govern: enforce Policy gates
   initializer.py   Initializer   — initialize: activate the ModelBinding
   discoverer.py    Discoverer    — discover: find Processes relevant to an Intent
@@ -652,9 +623,8 @@ ear/
   auditor.py       Auditor       — audit: inspect evidence for compliance
   learner.py       Learner       — learn: fold a cycle into Experience
   adapter.py       Adapter       — adapt: periodically distill a new Adaptation
-  evolver.py       Evolver       — evolve: transform a Skill's source (openevolve, dev-time)
-  optimizer.py     Optimizer     — optimize: trail -> GEPA trainsets, reviewer verdicts, the shared
-                                   quality metric; plus the SkillOpt loop (dev-time)
+  optimizer.py     Optimizer     — optimize: trail-fed examples, reviewer verdicts, the shared
+                                   quality metric, and native reflective instruction refinement
   section.py       Section       — the shared structural parser for stacked markdown files
   loader.py        Loader        — load_runtime: stack skills.md/persona.md/workflow.md/
                                    process.md/policy.md/memory.md into a Runtime
@@ -666,12 +636,5 @@ ear/
   tool.py          Tool          — a tool declared in plain English, surfaced to reasoning
   mcp_server.py    McpServer     — an MCP server declared in plain English
   ontology.py      Ontology      — the term→meaning vocabulary folded into reasoning
-  integrations/
-    evolve_backend.py    openevolve — evolve a Skill's source against an evaluator
-    skillopt_backend.py  skillopt   — train a Persona's skill document with ReflACT
-    otel_backend.py      OpenTelemetryExporter — the trail as OTLP spans (Langfuse/Phoenix/any)
-    llamaindex_backend.py LlamaIndexRetriever  — a LlamaIndex retriever on the Librarian's seam
-    langchain_backend.py bind_langchain_tool   — a LangChain tool behind a declared tool name
-    langgraph_backend.py compile_to_graph      — the stack as a LangGraph; every node a governed cycle
 ```
 </content>

@@ -47,8 +47,6 @@ class Auditor:
 
     @staticmethod
     def _assess_with_llm(evidence: Evidence, decision: Any, lm: Any) -> str:
-        import dspy
-
         from .signatures import AuditEvidence
 
         summary_lines = [f"Basis: {evidence.basis}"]
@@ -56,7 +54,5 @@ class Auditor:
             value = evidence.sources.get(key)
             if value:
                 summary_lines.append(f"{key}: {value}")
-        assessor = dspy.Predict(AuditEvidence)
-        with dspy.context(lm=lm):
-            result = assessor(decision=str(decision), evidence="\n".join(summary_lines))
+        result = AuditEvidence.run(lm, decision=str(decision), evidence="\n".join(summary_lines))
         return str(result.assessment).strip()

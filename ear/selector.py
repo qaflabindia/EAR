@@ -61,20 +61,12 @@ class Selector:
 
     @staticmethod
     def _select_with_llm(candidates: list[Process], intent: Intent, lm: Any) -> list[Process]:
-        import dspy
-
+        from .discoverer import _match_by_name
         from .signatures import SelectProcesses
 
         catalogue = "\n".join(f"{process.name}: {process.description or 'no description'}" for process in candidates)
-        chooser = dspy.Predict(SelectProcesses)
-        with dspy.context(lm=lm):
-            result = chooser(intent_text=intent.text, candidate_processes=catalogue)
-        by_name = {process.name: process for process in candidates}
-        chosen: list[Process] = []
-        for name in result.selected_process_names:
-            process = by_name.get(name)
-            if process is not None and process not in chosen:
-                chosen.append(process)
+        result = SelectProcesses.run(lm, intent_text=intent.text, candidate_processes=catalogue)
+        chosen = _match_by_name(candidates, result.selected_process_names)
         # An empty or unusable answer falls back to every candidate rather
         # than silently running none.
         return chosen or candidates

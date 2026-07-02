@@ -10,7 +10,7 @@ fails loudly -- code must never grow the runtime a capability the
 natural-language authoring doesn't show.
 
 *When* to use a tool stays the model's judgment: with bound tools present,
-deliberation runs as a DSPy ReAct loop over them (the declared
+deliberation runs as EAR's native tool loop over them (the declared
 description is what the model reads). Every invocation is a trail record
 (stage `tool`) with the arguments, the result and the duration; a failing
 tool never breaks the cycle -- the failure is recorded and handed back to
@@ -43,6 +43,24 @@ class BoundTool:
         mapped = "".join(ch if ch.isalnum() else "_" for ch in self.name.strip().lower())
         return mapped or "tool"
 
+    @property
+    def parameters(self) -> list[str]:
+        """The handler's parameter names, introspected so the model is told
+        exactly what arguments a tool takes -- what a schema framework
+        would supply, from the standard library alone."""
+        import inspect
+
+        try:
+            signature = inspect.signature(self.handler)
+        except (TypeError, ValueError):
+            return []
+        return [
+            name
+            for name, parameter in signature.parameters.items()
+            if parameter.kind
+            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        ]
+
 
 @dataclass
 class ToolBinder:
@@ -50,9 +68,15 @@ class ToolBinder:
     into the executable, logged toolset a cycle deliberates with."""
 
     bindings: dict[str, Callable[..., Any]] = field(default_factory=dict)
-    # How many ReAct steps a deliberation may take; execution mechanics,
+    # How many tool-loop steps a deliberation may take; execution mechanics,
     # not judgment -- the model decides what to call within the budget.
     max_iterations: int = 6
+
+    @staticmethod
+    def tool_key(name: str) -> str:
+        """The lookup key for a tool name, case- and punctuation-folded, so
+        the model naming a tool loosely still resolves to the right one."""
+        return normalize(name)
 
     def bind(self, name: str, handler: Callable[..., Any]) -> "ToolBinder":
         self.bindings[normalize(name)] = handler
@@ -88,16 +112,12 @@ class ToolBinder:
                 bound[key] = BoundTool(name=skill.name, description=skill.instruction(), handler=skill.handler)
         return list(bound.values())
 
-    def dspy_tools(self, runtime: Any, plan: Optional[list] = None) -> list:
-        """The bound toolset as `dspy.Tool`s, each invocation wrapped so it
-        lands on the reasoning trail and a failure returns to the model as
-        text instead of breaking the cycle."""
-        import dspy
-
-        return [
-            dspy.Tool(self._logged(runtime, tool), name=tool.identifier, desc=tool.description)
-            for tool in self.bound_tools(runtime, plan)
-        ]
+    def logged_handler(self, runtime: Any, tool: BoundTool) -> Callable[..., Any]:
+        """A tool's handler wrapped so every call lands on the reasoning
+        trail and a failure returns to the model as text instead of
+        breaking the cycle. The Reasoner's native tool loop invokes tools
+        through this."""
+        return self._logged(runtime, tool)
 
     @staticmethod
     def _logged(runtime: Any, tool: BoundTool) -> Callable[..., Any]:

@@ -14,6 +14,20 @@ from typing import Any
 from .intent import Intent
 from .process import Process
 from .reasoning_log import model_name
+from .section import normalize
+
+
+def _match_by_name(processes: list[Process], names: list[str]) -> list[Process]:
+    """Resolve model-returned names back to processes, case- and
+    punctuation-insensitively, preserving the model's order and dropping
+    anything it named that no process matches."""
+    by_key = {normalize(process.name): process for process in processes}
+    found: list[Process] = []
+    for name in names:
+        process = by_key.get(normalize(str(name)))
+        if process is not None and process not in found:
+            found.append(process)
+    return found
 
 
 @dataclass
@@ -60,16 +74,11 @@ class Discoverer:
     def _discover_with_llm(processes: list[Process], intent: Intent, lm: Any, guidance: str = "") -> list[Process]:
         if not processes:
             return []
-        import dspy
-
         from .signatures import DiscoverRelevantProcesses
 
         catalogue = "\n".join(f"{process.name}: {process.description or 'no description'}" for process in processes)
         if guidance:
             catalogue += f"\n\nGuidance for judging relevance: {guidance}"
-        finder = dspy.Predict(DiscoverRelevantProcesses)
-        with dspy.context(lm=lm):
-            result = finder(intent_text=intent.text, available_processes=catalogue)
-        by_name = {process.name: process for process in processes}
-        found = [by_name[name] for name in result.relevant_process_names if name in by_name]
+        result = DiscoverRelevantProcesses.run(lm, intent_text=intent.text, available_processes=catalogue)
+        found = _match_by_name(processes, result.relevant_process_names)
         return found or list(processes)

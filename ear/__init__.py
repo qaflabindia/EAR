@@ -3,8 +3,9 @@
 Every class, field, method parameter and message here is named in plain
 English. The package's judgment-laden pipeline stages (discovery, policy
 enforcement, deliberation, explanation) reason in natural language against
-a live LLM (via DSPy, see `ear/signatures.py`), each with a deterministic,
-dependency-free fallback, so the package stays usable and testable with no
+a live LLM through EAR's own dependency-free client (`ear/llm.py`) and
+native structured prompting (`ear/signatures.py`), each with a
+deterministic fallback, so the package stays usable and testable with no
 LLM configured at all.
 
 Stack:   Intent -> Skill -> Persona -> Workflow -> Process -> Policy -> Runtime -> Reasoner
@@ -36,8 +37,8 @@ own class so operations AI runtimes often blur together stay distinct:
 
 Evidence (why) and Experience (pattern aggregated from repeated Memory
 entries) round out the memory layers Adaptation then adapts from.
-Evolver (evolve) and Optimizer (optimize) are structural, dev-time
-operations on Skill/Persona -- not part of the per-cycle pipeline.
+Optimizer (optimize) is a structural, dev-time operation -- not part of
+the per-cycle pipeline.
 
 The whole stack can be authored in natural language alone: `load_runtime`
 (see `ear/loader.py`) reads a directory of markdown files -- prompts
@@ -48,8 +49,13 @@ cross-session data (SessionStore), subagent spawning (Spawner), model
 selection (ModelBinding), MCP servers (McpServer), tools (Tool), skills
 discovery guidance, and ontological settings (Ontology).
 
-DSPy and GEPA are used deliberately, not on every class: see
-`ear/reasoner.py` and `ear/signatures.py` for where and why.
+EAR is an independent, dependency-free package: it speaks to LLM providers
+directly over HTTPS from the standard library (see `ear/llm.py`), and its
+reasoning is native structured prompting (`ear/judgment.py`,
+`ear/signatures.py`) with no third-party framework underneath. Every
+judgment-laden stage reasons against the active ModelBinding, each with a
+deterministic fallback so the package stays usable and testable with no
+model configured.
 """
 
 from __future__ import annotations
@@ -65,7 +71,6 @@ from .delegator import Delegator
 from .deliberator import Deliberator
 from .discoverer import Discoverer
 from .evidence import Evidence
-from .evolver import Evolver
 from .examiner import Examination, EvaluationResult, Examiner
 from .exchange import Exchange
 from .executor import Executor
@@ -75,6 +80,8 @@ from .governor import Governor
 from .initializer import Initializer
 from .intent import Intent
 from .journey import Journey, Leg
+from .judgment import Field, Judgment
+from .llm import LM
 from .knowledge import Knowledge, Passage
 from .learner import Learner
 from .librarian import Librarian, Research
@@ -118,6 +125,9 @@ __all__ = [
     "Policy",
     "Runtime",
     "ModelBinding",
+    "LM",
+    "Judgment",
+    "Field",
     "Evidence",
     "Memory",
     "MemoryEntry",
@@ -143,7 +153,6 @@ __all__ = [
     "Auditor",
     "Learner",
     "Adapter",
-    "Evolver",
     "Optimizer",
     "Exchange",
     "Approval",

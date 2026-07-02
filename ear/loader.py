@@ -309,18 +309,6 @@ class Loader:
             path = raw_path if raw_path.is_absolute() else self.directory / raw_path
             runtime.reasoning_log.path = str(path)
             runtime.reasoning_log.resume()
-            if strategy.audit_export_requested:
-                # The author asked for export by name; failing to provide it
-                # silently would be a governance hole, so a missing adapter
-                # dependency is loud.
-                try:
-                    from .integrations.otel_backend import OpenTelemetryExporter
-                except ImportError as missing:
-                    raise ValueError(
-                        "The audit trail declares an OTLP export (OpenTelemetry/Langfuse/Phoenix) "
-                        "but the exporter dependencies are not installed -- pip install 'ear[observability]'"
-                    ) from missing
-                runtime.reasoning_log.exporters.append(OpenTelemetryExporter(service_name=runtime.name))
 
         if strategy.knowledge_sources:
             knowledge = Knowledge()

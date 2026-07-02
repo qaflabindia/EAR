@@ -74,7 +74,7 @@ class Memory:
         """Roll the oldest entries past `keep` (default `capacity`) out of
         `working` into one new summary string in `compressed`.
 
-        Pass an activated `dspy.LM` (e.g. `runtime.model_binding.lm`) as
+        Pass an activated `LM` (e.g. `runtime.model_binding.lm`) as
         `summarizer` for an LLM-written summary; without one, a
         deterministic digest is used so compression never requires an LLM.
         """
@@ -96,13 +96,9 @@ class Memory:
 
     @staticmethod
     def _summarize_with_llm(history: str, lm: Any) -> str:
-        import dspy
-
         from .signatures import SummarizeHistory
 
-        summarizer = dspy.Predict(SummarizeHistory)
-        with dspy.context(lm=lm):
-            result = summarizer(history=history)
+        result = SummarizeHistory.run(lm, history=history)
         return result.summary
 
     def context_window(self, max_working: Optional[int] = None) -> str:
