@@ -38,6 +38,70 @@ optional, never required.
 Intent → Skill → Persona → Workflow → Process → Policy → Runtime → Reasoner
 ```
 
+## Author the whole runtime in Markdown — no code at all
+
+The stack above can be written entirely as natural-language markdown files
+in one directory, and `load_runtime` assembles the Runtime from them:
+
+```text
+skills.md    prompts stacked into skills       (heading = skill, prose = prompt)
+persona.md   skills stacked into personas      (prose = instructions, `Skills:` stacks by name)
+workflow.md  steps stacked into workflows      (numbered steps; `(Persona Name)` delegates)
+process.md   workflows stacked into processes  (prose = description, `Workflows:` stacks by name;
+                                                the file's # title names the runtime)
+policy.md    governance, risk and controls     (prose = the statement an LLM judges;
+                                                `Fallback:` deterministic expression,
+                                                `Applies to:` runtime or a workflow name)
+memory.md    the operating strategy            (see below)
+```
+
+```python
+from ear import Intent, load_runtime
+
+runtime = load_runtime("examples/credit_risk_stack")
+decision = runtime.reason(Intent(
+    text="Underwrite a $20,000 consumer loan application",
+    context={"loan_amount": 20000, "debt_to_income": 0.28, "credit_score": 742},
+))
+```
+
+Cross-references are by name, case- and punctuation-insensitive, and an
+unresolved reference fails loudly with the list of known names — nothing an
+author writes is silently dropped. A workflow no process references is
+wrapped in a process of its own rather than lost.
+
+`memory.md` declares the runtime's **strategy**, each section in plain
+English with the few values the machinery needs extracted from the prose:
+
+```text
+Context History       how many recent cycles stay verbatim before compression
+Cross-Session Data    where Memory/Experience/Adaptations persist between sessions
+                      (a SessionStore; restored on load, saved after every cycle)
+Subagent Spawning     whether subagents may spawn, and how many (the Spawner
+                      enforces the limit like the Governor enforces Policies)
+Model Selection       provider/model (e.g. anthropic/claude-opus-4-8), the
+                      credential's environment-variable NAME (never a key in the
+                      file), temperature; the binding only attaches when the
+                      credential actually resolves, so a stack loaded without
+                      keys degrades to the deterministic fallback
+MCP                   declared MCP servers  (- name: what it provides, via `command`)
+Tools                 declared tools        (- name: what it does)
+Skills Discovery      guidance the Discoverer folds into relevance ranking
+Ontological Settings  the vocabulary reasoning works with (- term: meaning)
+```
+
+The ontology, declared tools/MCP servers and discovery guidance are rendered
+into the Reasoner's prompt as the runtime's operating strategy, so the model
+reasons with the enterprise's own vocabulary and knows its capabilities —
+when to use them stays a natural-language judgment, never a hardcoded rule.
+Subagents spawn via `runtime.spawn(persona, intent)`: a child runtime scoped
+to one persona, sharing the parent's model and strategy but keeping its own
+memory, with nested spawns counted against the same strategy budget.
+
+See `examples/credit_risk_stack/` for a complete six-file stack that loads
+and reasons offline (deterministic fallbacks) or live (set the environment
+variable named in its memory.md).
+
 Judgment-laden stages — `Policy` compliance, `Discoverer` relevance
 ranking, the `Reasoner`'s decision, the `Explainer`'s prose — reason in
 natural language against a live LLM (via [DSPy](https://github.com/stanfordnlp/dspy)),
@@ -245,6 +309,15 @@ ear/
   adapter.py       Adapter       — adapt: periodically distill a new Adaptation
   evolver.py       Evolver       — evolve: transform a Skill's source (openevolve, dev-time)
   optimizer.py     Optimizer     — optimize: refine a Persona's skill document (SkillOpt, dev-time)
+  section.py       Section       — the shared structural parser for stacked markdown files
+  loader.py        Loader        — load_runtime: stack skills.md/persona.md/workflow.md/
+                                   process.md/policy.md/memory.md into a Runtime
+  strategy.py      Strategy      — the memory.md operating strategy, read from plain English
+  session_store.py SessionStore  — cross-session data: memory layers persisted to JSON
+  spawner.py       Spawner       — spawn subagent runtimes, bounded by the strategy
+  tool.py          Tool          — a tool declared in plain English, surfaced to reasoning
+  mcp_server.py    McpServer     — an MCP server declared in plain English
+  ontology.py      Ontology      — the term→meaning vocabulary folded into reasoning
   integrations/
     evolve_backend.py    openevolve — evolve a Skill's source against an evaluator
     skillopt_backend.py  skillopt   — train a Persona's skill document with ReflACT

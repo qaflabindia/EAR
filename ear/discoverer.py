@@ -23,8 +23,15 @@ class Discoverer:
     def discover(self, runtime: Any, intent: Intent) -> list[Process]:
         model_binding = getattr(runtime, "model_binding", None)
         if model_binding is not None and getattr(model_binding, "lm", None) is not None:
-            return self._discover_with_llm(runtime.processes, intent, model_binding.lm)
+            return self._discover_with_llm(runtime.processes, intent, model_binding.lm, self._guidance(runtime))
         return self._discover_by_keyword(runtime.processes, intent)
+
+    @staticmethod
+    def _guidance(runtime: Any) -> str:
+        """The Skills Discovery guidance stacked in memory.md, if any --
+        plain-English direction for how relevance should be judged."""
+        strategy = getattr(runtime, "strategy", None)
+        return getattr(strategy, "skills_discovery", "") if strategy is not None else ""
 
     @staticmethod
     def _discover_by_keyword(processes: list[Process], intent: Intent) -> list[Process]:
@@ -35,7 +42,7 @@ class Discoverer:
         return matches or list(processes)
 
     @staticmethod
-    def _discover_with_llm(processes: list[Process], intent: Intent, lm: Any) -> list[Process]:
+    def _discover_with_llm(processes: list[Process], intent: Intent, lm: Any, guidance: str = "") -> list[Process]:
         if not processes:
             return []
         import dspy
@@ -43,6 +50,8 @@ class Discoverer:
         from .signatures import DiscoverRelevantProcesses
 
         catalogue = "\n".join(f"{process.name}: {process.description or 'no description'}" for process in processes)
+        if guidance:
+            catalogue += f"\n\nGuidance for judging relevance: {guidance}"
         finder = dspy.Predict(DiscoverRelevantProcesses)
         with dspy.context(lm=lm):
             result = finder(intent_text=intent.text, available_processes=catalogue)

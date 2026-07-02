@@ -45,6 +45,7 @@ from .reasoner import Reasoner
 from .recaller import Recaller
 from .scheduler import Scheduler
 from .selector import Selector
+from .spawner import Spawner
 from .validator import Validator
 from .workflow import Workflow
 
@@ -64,6 +65,14 @@ class Runtime:
     memory: Memory = field(default_factory=Memory)
     experience: Experience = field(default_factory=Experience)
     adaptations: AdaptationBank = field(default_factory=AdaptationBank)
+
+    # The operating strategy stacked in memory.md (context history,
+    # cross-session data, subagent spawning, model selection, MCP, tools,
+    # skills discovery, ontology), the cross-session store it declares, and
+    # the Spawner it bounds.
+    strategy: Optional[Any] = None
+    session_store: Optional[Any] = None
+    spawner: Spawner = field(default_factory=Spawner)
 
     # Per-cycle pipeline stages.
     governor: Governor = field(default_factory=Governor)
@@ -135,7 +144,15 @@ class Runtime:
         entry = self.memory.record(intent.text, decision, context=intent.context, evidence=evidence)
         self.learner.learn(self.experience, entry)
         self.adapter.adapt(self.adaptations, self.experience)
+        if self.session_store is not None:
+            self.session_store.save(self)
         return decision
+
+    def spawn(self, persona: Any, intent: Any) -> Any:
+        """Spawn a subagent runtime scoped to one Persona and reason the
+        given intent through it, within the spawning limits the strategy in
+        memory.md declares."""
+        return self.spawner.spawn(self, persona, intent)
 
     def _build_evidence(self, intent: Intent, plan: list[Workflow], recalled: str) -> Evidence:
         """Capture why this decision was reached -- separately from what

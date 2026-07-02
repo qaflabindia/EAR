@@ -87,6 +87,9 @@ class Reasoner:
         context["_runtime_name"] = runtime_name
         context["_available_processes"] = ", ".join(process_names) if process_names else "none"
         context["_remembered_context"] = Reasoner._memory_block(intent, runtime)
+        strategy_narrative = Reasoner._strategy_block(runtime)
+        if strategy_narrative:
+            context["_operating_strategy"] = strategy_narrative
 
         reasoner = dspy.Predict(ReasonAboutIntent)
         with dspy.context(lm=lm):
@@ -157,6 +160,18 @@ class Reasoner:
         for skill in getattr(persona, "skills", []):
             instruction = skill.instruction() if hasattr(skill, "instruction") else getattr(skill, "name", "")
             lines.append(f"{indent}  - Skill {skill.name}: {instruction}")
+
+    @staticmethod
+    def _strategy_block(runtime: Any) -> str:
+        """Render the operating strategy stacked in memory.md -- the
+        ontology's vocabulary, the declared tools and MCP servers, and the
+        discovery guidance -- so the model reasons with the enterprise's own
+        terms and knows what capabilities it has."""
+        strategy = getattr(runtime, "strategy", None)
+        if strategy is None:
+            return ""
+        narrative = getattr(strategy, "narrative", None)
+        return narrative() if callable(narrative) else ""
 
     @staticmethod
     def _memory_block(intent: Intent, runtime: Any) -> str:

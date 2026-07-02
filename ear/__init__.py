@@ -36,6 +36,15 @@ entries) round out the memory layers Adaptation then adapts from.
 Evolver (evolve) and Optimizer (optimize) are structural, dev-time
 operations on Skill/Persona -- not part of the per-cycle pipeline.
 
+The whole stack can be authored in natural language alone: `load_runtime`
+(see `ear/loader.py`) reads a directory of markdown files -- prompts
+stacked in skills.md, skills in persona.md, steps in workflow.md, workflows
+in process.md, governance/risk/controls in policy.md -- and stacks them
+into a Runtime. memory.md declares the operating Strategy: context history,
+cross-session data (SessionStore), subagent spawning (Spawner), model
+selection (ModelBinding), MCP servers (McpServer), tools (Tool), skills
+discovery guidance, and ontological settings (Ontology).
+
 DSPy and GEPA are used deliberately, not on every class: see
 `ear/reasoner.py` and `ear/signatures.py` for where and why.
 """
@@ -58,8 +67,11 @@ from .governor import Governor
 from .initializer import Initializer
 from .intent import Intent
 from .learner import Learner
+from .loader import Loader, load_runtime
+from .mcp_server import McpServer
 from .memory import Memory, MemoryEntry
 from .model_binding import ModelBinding
+from .ontology import Ontology
 from .optimizer import Optimizer
 from .orchestrator import Orchestrator
 from .performer import Performer
@@ -71,8 +83,12 @@ from .recaller import Recaller
 from .runtime import Runtime
 from .scheduler import Scheduler
 from .selector import Selector
+from .session_store import SessionStore
 from .skill import Skill
+from .spawner import Spawner
 from .step import Step
+from .strategy import Strategy
+from .tool import Tool
 from .validator import Validator
 from .workflow import Workflow
 
@@ -114,5 +130,13 @@ __all__ = [
     "Adapter",
     "Evolver",
     "Optimizer",
+    "Loader",
+    "load_runtime",
+    "Strategy",
+    "SessionStore",
+    "Spawner",
+    "Tool",
+    "McpServer",
+    "Ontology",
     "__version__",
 ]
