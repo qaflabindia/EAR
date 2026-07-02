@@ -38,11 +38,17 @@ class Reasoner:
         capabilities = self._render_capabilities(plan)
         knowledge = self._render_research(research)
         model_binding = getattr(runtime, "model_binding", None)
+        binder = getattr(runtime, "tool_binder", None)
+        bound_tools = binder.bound_tools(runtime, plan) if binder is not None else []
         if self.program is not None:
             decision = self._run_program(intent, capabilities)
             model = "compiled-dspy-program"
         elif model_binding is not None and model_binding.lm is not None:
-            decision = self._reason_with_llm(intent, runtime, model_binding.lm, capabilities, knowledge)
+            executable = binder.dspy_tools(runtime, plan) if bound_tools else []
+            max_iterations = binder.max_iterations if binder is not None else 6
+            decision = self._reason_with_llm(
+                intent, runtime, model_binding.lm, capabilities, knowledge, executable, max_iterations
+            )
             model = model_binding.model_id
         else:
             decision = self._default_reasoning(intent, runtime, capabilities)
@@ -63,6 +69,7 @@ class Reasoner:
                     "memory": self._memory_block(intent, runtime),
                     "strategy": self._strategy_block(runtime),
                     "knowledge": knowledge,
+                    "tools": [tool.name for tool in bound_tools],
                 },
                 output=str(decision),
                 model=model,
@@ -102,7 +109,15 @@ class Reasoner:
         return self.program(intent=str(intent), context=intent.context, capabilities=capabilities)
 
     @staticmethod
-    def _reason_with_llm(intent: Intent, runtime: Any, lm: Any, capabilities: str = "", knowledge: str = "") -> str:
+    def _reason_with_llm(
+        intent: Intent,
+        runtime: Any,
+        lm: Any,
+        capabilities: str = "",
+        knowledge: str = "",
+        tools: Any = None,
+        max_iterations: int = 6,
+    ) -> str:
         import dspy
 
         from .signatures import ReasonAboutIntent
@@ -119,7 +134,13 @@ class Reasoner:
         if knowledge:
             context["_retrieved_knowledge"] = knowledge
 
-        reasoner = dspy.Predict(ReasonAboutIntent)
+        if tools:
+            # Bound tools make deliberation a ReAct loop: the model decides
+            # what to call and when, within the binder's iteration budget,
+            # and every invocation lands on the trail via the binder.
+            reasoner = dspy.ReAct(ReasonAboutIntent, tools=list(tools), max_iters=max_iterations)
+        else:
+            reasoner = dspy.Predict(ReasonAboutIntent)
         with dspy.context(lm=lm):
             result = reasoner(
                 intent=intent.text,

@@ -56,6 +56,7 @@ from .recaller import Recaller
 from .scheduler import Scheduler
 from .selector import Selector
 from .spawner import Spawner
+from .tool_binder import ToolBinder
 from .validator import Validator
 from .workflow import Workflow
 
@@ -83,6 +84,7 @@ class Runtime:
     strategy: Optional[Any] = None
     session_store: Optional[Any] = None
     spawner: Spawner = field(default_factory=Spawner)
+    tool_binder: ToolBinder = field(default_factory=ToolBinder)
 
     # The audit trail of every reasoning step -- policy judgments with
     # their rationale, discovery, the deliberation with the full stacked
@@ -249,6 +251,11 @@ class Runtime:
                 f"{len(cycle_calls)} model calls, {input_tokens}+{output_tokens} tokens, "
                 f"~${cost:.6f}, {latency_ms} ms"
             )
+        elif lm is not None:
+            # A bound model with no new history entries means the calls were
+            # answered from the LM's cache -- which costs nothing, and the
+            # accounting says so rather than implying no model ran.
+            summary = f"0 new model calls recorded (cached), {latency_ms} ms"
         else:
             summary = f"0 model calls (deterministic fallbacks), {latency_ms} ms"
         self.reasoning_log.record(
@@ -269,6 +276,14 @@ class Runtime:
         given intent through it, within the spawning limits the strategy in
         memory.md declares."""
         return self.spawner.spawn(self, persona, intent)
+
+    def bind_tool(self, name: str, handler: Any) -> "Runtime":
+        """Attach the executable behind a tool the stack declares (a Tools
+        bullet in memory.md, or a stacked skill). Binding an undeclared
+        name fails loudly at reasoning time -- code never grows the runtime
+        a capability the natural-language authoring doesn't show."""
+        self.tool_binder.bind(name, handler)
+        return self
 
     def _formalize(self, intent: Intent, plan: list[Workflow], decision: Any) -> dict[str, Any]:
         """Honor the plan's Contracts: extract each workflow's declared

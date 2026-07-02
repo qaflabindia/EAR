@@ -158,6 +158,10 @@ delegation    which persona each undelegated step was assigned to, and why it
 deliberation  the Reasoner's decision, with the full stacked capabilities
               block and memory context -- the exact prompt material to review
 recall        what was recalled from memory as relevant to this intent
+retrieval     which knowledge passages were consulted, with citations
+tool          each tool invocation: arguments, result, duration (failures too)
+approval      a human verdict on a parked gate, or the park itself
+usage         the cycle's accounting: model calls, tokens, cost, latency
 explanation   the Explainer's prose and the evidence it rested on
 audit         the auditor's assessment of whether the evidence supports
               the decision
@@ -176,6 +180,36 @@ sessions), or JSONL when the declared path ends in `.jsonl`:
 print(runtime.reasoning_log.render())                      # the skim view
 runtime.reasoning_log.for_stage("deliberation")[-1].inputs  # the full prompt material
 ```
+
+### Tools — execution on the record
+
+Tools stay *declared* in memory.md; the `ToolBinder` is where a
+declaration meets an executable:
+
+```python
+runtime.bind_tool("amortization_calculator", monthly_payment)  # any callable
+```
+
+The stack remains the source of what exists — binding a name nothing in
+the stack declares fails loudly, so code never grows the runtime a
+capability the natural-language authoring doesn't show. Skills that carry
+a Python handler bind automatically for the cycle's plan (an explicit
+binding overrides). With bound tools present, deliberation becomes a DSPy
+ReAct loop over them — *when* to call one is the model's judgment, within
+the binder's iteration budget — and every invocation is a trail record
+(stage `tool`: arguments, result, duration). A failing tool never breaks
+the cycle: the failure is recorded and handed back to the model as text.
+Declared-but-unbound tools stay context the model knows about, as before.
+LangChain tools bind through
+`ear.integrations.langchain_backend.bind_langchain_tool` (duck-typed —
+`.name`/`.description`/`.invoke`/`.run`), behind a declared name like
+everything else.
+
+The deliberation engine itself is also a seam: attach a `backend` to the
+`Deliberator` (anything with `deliberate(runtime, intent, plan, research)`
+— e.g. a typed-agent adapter) and it replaces the Reasoner for that step
+only, with the Governor, Decider/Validator, Contracts and the trail all
+still applying — a backend never reasons off the record.
 
 ### Approval gates — human-in-the-loop governance, in markdown
 
@@ -511,6 +545,7 @@ ear/
   step.py          Step          — one narrated instruction in a Workflow, delegated to a Persona
   workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies
   approval.py      Approval      — a human's verdict on a parked cycle; ApprovalRequired parks it
+  tool_binder.py   ToolBinder    — declared tools meet executables; every invocation on the trail
   contract.py      Contract      — a workflow's Deliverable: fields with plain-English meanings, extracted and judged at runtime
   examiner.py      Examiner      — examine: run markdown-native evaluations and grade them, honestly offline
   knowledge.py     Knowledge     — the declared reference corpus, chunked through the Section parser
@@ -562,5 +597,6 @@ ear/
     skillopt_backend.py  skillopt   — train a Persona's skill document with ReflACT
     otel_backend.py      OpenTelemetryExporter — the trail as OTLP spans (Langfuse/Phoenix/any)
     llamaindex_backend.py LlamaIndexRetriever  — a LlamaIndex retriever on the Librarian's seam
+    langchain_backend.py bind_langchain_tool   — a LangChain tool behind a declared tool name
 ```
 </content>

@@ -100,6 +100,7 @@ from .spawner import Spawner
 from .step import Step
 from .strategy import Strategy
 from .tool import Tool
+from .tool_binder import BoundTool, ToolBinder
 from .validator import Validator
 from .workflow import Workflow
 
@@ -162,6 +163,8 @@ __all__ = [
     "SessionStore",
     "Spawner",
     "Tool",
+    "ToolBinder",
+    "BoundTool",
     "McpServer",
     "Ontology",
     "__version__",

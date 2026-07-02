@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -890,6 +891,168 @@ def test_examiner_grades_the_example_suite_live(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Executable tools: declarations meet handlers in the ToolBinder, the model
+# decides when to call, and every invocation lands on the trail.
+# ---------------------------------------------------------------------------
+
+TOOLS_MEMORY = (
+    "# Memory & Strategy\n\n## Tools\n\n"
+    "- amortization_calculator: computes the monthly payment for an amount, an annual rate in percent, and a term in months\n"
+)
+
+
+def monthly_payment(amount: float, annual_rate_percent: float, months: int) -> float:
+    """Compute a fixed monthly payment for a loan."""
+    monthly_rate = annual_rate_percent / 100 / 12
+    if monthly_rate == 0:
+        return round(amount / months, 2)
+    factor = (1 + monthly_rate) ** months
+    return round(amount * monthly_rate * factor / (factor - 1), 2)
+
+
+def test_tool_binder_resolves_declared_tools_and_rejects_strays(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = TOOLS_MEMORY
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    runtime.bind_tool("amortization_calculator", monthly_payment)
+
+    bound = runtime.tool_binder.bound_tools(runtime)
+    assert [tool.name for tool in bound] == ["amortization_calculator"]
+    assert "monthly payment" in bound[0].description  # the declared description, not the docstring
+    assert bound[0].identifier == "amortization_calculator"
+
+    runtime.bind_tool("undeclared_gadget", monthly_payment)
+    with pytest.raises(ValueError, match="matches nothing the stack declares.*amortization_calculator"):
+        runtime.tool_binder.bound_tools(runtime)
+
+
+def test_handler_skills_bind_automatically_and_bindings_override():
+    from ear import Persona, Skill, ToolBinder, Workflow
+
+    persona = Persona(name="Analyst")
+    persona.add_skill(Skill(name="fetch_score", prompt="Fetch the credit score.", handler=lambda applicant: 700))
+    workflow = Workflow(name="W")
+    workflow.add_persona(persona)
+    runtime = Runtime(name="Skilled-Runtime")
+
+    binder = ToolBinder()
+    bound = binder.bound_tools(runtime, plan=[workflow])
+    assert [tool.name for tool in bound] == ["fetch_score"]
+    assert bound[0].handler("anyone") == 700
+
+    # An explicit binding for the same skill overrides its own handler;
+    # explicit bindings resolve against the runtime's whole stack, so the
+    # workflow joins a process first.
+    from ear import Process
+
+    holder = Process(name="P")
+    holder.add_workflow(workflow)
+    runtime.add_process(holder)
+    binder.bind("fetch_score", lambda applicant: 750)
+    bound = binder.bound_tools(runtime, plan=[workflow])
+    assert bound[0].handler("anyone") == 750
+
+
+def test_offline_deliberation_lists_tools_without_invoking_them(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = TOOLS_MEMORY
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    runtime.bind_tool("amortization_calculator", monthly_payment)
+    runtime.reason(Intent(text="Underwrite a consumer loan", context={"loan_amount": 5000}))
+
+    deliberation = runtime.reasoning_log.for_stage("deliberation")[0]
+    assert deliberation.inputs["tools"] == ["amortization_calculator"]
+    assert runtime.reasoning_log.for_stage("tool") == []
+
+
+def test_logged_tool_wrapper_contains_failures_on_the_record():
+    from ear.tool_binder import BoundTool, ToolBinder
+
+    def broken(query: str) -> str:
+        raise RuntimeError("bureau offline")
+
+    runtime = Runtime(name="Contained-Runtime")
+    wrapped = ToolBinder._logged(runtime, BoundTool(name="credit_bureau_check", description="checks", handler=broken))
+    result = wrapped("anything")
+    assert "failed: bureau offline" in str(result)
+    record = runtime.reasoning_log.for_stage("tool")[0]
+    assert record.output.startswith("FAILED")
+    assert record.inputs["tool"] == "credit_bureau_check"
+    assert "duration_ms" in record.inputs
+
+
+def test_langchain_adapter_binds_duck_typed_tools(tmp_path):
+    from ear.integrations.langchain_backend import bind_langchain_tool
+
+    class InvokeTool:
+        name = "amortization_calculator"
+        description = "computes payments"
+
+        def invoke(self, query):
+            return f"invoked: {query}"
+
+    class RunTool:
+        name = "amortization_calculator"
+        description = "computes payments"
+
+        def run(self, query):
+            return f"ran: {query}"
+
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = TOOLS_MEMORY
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+
+    bind_langchain_tool(runtime.tool_binder, InvokeTool())
+    bound = runtime.tool_binder.bound_tools(runtime)
+    assert bound[0].handler("q") == "invoked: q"
+
+    bind_langchain_tool(runtime.tool_binder, RunTool())
+    bound = runtime.tool_binder.bound_tools(runtime)
+    assert bound[0].handler("q") == "ran: q"
+
+
+def test_deliberator_backend_seam_stays_on_the_trail():
+    class TypedBackend:
+        def deliberate(self, runtime, intent, plan=None, research=None):
+            return "typed decision from the backend"
+
+    runtime = Runtime(name="Seamed-Runtime")
+    runtime.orchestrator.executor.performer.deliberator.backend = TypedBackend()
+    decision = runtime.reason(Intent(text="anything"))
+    assert decision == "typed decision from the backend"
+    record = runtime.reasoning_log.for_stage("deliberation")[0]
+    assert record.model == "backend:TypedBackend"
+    assert record.output == decision
+
+
+@requires_anthropic_key
+def test_react_invokes_the_bound_calculator_live(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = TOOLS_MEMORY + (
+        "\n## Model Selection\n\nReason with anthropic/claude-haiku-4-5, reading the credential from\n"
+        "ANTHROPIC_API_KEY, at a temperature of 0.2.\n"
+    )
+    directory = write_stack(tmp_path / "stack", **stack)
+    runtime = load_runtime(directory)
+    runtime.bind_tool("amortization_calculator", monthly_payment)
+
+    decision = runtime.reason(
+        Intent(
+            text=(
+                "Underwrite a $12,000 personal loan at 6 percent annual interest over 36 months; "
+                "compute the exact monthly payment with the amortization calculator before deciding."
+            ),
+            context={"loan_amount": 12000, "credit_score": 760, "debt_to_income": 0.2},
+        )
+    )
+    assert decision
+    invocations = runtime.reasoning_log.for_stage("tool")
+    assert invocations, "the model never called the bound tool"
+    assert invocations[0].inputs["tool"] == "amortization_calculator"
+    assert not invocations[0].output.startswith("FAILED")
+
+
+# ---------------------------------------------------------------------------
 # Approval gates: a violated Approval-required policy parks the cycle for
 # a human verdict instead of blocking it; the verdict is a markdown
 # document, and everything lands on the trail.
@@ -1305,8 +1468,11 @@ def test_retrieval_cites_the_manual_live(tmp_path):
         memory.replace("anthropic/claude-opus-4-8", "anthropic/claude-haiku-4-5"), encoding="utf-8"
     )
     (directory / "intents").mkdir()
+    # A unique reference defeats the LM's prompt cache, so this test
+    # genuinely exercises live usage accounting, not a cached replay.
+    reference = int(time.time())
     (directory / "intents" / "marginal.md").write_text(
-        "# Underwrite a $9,500 personal loan for a marginal applicant\n\n"
+        f"# Underwrite a $9,500 personal loan for a marginal applicant (reference {reference})\n\n"
         "## Context\n\n- loan_amount: 9500\n- credit_score: 665\n- debt_to_income: 0.41\n"
         "- annual_income: 52000\n- existing_defaults: 0\n",
         encoding="utf-8",
