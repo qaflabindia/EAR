@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from ear import (
+    Exchange,
     Intent,
     Loader,
     Persona,
@@ -380,6 +381,147 @@ def test_session_store_restore_survives_a_corrupt_file(tmp_path):
     runtime = Runtime(name="Robust-Runtime")
     assert SessionStore(str(path)).restore(runtime) is False
     assert runtime.memory.working == []
+
+
+# ---------------------------------------------------------------------------
+# Markdown as the system-native input and output format.
+# ---------------------------------------------------------------------------
+
+
+def test_intent_reads_from_markdown_with_typed_context():
+    intent = Intent.from_markdown(
+        "# Underwrite a $18,500 personal loan for Priya Raman\n\n"
+        "Requested for a kitchen renovation.\n\n"
+        "## Context\n\n"
+        "- loan_amount: 18500\n- debt_to_income: 0.28\n- existing_defaults: 0\n"
+        "- first_time_borrower: yes\n- purpose: kitchen renovation\n"
+    )
+    assert intent.text.startswith("Underwrite a $18,500 personal loan")
+    assert "kitchen renovation" in intent.text
+    assert intent.context["loan_amount"] == 18500
+    assert intent.context["debt_to_income"] == 0.28
+    assert intent.context["existing_defaults"] == 0
+    assert intent.context["first_time_borrower"] is True
+    assert intent.context["purpose"] == "kitchen renovation"
+
+
+def test_intent_round_trips_through_markdown():
+    original = Intent(text="Underwrite a loan", context={"loan_amount": 5000, "purpose": "solar panels"})
+    recovered = Intent.from_markdown(original.to_markdown())
+    assert recovered.text == original.text
+    assert recovered.context == original.context
+
+
+def test_session_store_round_trips_through_markdown(tmp_path):
+    store = SessionStore(str(tmp_path / "session.md"))
+    first = Runtime(name="Markdown-Persistent-Runtime")
+    first.reason(Intent(text="Underwrite the first loan", context={"loan_amount": 1000, "purpose": "a bike"}))
+    first.memory.compressed.append("3 earlier cycles (e.g. approved twice)")
+    first.adaptations.learn_from(first.experience)
+    store.save(first)
+
+    second = Runtime(name="Markdown-Persistent-Runtime")
+    assert store.restore(second) is True
+    entry = second.memory.working[0]
+    assert entry.intent_text == "Underwrite the first loan"
+    assert entry.context == {"loan_amount": 1000, "purpose": "a bike"}
+    assert entry.decision == str(first.memory.working[0].decision)
+    assert entry.evidence.basis.startswith("Resolved via")
+    assert second.memory.compressed == ["3 earlier cycles (e.g. approved twice)"]
+    assert second.experience.observations == 1
+    assert second.experience.decision_counts == first.experience.decision_counts
+    assert second.adaptations.impressions[0].insight == first.adaptations.impressions[0].insight
+
+
+def test_reasoning_log_flushes_markdown_trail(tmp_path):
+    path = tmp_path / "reasoning.md"
+    runtime = Runtime(name="Markdown-Audited-Runtime")
+    runtime.reasoning_log.path = str(path)
+    runtime.reason(Intent(text="first cycle"))
+    runtime.reason(Intent(text="second cycle"))
+
+    trail = path.read_text(encoding="utf-8")
+    assert "## Cycle 1 --" in trail and "## Cycle 2 --" in trail
+    assert "### deliberation" in trail and "### explanation" in trail
+    # Free text is blockquoted, so it can never be mistaken for structure.
+    assert "> " in trail
+
+
+def test_exchange_answers_intent_documents_with_decision_documents(tmp_path):
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    (directory / "intents").mkdir()
+    (directory / "intents" / "priya-raman.md").write_text(
+        "# Underwrite a $18,500 personal loan for Priya Raman\n\n"
+        "## Context\n\n- loan_amount: 18500\n- debt_to_income: 0.28\n",
+        encoding="utf-8",
+    )
+    runtime = load_runtime(directory)
+    written = Exchange(directory).run(runtime)
+
+    assert [path.name for path in written] == ["priya-raman.md"]
+    decision = (directory / "decisions" / "priya-raman.md").read_text(encoding="utf-8")
+    assert decision.startswith("# Decision -- Underwrite a $18,500 personal loan for Priya Raman")
+    assert "Status: decided" in decision
+    assert "Credit Risk Guru" in decision
+    assert "## Policy judgments" in decision
+
+    # Idempotent: already-answered intents are not replayed.
+    assert Exchange(directory).run(runtime) == []
+
+
+def test_exchange_writes_blocked_decision_documents(tmp_path):
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    (directory / "intent.md").write_text(
+        "# Underwrite an oversized loan\n\n## Context\n\n- loan_amount: 90000\n",
+        encoding="utf-8",
+    )
+    runtime = load_runtime(directory)
+    written = Exchange(directory).run(runtime)
+
+    assert [path.name for path in written] == ["decision.md"]
+    decision = (directory / "decision.md").read_text(encoding="utf-8")
+    assert "Status: BLOCKED" in decision
+    assert "Loan Amount Cap" in decision
+    assert "VIOLATED" in decision
+
+
+def test_loader_defaults_session_and_audit_to_markdown(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = (
+        "## Cross-Session Data\nPersist everything between sessions.\n\n"
+        "## Reasoning Audit Trail\nLog every reasoning step for review.\n"
+    )
+    directory = write_stack(tmp_path / "stack", **stack)
+    runtime = load_runtime(directory)
+    assert runtime.session_store.path == str(directory / ".ear" / "session.md")
+    assert runtime.reasoning_log.path == str(directory / ".ear" / "reasoning.md")
+
+    runtime.reason(Intent(text="Underwrite a consumer loan", context={"loan_amount": 5000}))
+    second = load_runtime(directory)
+    assert len(second.memory.working) == 1
+
+
+def test_cycle_numbering_continues_across_sessions_in_one_trail(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = "## Reasoning Audit Trail\nLog every reasoning step for review.\n"
+    directory = write_stack(tmp_path / "stack", **stack)
+
+    first = load_runtime(directory)
+    first.reason(Intent(text="Underwrite a consumer loan", context={"loan_amount": 5000}))
+
+    second = load_runtime(directory)
+    second.reason(Intent(text="Underwrite another loan", context={"loan_amount": 6000}))
+
+    trail = (directory / ".ear" / "reasoning.md").read_text(encoding="utf-8")
+    assert "## Cycle 1 --" in trail and "## Cycle 2 --" in trail
+    assert second.reasoning_log.cycle == 2
+
+
+def test_declared_path_ignores_prose_mentions_of_stack_files():
+    strategy = Strategy.from_markdown(
+        "## Cross-Session Data\nAs declared here in memory.md, persist everything to .ear/session.md between sessions.\n"
+    )
+    assert strategy.session_path == ".ear/session.md"
 
 
 # ---------------------------------------------------------------------------

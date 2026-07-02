@@ -99,6 +99,41 @@ Subagents spawn via `runtime.spawn(persona, intent)`: a child runtime scoped
 to one persona, sharing the parent's model and strategy but keeping its own
 memory, with nested spawns counted against the same strategy budget.
 
+### Markdown in, markdown out
+
+Markdown is the system-native format on *both* sides of the boundary, not
+just for authoring. Requests arrive as intent documents and decisions leave
+as decision documents, paired by file stem through the `Exchange`:
+
+```text
+IN   intents/<name>.md    #-title = the request, prose elaborates it,
+                          ## Context bullets carry the facts (values are
+                          coerced back to numbers/booleans)
+OUT  decisions/<name>.md  the decision, explanation, evidence and every
+                          policy judgment with its rationale; a Policy
+                          block is written as Status: BLOCKED, not raised
+                          away -- a refusal is an outcome on the record
+OUT  .ear/reasoning.md    the reasoning audit trail (append-only)
+OUT  .ear/session.md      cross-session memory, restored through the same
+                          Section parser the stack is authored with
+```
+
+```python
+from ear import Exchange, load_runtime
+
+runtime = load_runtime("examples/credit_risk_stack")
+Exchange("examples/credit_risk_stack").run(runtime)   # answers every unanswered intents/*.md
+```
+
+`Exchange.run` is idempotent — an inbox, not a replay: intents whose
+decision document already exists are skipped. `Exchange.respond(runtime,
+intent_markdown)` is the same boundary as text-in/text-out. `Intent` itself
+round-trips (`Intent.from_markdown` / `intent.to_markdown()`), and every
+free-text value in an outbound document is blockquoted so it can never be
+mistaken for document structure. The persistence codecs are picked by file
+extension: `.md` is the default everywhere; declare a `.json`/`.jsonl` path
+in memory.md if a machine pipeline needs it instead.
+
 See `examples/credit_risk_stack/` for a complete six-file stack that loads
 and reasons offline (deterministic fallbacks) or live (set the environment
 variable named in its memory.md), and `examples/credit_risk_guru.ipynb` for
@@ -123,10 +158,11 @@ explanation   the Explainer's prose and the evidence it rested on
 
 Each record carries the model that produced it (`deterministic-fallback`
 when no ModelBinding was active). Blocked cycles are logged too — a policy
-violation is an audit event, not a gap in the record. Declare a path in
-memory.md (a "Reasoning Audit Trail" section naming a `.jsonl` file) and
-the runtime appends the trail to disk after every cycle, accumulating
-across sessions:
+violation is an audit event, not a gap in the record. Declare a "Reasoning
+Audit Trail" section in memory.md and the runtime appends the trail to
+disk after every cycle — readable markdown by default (`.ear/reasoning.md`,
+one `## Cycle` section per cycle, cycle numbering continuing across
+sessions), or JSONL when the declared path ends in `.jsonl`:
 
 ```python
 print(runtime.reasoning_log.render())                      # the skim view
@@ -344,7 +380,9 @@ ear/
   loader.py        Loader        — load_runtime: stack skills.md/persona.md/workflow.md/
                                    process.md/policy.md/memory.md into a Runtime
   strategy.py      Strategy      — the memory.md operating strategy, read from plain English
-  session_store.py SessionStore  — cross-session data: memory layers persisted to JSON
+  exchange.py      Exchange      — the markdown boundary: intents/*.md in, decisions/*.md out
+  reasoning_log.py ReasoningLog  — the reasoning audit trail (markdown by default, JSONL optional)
+  session_store.py SessionStore  — cross-session data (markdown by default, JSON optional)
   spawner.py       Spawner       — spawn subagent runtimes, bounded by the strategy
   tool.py          Tool          — a tool declared in plain English, surfaced to reasoning
   mcp_server.py    McpServer     — an MCP server declared in plain English

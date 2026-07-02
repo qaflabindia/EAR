@@ -41,7 +41,7 @@ _DISABLED = re.compile(
 )
 _INTEGER = re.compile(r"\b(\d+)\b")
 _BACKTICKED = re.compile(r"`([^`]+)`")
-_STORE_PATH = re.compile(r"(?<![\w/])((?:[\w.-]+/)*[\w.-]+\.(?:jsonl?|log|db|sqlite))\b")
+_STORE_PATH = re.compile(r"(?<![\w/])((?:[\w.-]+/)*[\w.-]+\.(?:md|jsonl?|log|db|sqlite))\b")
 _ENV_VAR = re.compile(r"\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN)[A-Z0-9_]*)\b")
 _MODEL_ID = re.compile(r"(?<![\w./])([A-Za-z][\w-]*)/([A-Za-z][\w.:-]*)(?![\w./])")
 _MODEL_TOKEN = re.compile(r"\b([a-z][a-z0-9]*(?:[-.:][a-z0-9]+)+)\b")
@@ -154,26 +154,12 @@ class Strategy:
     def _read_cross_session(self, prose: str) -> None:
         self.cross_session = prose
         self.session_enabled = not _DISABLED.search(prose)
-        for candidate in _BACKTICKED.findall(prose):
-            if _STORE_PATH.fullmatch(candidate) or "/" in candidate:
-                self.session_path = candidate
-                break
-        if not self.session_path:
-            path = _STORE_PATH.search(prose)
-            if path:
-                self.session_path = path.group(1)
+        self.session_path = _declared_path(prose)
 
     def _read_audit(self, prose: str) -> None:
         self.audit_trail = prose
         self.audit_enabled = not _DISABLED.search(prose)
-        for candidate in _BACKTICKED.findall(prose):
-            if _STORE_PATH.fullmatch(candidate) or "/" in candidate:
-                self.audit_path = candidate
-                break
-        if not self.audit_path:
-            path = _STORE_PATH.search(prose)
-            if path:
-                self.audit_path = path.group(1)
+        self.audit_path = _declared_path(prose)
 
     def _read_subagents(self, prose: str) -> None:
         self.subagent_spawning = prose
@@ -273,6 +259,20 @@ class Strategy:
 
 def _full_text(body: Body) -> str:
     return "\n".join(filter(None, [body.prose] + body.bullets + body.numbered))
+
+
+def _declared_path(prose: str) -> str:
+    """The store path a section declares. Backticked paths win; among bare
+    mentions, one with a directory part wins, so prose that merely mentions
+    a stack file like `memory.md` is never mistaken for the store."""
+    for candidate in _BACKTICKED.findall(prose):
+        if _STORE_PATH.fullmatch(candidate) or "/" in candidate:
+            return candidate
+    matches = [match.group(1) for match in _STORE_PATH.finditer(prose)]
+    for match in matches:
+        if "/" in match:
+            return match
+    return matches[0] if matches else ""
 
 
 def _split_declaration(bullet: str) -> tuple[str, str]:

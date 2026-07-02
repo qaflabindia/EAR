@@ -10,7 +10,7 @@ summaries so the reasoning context stays bounded as history grows.
 
 ## Cross-Session Data
 
-Persist memory, experience and learned adaptations to `.ear/session.json`
+Persist memory, experience and learned adaptations to `.ear/session.md`
 so a new session picks up exactly where the last one left off.
 
 ## Subagent Spawning
@@ -38,7 +38,7 @@ from the environment, the runtime stays on its deterministic fallback.
 
 Log every reasoning step -- each policy judgment with its rationale,
 process discovery, the deliberation with the full stacked prompt material,
-and the explanation -- to `.ear/reasoning.jsonl`, append-only across
+and the explanation -- to `.ear/reasoning.md`, append-only across
 sessions, so the trail can be reviewed and the stacked prompts optimised.
 
 ## Skills Discovery

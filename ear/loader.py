@@ -244,16 +244,17 @@ class Loader:
             runtime.model_binding = binding
 
         if strategy.cross_session and strategy.session_enabled:
-            raw_path = Path(strategy.session_path or ".ear/session.json")
+            raw_path = Path(strategy.session_path or ".ear/session.md")
             path = raw_path if raw_path.is_absolute() else self.directory / raw_path
             store = SessionStore(str(path))
             store.restore(runtime)
             runtime.session_store = store
 
         if strategy.audit_trail and strategy.audit_enabled:
-            raw_path = Path(strategy.audit_path or ".ear/reasoning.jsonl")
+            raw_path = Path(strategy.audit_path or ".ear/reasoning.md")
             path = raw_path if raw_path.is_absolute() else self.directory / raw_path
             runtime.reasoning_log.path = str(path)
+            runtime.reasoning_log.resume()
 
 
 def load_runtime(directory: Union[str, Path], name: Optional[str] = None) -> Runtime:

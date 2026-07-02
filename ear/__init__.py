@@ -60,6 +60,7 @@ from .deliberator import Deliberator
 from .discoverer import Discoverer
 from .evidence import Evidence
 from .evolver import Evolver
+from .exchange import Exchange
 from .executor import Executor
 from .experience import Experience
 from .explainer import Explainer
@@ -131,6 +132,7 @@ __all__ = [
     "Adapter",
     "Evolver",
     "Optimizer",
+    "Exchange",
     "Loader",
     "load_runtime",
     "ReasoningLog",

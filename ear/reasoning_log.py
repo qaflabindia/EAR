@@ -17,18 +17,27 @@ ModelBinding was active), so offline and live cycles are distinguishable in
 the same trail. Blocked cycles are logged too -- a Policy violation is
 exactly what an auditor wants to see, not a gap in the record.
 
-Declared in `memory.md` (a Reasoning Audit Trail section naming a `.jsonl`
-path); the Runtime flushes new records to that file after every cycle,
-append-only, so the trail also accumulates across sessions.
+Declared in `memory.md` (a Reasoning Audit Trail section naming a path);
+the Runtime flushes new records to that file after every cycle,
+append-only, so the trail also accumulates across sessions. The file's
+extension picks the codec: `.md` (the system-native default) appends
+readable markdown, one `## Cycle` section per cycle with every free-text
+value blockquoted so it can never be mistaken for structure; any other
+extension appends JSONL for machine pipelines.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+from .section import quote
+
+_CYCLE_HEADING = re.compile(r"^## Cycle (\d+)", re.MULTILINE)
 
 
 def model_name(model_binding: Any) -> str:
@@ -75,6 +84,29 @@ class ReasoningRecord:
             default=str,
         )
 
+    def to_markdown(self) -> str:
+        """This record as a markdown block: one-line inputs as bullets,
+        multi-line values (the stacked capabilities, a long decision) as
+        blockquotes under their own label."""
+        header = f"### {self.stage}"
+        if self.output:
+            header += f" -- {_clip(self.output, 80)}"
+        if self.model:
+            header += f"  ({self.model})"
+        lines = [header, ""]
+        simple = {key: value for key, value in self.inputs.items() if "\n" not in str(value)}
+        multiline = {key: value for key, value in self.inputs.items() if "\n" in str(value)}
+        if simple:
+            lines += [f"- {key}: {value}" for key, value in simple.items()] + [""]
+        for key, value in multiline.items():
+            if str(value).strip():
+                lines += [f"{key.capitalize()}:", quote(value), ""]
+        if self.rationale:
+            lines += ["Why:", quote(self.rationale), ""]
+        if "\n" in self.output or len(self.output) > 80:
+            lines += ["Output:", quote(self.output), ""]
+        return "\n".join(lines)
+
 
 @dataclass
 class ReasoningLog:
@@ -86,6 +118,30 @@ class ReasoningLog:
     records: list[ReasoningRecord] = field(default_factory=list)
     cycle: int = 0
     flushed: int = 0
+    flushed_cycle: Optional[int] = None
+
+    def resume(self) -> int:
+        """Continue cycle numbering from an existing trail file, so a new
+        session's cycles never repeat numbers inside the same audit trail.
+        A missing or unreadable file leaves the counter untouched."""
+        if not self.path or not os.path.exists(self.path):
+            return self.cycle
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError:
+            return self.cycle
+        numbers: list[int] = []
+        if self.path.endswith(".md"):
+            numbers = [int(number) for number in _CYCLE_HEADING.findall(text)]
+        else:
+            for line in text.splitlines():
+                try:
+                    numbers.append(int(json.loads(line).get("cycle", 0)))
+                except (ValueError, AttributeError):
+                    continue
+        self.cycle = max(numbers, default=self.cycle)
+        return self.cycle
 
     def begin_cycle(self, intent: Any) -> int:
         """Open a new cycle in the trail, recording the intent that
@@ -138,16 +194,24 @@ class ReasoningLog:
         return "\n".join(lines) if lines else "No reasoning recorded yet."
 
     def flush(self) -> Optional[str]:
-        """Append records not yet written to the JSONL file at `path`.
-        With no path set the trail stays in memory only."""
+        """Append records not yet written to the trail file at `path` --
+        markdown when the path ends in `.md`, JSONL otherwise. With no
+        path set the trail stays in memory only."""
         if not self.path or self.flushed >= len(self.records):
             return None
         directory = os.path.dirname(self.path)
         if directory:
             os.makedirs(directory, exist_ok=True)
+        as_markdown = self.path.endswith(".md")
         with open(self.path, "a", encoding="utf-8") as handle:
             for record in self.records[self.flushed :]:
-                handle.write(record.to_json() + "\n")
+                if as_markdown:
+                    if record.cycle != self.flushed_cycle:
+                        self.flushed_cycle = record.cycle
+                        handle.write(f"\n## Cycle {record.cycle} -- {record.timestamp:%Y-%m-%d %H:%M:%S} UTC\n\n")
+                    handle.write(record.to_markdown() + "\n")
+                else:
+                    handle.write(record.to_json() + "\n")
         self.flushed = len(self.records)
         return self.path
 

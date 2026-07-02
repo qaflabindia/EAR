@@ -33,6 +33,47 @@ def normalize(text: str) -> str:
     return re.sub(r"[\s_-]+", " ", text.strip().lower())
 
 
+def coerce(text: str):
+    """Read a markdown value back as the plain type it looks like --
+    numbers as numbers, yes/no as booleans, everything else verbatim -- so
+    facts written as `- loan_amount: 18500` in an intent document reach
+    policies and reasoning as values, not strings."""
+    value = text.strip()
+    lowered = value.lower()
+    if lowered in {"true", "yes"}:
+        return True
+    if lowered in {"false", "no"}:
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value
+
+
+def quote(text: str) -> str:
+    """Render free text as a markdown blockquote, so multi-line values (a
+    decision, a rationale, a stacked capabilities block) can never be
+    mistaken for document structure."""
+    return "\n".join("> " + line if line else ">" for line in str(text).splitlines())
+
+
+def unquote(lines: list[str]) -> str:
+    """Reassemble a blockquote back into its original text."""
+    recovered: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("> "):
+            recovered.append(stripped[2:])
+        elif stripped == ">":
+            recovered.append("")
+    return "\n".join(recovered)
+
+
 @dataclass
 class Body:
     """A Section's content, structured: recognized `Key: value` fields,
