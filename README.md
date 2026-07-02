@@ -468,12 +468,14 @@ above).
 
 ## Roadmap
 
-[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) records how
-each capability that exists in isolation on other platforms — prompt
-optimization, structured outputs, evaluation, observability, RAG, durable
-workflows and approval gates, agent graphs, multi-agent deliberation,
-typed agents, executable tools — was built **natively into EAR**, on zero
-dependencies, without the authored stack ever changing shape.
+[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) is the native
+parity plan: for each capability that exists in isolation on other
+platforms — prompt optimization, typed agents, durable workflows, agent
+graphs, multi-agent deliberation, RAG, structured outputs, evaluation,
+observability, tool connectivity, enterprise governance — it records what
+EAR already ships natively, the honest gap to best-in-class depth, and the
+from-scratch build that closes it. Zero dependencies throughout; the
+authored stack never changes shape.
 
 ## Install
 
