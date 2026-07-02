@@ -42,6 +42,7 @@ from .performer import Performer
 from .policy import Policy
 from .process import Process
 from .reasoner import Reasoner
+from .reasoning_log import ReasoningLog, model_name
 from .recaller import Recaller
 from .scheduler import Scheduler
 from .selector import Selector
@@ -73,6 +74,12 @@ class Runtime:
     strategy: Optional[Any] = None
     session_store: Optional[Any] = None
     spawner: Spawner = field(default_factory=Spawner)
+
+    # The audit trail of every reasoning step -- policy judgments with
+    # their rationale, discovery, the deliberation with the full stacked
+    # prompt material, and the explanation -- reviewable in memory and
+    # flushed to JSONL after every cycle when a path is declared.
+    reasoning_log: ReasoningLog = field(default_factory=ReasoningLog)
 
     # Per-cycle pipeline stages.
     governor: Governor = field(default_factory=Governor)
@@ -116,9 +123,13 @@ class Runtime:
         return [policy for policy in self.policies if not policy.evaluate(self.model_binding, **context)]
 
     def reason(self, intent: Intent) -> Any:
+        self.reasoning_log.begin_cycle(intent)
+
         violations = self.governor.govern(self, intent)
         if violations:
             names = ", ".join(policy.name for policy in violations)
+            # A blocked cycle is exactly what an auditor wants on record.
+            self.reasoning_log.flush()
             raise PermissionError(f"Policy violated: {names}")
 
         self.initializer.initialize(self)
@@ -131,6 +142,7 @@ class Runtime:
         workflow_violations = self.governor.govern_workflows(self, intent, scheduled)
         if workflow_violations:
             names = ", ".join(policy.name for policy in workflow_violations)
+            self.reasoning_log.flush()
             raise PermissionError(f"Workflow policy violated: {names}")
 
         recalled = self.recaller.recall(self.memory, intent)
@@ -138,7 +150,14 @@ class Runtime:
         decision = self.orchestrator.orchestrate(self, intent, plan=scheduled)
 
         evidence = self._build_evidence(intent, scheduled, recalled)
-        evidence.sources["explanation"] = self.explainer.explain(evidence, decision, model_binding=self.model_binding)
+        explanation = self.explainer.explain(evidence, decision, model_binding=self.model_binding)
+        evidence.sources["explanation"] = explanation
+        self.reasoning_log.record(
+            stage="explanation",
+            inputs={"basis": evidence.basis, "decision": str(decision)},
+            output=str(explanation),
+            model=model_name(self.model_binding),
+        )
         self.auditor.audit(evidence)
 
         entry = self.memory.record(intent.text, decision, context=intent.context, evidence=evidence)
@@ -146,6 +165,7 @@ class Runtime:
         self.adapter.adapt(self.adaptations, self.experience)
         if self.session_store is not None:
             self.session_store.save(self)
+        self.reasoning_log.flush()
         return decision
 
     def spawn(self, persona: Any, intent: Any) -> Any:

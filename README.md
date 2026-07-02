@@ -84,6 +84,7 @@ Model Selection       provider/model (e.g. anthropic/claude-opus-4-8), the
                       file), temperature; the binding only attaches when the
                       credential actually resolves, so a stack loaded without
                       keys degrades to the deterministic fallback
+Reasoning Audit Trail where every reasoning step is logged (see below)
 MCP                   declared MCP servers  (- name: what it provides, via `command`)
 Tools                 declared tools        (- name: what it does)
 Skills Discovery      guidance the Discoverer folds into relevance ranking
@@ -100,7 +101,37 @@ memory, with nested spawns counted against the same strategy budget.
 
 See `examples/credit_risk_stack/` for a complete six-file stack that loads
 and reasons offline (deterministic fallbacks) or live (set the environment
-variable named in its memory.md).
+variable named in its memory.md), and `examples/credit_risk_guru.ipynb` for
+the full loop run end to end — authoring, reasoning, audit review and
+prompt optimization — with nothing but natural language as input.
+
+### The reasoning audit trail
+
+`runtime.reasoning_log` (a `ReasoningLog`) records every judgment the
+runtime makes, one stage-labelled record per judgment, so LLM reasoning is
+reviewable after the fact and the stacked prompts can be optimized against
+what the model actually reasoned with:
+
+```text
+intent        the cycle opened, with the intent and its context
+policy        each Policy judgment, with the judge's rationale (pass AND block)
+discovery     which processes were found relevant, and from what catalogue
+deliberation  the Reasoner's decision, with the full stacked capabilities
+              block and memory context -- the exact prompt material to review
+explanation   the Explainer's prose and the evidence it rested on
+```
+
+Each record carries the model that produced it (`deterministic-fallback`
+when no ModelBinding was active). Blocked cycles are logged too — a policy
+violation is an audit event, not a gap in the record. Declare a path in
+memory.md (a "Reasoning Audit Trail" section naming a `.jsonl` file) and
+the runtime appends the trail to disk after every cycle, accumulating
+across sessions:
+
+```python
+print(runtime.reasoning_log.render())                      # the skim view
+runtime.reasoning_log.for_stage("deliberation")[-1].inputs  # the full prompt material
+```
 
 Judgment-laden stages — `Policy` compliance, `Discoverer` relevance
 ranking, the `Reasoner`'s decision, the `Explainer`'s prose — reason in

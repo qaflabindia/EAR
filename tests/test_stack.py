@@ -383,6 +383,91 @@ def test_session_store_restore_survives_a_corrupt_file(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The reasoning audit trail.
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_log_records_every_stage_of_a_cycle(tmp_path):
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    runtime.reason(Intent(text="Underwrite a consumer loan", context={"loan_amount": 5000}))
+
+    stages = [record.stage for record in runtime.reasoning_log.records]
+    assert stages[0] == "intent"
+    assert "policy" in stages and "discovery" in stages
+    assert "deliberation" in stages and "explanation" in stages
+
+    deliberation = runtime.reasoning_log.for_stage("deliberation")[0]
+    # The full stacked prompt material is on the record for prompt review.
+    assert "Credit Risk Guru" in deliberation.inputs["capabilities"]
+    assert "risk_grade" in deliberation.inputs["capabilities"]
+    assert deliberation.model == "deterministic-fallback"
+
+    policy = runtime.reasoning_log.for_stage("policy")[0]
+    assert policy.output == "complies"
+    assert policy.rationale  # the "why" is never dropped
+
+
+def test_reasoning_log_records_blocked_cycles_too(tmp_path):
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    with pytest.raises(PermissionError):
+        runtime.reason(Intent(text="Underwrite a consumer loan", context={"debt_to_income": 0.60}))
+    violated = [record for record in runtime.reasoning_log.for_stage("policy") if record.output == "VIOLATED"]
+    assert [record.inputs["policy"] for record in violated] == ["DTI Ceiling"]
+    assert "0.43" in violated[0].rationale
+
+
+def test_reasoning_log_flushes_jsonl_after_each_cycle(tmp_path):
+    path = tmp_path / "trail" / "reasoning.jsonl"
+    runtime = Runtime(name="Audited-Runtime")
+    runtime.reasoning_log.path = str(path)
+    runtime.reason(Intent(text="first cycle"))
+    runtime.reason(Intent(text="second cycle"))
+
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert {line["cycle"] for line in lines} == {1, 2}
+    assert {line["stage"] for line in lines} >= {"intent", "discovery", "deliberation", "explanation"}
+    # Append-only: nothing was double-written.
+    assert len(lines) == len(runtime.reasoning_log.records)
+
+
+def test_reasoning_log_render_groups_by_cycle():
+    runtime = Runtime(name="Rendered-Runtime")
+    runtime.reason(Intent(text="one cycle"))
+    rendered = runtime.reasoning_log.render()
+    assert "=== Cycle 1" in rendered
+    assert "[deliberation]" in rendered
+
+
+def test_strategy_declares_the_audit_trail_in_natural_language():
+    strategy = Strategy.from_markdown(
+        "## Reasoning Audit Trail\nLog every reasoning step to `audit/trail.jsonl` for review.\n"
+    )
+    assert strategy.audit_enabled
+    assert strategy.audit_path == "audit/trail.jsonl"
+
+
+def test_loader_points_the_reasoning_log_at_the_declared_path(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = "## Reasoning Audit Trail\nLog every reasoning step to `.ear/reasoning.jsonl`.\n"
+    directory = write_stack(tmp_path / "stack", **stack)
+    runtime = load_runtime(directory)
+    assert runtime.reasoning_log.path == str(directory / ".ear" / "reasoning.jsonl")
+
+    runtime.reason(Intent(text="Underwrite a consumer loan", context={"loan_amount": 5000}))
+    assert (directory / ".ear" / "reasoning.jsonl").exists()
+
+
+def test_policy_judge_returns_the_rationale_offline():
+    from ear import Policy
+
+    policy = Policy(name="Cap", fallback_expression="amount <= 10")
+    complies, rationale = policy.judge(amount=5)
+    assert complies is True and "amount <= 10" in rationale
+    complies, rationale = policy.judge(amount=50)
+    assert complies is False
+
+
+# ---------------------------------------------------------------------------
 # Subagent spawning.
 # ---------------------------------------------------------------------------
 

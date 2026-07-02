@@ -34,6 +34,13 @@ from the environment, the runtime stays on its deterministic fallback.
 - amortization_calculator: computes the monthly payment for an amount, rate and term
 - document_checker: verifies the application file carries every required document
 
+## Reasoning Audit Trail
+
+Log every reasoning step -- each policy judgment with its rationale,
+process discovery, the deliberation with the full stacked prompt material,
+and the explanation -- to `.ear/reasoning.jsonl`, append-only across
+sessions, so the trail can be reviewed and the stacked prompts optimised.
+
 ## Skills Discovery
 
 Rank processes by reading their descriptions against the intent, most

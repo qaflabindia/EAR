@@ -79,6 +79,7 @@ from .persona import Persona
 from .policy import Policy
 from .process import Process
 from .reasoner import Reasoner
+from .reasoning_log import ReasoningLog, ReasoningRecord
 from .recaller import Recaller
 from .runtime import Runtime
 from .scheduler import Scheduler
@@ -132,6 +133,8 @@ __all__ = [
     "Optimizer",
     "Loader",
     "load_runtime",
+    "ReasoningLog",
+    "ReasoningRecord",
     "Strategy",
     "SessionStore",
     "Spawner",

@@ -36,12 +36,35 @@ class Reasoner:
 
     def reason(self, intent: Intent, runtime: Any = None, plan: Any = None) -> Any:
         capabilities = self._render_capabilities(plan)
-        if self.program is not None:
-            return self._run_program(intent, capabilities)
         model_binding = getattr(runtime, "model_binding", None)
-        if model_binding is not None and model_binding.lm is not None:
-            return self._reason_with_llm(intent, runtime, model_binding.lm, capabilities)
-        return self._default_reasoning(intent, runtime, capabilities)
+        if self.program is not None:
+            decision = self._run_program(intent, capabilities)
+            model = "compiled-dspy-program"
+        elif model_binding is not None and model_binding.lm is not None:
+            decision = self._reason_with_llm(intent, runtime, model_binding.lm, capabilities)
+            model = model_binding.model_id
+        else:
+            decision = self._default_reasoning(intent, runtime, capabilities)
+            model = "deterministic-fallback"
+        log = getattr(runtime, "reasoning_log", None)
+        if log is not None:
+            # The full prompt material -- the stacked capabilities block,
+            # the memory context, the intent -- goes on the record, so an
+            # author can review exactly what the model reasoned with and
+            # optimise the stacked prompts against it.
+            log.record(
+                stage="deliberation",
+                inputs={
+                    "intent": intent.text,
+                    "context": dict(intent.context),
+                    "capabilities": capabilities,
+                    "memory": self._memory_block(intent, runtime),
+                    "strategy": self._strategy_block(runtime),
+                },
+                output=str(decision),
+                model=model,
+            )
+        return decision
 
     def compile_with_dspy(self, signature: Optional[Any] = None, **predict_kwargs: Any) -> "Reasoner":
         """Attach a DSPy signature or program as this Reasoner's reasoning

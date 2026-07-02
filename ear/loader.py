@@ -250,6 +250,11 @@ class Loader:
             store.restore(runtime)
             runtime.session_store = store
 
+        if strategy.audit_trail and strategy.audit_enabled:
+            raw_path = Path(strategy.audit_path or ".ear/reasoning.jsonl")
+            path = raw_path if raw_path.is_absolute() else self.directory / raw_path
+            runtime.reasoning_log.path = str(path)
+
 
 def load_runtime(directory: Union[str, Path], name: Optional[str] = None) -> Runtime:
     """Stack a directory of natural-language markdown files into a Runtime."""

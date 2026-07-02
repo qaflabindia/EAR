@@ -13,6 +13,7 @@ from typing import Any
 
 from .intent import Intent
 from .process import Process
+from .reasoning_log import model_name
 
 
 @dataclass
@@ -23,8 +24,22 @@ class Discoverer:
     def discover(self, runtime: Any, intent: Intent) -> list[Process]:
         model_binding = getattr(runtime, "model_binding", None)
         if model_binding is not None and getattr(model_binding, "lm", None) is not None:
-            return self._discover_with_llm(runtime.processes, intent, model_binding.lm, self._guidance(runtime))
-        return self._discover_by_keyword(runtime.processes, intent)
+            found = self._discover_with_llm(runtime.processes, intent, model_binding.lm, self._guidance(runtime))
+        else:
+            found = self._discover_by_keyword(runtime.processes, intent)
+        log = getattr(runtime, "reasoning_log", None)
+        if log is not None:
+            log.record(
+                stage="discovery",
+                inputs={
+                    "intent": intent.text,
+                    "available_processes": [process.name for process in runtime.processes],
+                    "guidance": self._guidance(runtime),
+                },
+                output=", ".join(process.name for process in found) or "none",
+                model=model_name(model_binding),
+            )
+        return found
 
     @staticmethod
     def _guidance(runtime: Any) -> str:

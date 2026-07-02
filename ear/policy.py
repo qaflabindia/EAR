@@ -30,20 +30,28 @@ class Policy:
 
     def evaluate(self, model_binding: Optional[Any] = None, **context: Any) -> bool:
         """Return True when the policy is satisfied (or not applicable)."""
+        complies, _rationale = self.judge(model_binding=model_binding, **context)
+        return complies
+
+    def judge(self, model_binding: Optional[Any] = None, **context: Any) -> tuple[bool, str]:
+        """Judge the policy and return (complies, rationale). The rationale
+        is what the Governor writes to the reasoning audit trail, so *why*
+        a policy passed or blocked is reviewable, not just that it did."""
         if model_binding is not None and getattr(model_binding, "lm", None) is not None:
             return self._judge_with_llm(model_binding.lm, context)
         if not self.fallback_expression:
-            return True
+            return True, "no model active and no fallback expression -- policy treated as not applicable"
         try:
-            return bool(safe_eval(self.fallback_expression, context))
-        except MissingVariableError:
+            complies = bool(safe_eval(self.fallback_expression, context))
+            return complies, f"fallback expression '{self.fallback_expression}' evaluated to {complies}"
+        except MissingVariableError as missing:
             # The expression references a variable this intent's context
             # doesn't carry, so the policy doesn't apply to this intent.
-            return True
+            return True, f"not applicable to this intent: {missing}"
 
-    def _judge_with_llm(self, lm: Any, context: dict[str, Any]) -> bool:
+    def _judge_with_llm(self, lm: Any, context: dict[str, Any]) -> tuple[bool, str]:
         if not self.statement:
-            return True
+            return True, "policy has no statement to judge"
         import dspy
 
         from .signatures import JudgePolicyCompliance
@@ -51,4 +59,4 @@ class Policy:
         judge = dspy.Predict(JudgePolicyCompliance)
         with dspy.context(lm=lm):
             result = judge(policy_statement=self.statement, context=context)
-        return bool(result.complies)
+        return bool(result.complies), str(result.rationale)

@@ -8,6 +8,7 @@ hardcoded in Python:
     Cross-Session Data   where memory/experience/adaptations persist between sessions
     Subagent Spawning    whether subagents may be spawned, and how many
     Model Selection      which LLM provider/model reasons, and where its credential lives
+    Reasoning Audit Trail where the ReasoningLog's JSONL trail is written
     MCP                  declared MCP servers (name: what it provides, `command`)
     Tools                declared tools (name: what it does, `command`)
     Skills Discovery     guidance for how the Discoverer ranks relevance
@@ -40,7 +41,7 @@ _DISABLED = re.compile(
 )
 _INTEGER = re.compile(r"\b(\d+)\b")
 _BACKTICKED = re.compile(r"`([^`]+)`")
-_STORE_PATH = re.compile(r"(?<![\w/])((?:[\w.-]+/)*[\w.-]+\.(?:json|db|sqlite))\b")
+_STORE_PATH = re.compile(r"(?<![\w/])((?:[\w.-]+/)*[\w.-]+\.(?:jsonl?|log|db|sqlite))\b")
 _ENV_VAR = re.compile(r"\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN)[A-Z0-9_]*)\b")
 _MODEL_ID = re.compile(r"(?<![\w./])([A-Za-z][\w-]*)/([A-Za-z][\w.:-]*)(?![\w./])")
 _MODEL_TOKEN = re.compile(r"\b([a-z][a-z0-9]*(?:[-.:][a-z0-9]+)+)\b")
@@ -107,6 +108,11 @@ class Strategy:
     # Skills discovery guidance -> Discoverer.
     skills_discovery: str = ""
 
+    # Reasoning audit trail -> ReasoningLog persistence.
+    audit_trail: str = ""
+    audit_enabled: bool = False
+    audit_path: str = ""
+
     # Ontological settings -> the reasoning vocabulary.
     ontology: Ontology = field(default_factory=Ontology)
 
@@ -119,6 +125,8 @@ class Strategy:
             prose = _full_text(body)
             if "ontolog" in heading or "vocabular" in heading:
                 strategy._read_ontology(body)
+            elif "audit" in heading or "log" in heading or "trace" in heading or "trail" in heading:
+                strategy._read_audit(prose)
             elif "mcp" in heading:
                 strategy._read_mcp(body)
             elif "discover" in heading:
@@ -154,6 +162,18 @@ class Strategy:
             path = _STORE_PATH.search(prose)
             if path:
                 self.session_path = path.group(1)
+
+    def _read_audit(self, prose: str) -> None:
+        self.audit_trail = prose
+        self.audit_enabled = not _DISABLED.search(prose)
+        for candidate in _BACKTICKED.findall(prose):
+            if _STORE_PATH.fullmatch(candidate) or "/" in candidate:
+                self.audit_path = candidate
+                break
+        if not self.audit_path:
+            path = _STORE_PATH.search(prose)
+            if path:
+                self.audit_path = path.group(1)
 
     def _read_subagents(self, prose: str) -> None:
         self.subagent_spawning = prose
