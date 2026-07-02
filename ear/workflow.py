@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .contract import Contract
 from .persona import Persona
 from .policy import Policy
 from .step import Step
@@ -23,12 +24,14 @@ from .step import Step
 @dataclass
 class Workflow:
     """A Workflow is an ordered list of Steps delegated to Personas, plus
-    the Policies that govern it."""
+    the Policies that govern it and, optionally, the Contract its decision
+    must deliver (a `### Deliverable` section in workflow.md)."""
 
     name: str
     personas: list[Persona] = field(default_factory=list)
     steps: list[Step] = field(default_factory=list)
     policies: list[Policy] = field(default_factory=list)
+    contract: Optional[Contract] = None
 
     def add_persona(self, persona: Persona) -> "Workflow":
         self.personas.append(persona)

@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 
+from .contract import Contract
 from .persona import Persona
 from .policy import Policy
 from .process import Process
@@ -167,7 +168,17 @@ class Loader:
         policies: dict[str, Policy],
     ) -> dict[str, Workflow]:
         workflows: dict[str, Workflow] = {}
+        last_workflow: Optional[Workflow] = None
         for section in document.sections:
+            if "deliverable" in normalize(section.name):
+                # A Deliverable section declares the Contract of the
+                # workflow authored directly above it.
+                if last_workflow is None:
+                    raise ValueError(
+                        f"Deliverable section '{section.name}' has no workflow above it to attach to"
+                    )
+                last_workflow.contract = self._load_contract(section, last_workflow)
+                continue
             body = section.body(field_keys=("persona", "delegate to", "delegate", "policies", "policy"))
             workflow = Workflow(name=section.name)
             default_persona: Optional[Persona] = None
@@ -180,7 +191,26 @@ class Loader:
             for reference in _split_references(body.field("policies", "policy")):
                 workflow.add_policy(_resolve(policies, reference, "policy"))
             workflows[normalize(section.name)] = workflow
+            last_workflow = workflow
         return workflows
+
+    @staticmethod
+    def _load_contract(section: Section, workflow: Workflow) -> Contract:
+        body = section.body()
+        contract = Contract(name=f"{workflow.name} Deliverable", description=body.prose)
+        for bullet in body.bullets:
+            name, separator, meaning = bullet.partition(": ")
+            if not separator:
+                name, separator, meaning = bullet.partition(":")
+            if separator and name.strip():
+                contract.add_field(name.strip(), meaning.strip())
+            else:
+                raise ValueError(
+                    f"Deliverable field '{bullet}' in '{workflow.name}' must be written as 'name: meaning'"
+                )
+        if not contract.fields:
+            raise ValueError(f"Deliverable of '{workflow.name}' declares no fields -- add '- name: meaning' bullets")
+        return contract
 
     def _load_processes(
         self, document: Document, workflows: dict[str, Workflow]

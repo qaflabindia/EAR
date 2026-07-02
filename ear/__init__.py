@@ -56,12 +56,14 @@ from .adaptation import Adaptation, AdaptationBank
 from .adapter import Adapter
 from .auditor import Auditor
 from .composer import Composer
+from .contract import Contract, ContractField
 from .decider import Decider
 from .delegator import Delegator
 from .deliberator import Deliberator
 from .discoverer import Discoverer
 from .evidence import Evidence
 from .evolver import Evolver
+from .examiner import Examination, EvaluationResult, Examiner
 from .exchange import Exchange
 from .executor import Executor
 from .experience import Experience
@@ -136,6 +138,11 @@ __all__ = [
     "Evolver",
     "Optimizer",
     "Exchange",
+    "Contract",
+    "ContractField",
+    "Examiner",
+    "Examination",
+    "EvaluationResult",
     "Loader",
     "load_runtime",
     "ReasoningLog",

@@ -27,16 +27,24 @@ class Intent:
         return self.text
 
     @classmethod
-    def from_markdown(cls, markdown: str) -> "Intent":
+    def from_markdown(cls, markdown: str, skip_sections: tuple[str, ...] = ()) -> "Intent":
         """Read an Intent from an intent document: title and prose become
         the request text; `## Context` bullets become the context facts;
-        any other section's prose elaborates the request."""
+        any other section's prose elaborates the request.
+
+        `skip_sections` names sections (by normalized-name containment)
+        that belong to the surrounding document rather than the request --
+        the Examiner passes ("expected",) so an evaluation's expectation
+        never leaks into the intent the runtime reasons over."""
         document = parse_document(markdown)
         parts = [part for part in (document.title, document.preamble) if part]
         context: dict[str, Any] = {}
         for section in document.sections:
+            name = normalize(section.name)
+            if any(skipped in name for skipped in skip_sections):
+                continue
             body = section.body()
-            if "context" in normalize(section.name):
+            if "context" in name:
                 for bullet in body.bullets:
                     key, separator, value = bullet.partition(": ")
                     if not separator:

@@ -86,6 +86,32 @@ class ReasonAboutIntent(dspy.Signature):
     decision: str = dspy.OutputField(desc="The concrete decision reached, with a brief justification")
 
 
+class JudgeContractConformance(dspy.Signature):
+    """Decide whether delivered data honors a contract, the way a careful
+    reviewer would: read each field's authored meaning, check the delivered
+    value against it -- a value the meaning does not support, an evasive
+    non-answer, or a hedge where the meaning demands one of a set, all
+    fail -- and explain the judgment in one sentence."""
+
+    contract: str = dspy.InputField(desc="One '- name: meaning' line per declared field")
+    data: str = dspy.InputField(desc="One '- name: value' line per delivered field")
+    conforms: bool = dspy.OutputField(desc="True only if every delivered value honors its field's meaning")
+    rationale: str = dspy.OutputField(desc="One sentence explaining the judgment")
+
+
+class JudgeDecisionQuality(dspy.Signature):
+    """Grade a runtime's decision against what an evaluator said should
+    happen, the way a careful reviewer would: read the expectation in
+    plain English, compare the actual outcome (including a blocked
+    refusal, which can itself be the expected outcome) against it, and
+    give a verdict with a one-sentence reason."""
+
+    expected: str = dspy.InputField(desc="What the evaluator said should happen, in plain English")
+    actual: str = dspy.InputField(desc="The outcome the runtime actually reached, with any structured data")
+    passed: bool = dspy.OutputField(desc="True only if the actual outcome satisfies the expectation")
+    rationale: str = dspy.OutputField(desc="One sentence explaining the verdict")
+
+
 class RecallRelevantMemory(dspy.Signature):
     """From the runtime's remembered history, recall what is genuinely
     relevant to the intent at hand -- prior decisions, amounts and

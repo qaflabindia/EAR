@@ -28,7 +28,7 @@ from typing import Any, Optional, Union
 
 from .intent import Intent
 from .reasoning_log import model_name
-from .section import quote
+from .section import coerce, normalize, parse_document, quote
 
 
 @dataclass
@@ -107,6 +107,10 @@ class Exchange:
         if blocked is None and runtime.memory.working:
             evidence = runtime.memory.working[-1].evidence
             if evidence is not None:
+                data = evidence.sources.get("data")
+                if data:
+                    lines += ["", "## Data", ""]
+                    lines += [f"- {name}: {value}" for name, value in data.items()]
                 explanation = evidence.sources.get("explanation", "")
                 if explanation:
                     lines += ["", "## Explanation", "", quote(str(explanation))]
@@ -123,3 +127,20 @@ class Exchange:
                 if record.rationale:
                     lines += [f"  {record.rationale}"]
         return "\n".join(lines) + "\n"
+
+
+def data_from_decision_document(markdown: str) -> dict:
+    """Read the `## Data` section of a decision document back into typed
+    values -- the parse half of the Contract's markdown round-trip, through
+    the same Section parser and `coerce` codec the whole stack uses."""
+    data: dict = {}
+    for section in parse_document(markdown).sections:
+        if normalize(section.name) != "data":
+            continue
+        for bullet in section.body().bullets:
+            name, separator, value = bullet.partition(": ")
+            if not separator:
+                name, separator, value = bullet.partition(":")
+            if separator and name.strip():
+                data[name.strip()] = coerce(value)
+    return data

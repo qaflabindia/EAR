@@ -19,17 +19,14 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from .adaptation import Adaptation
 from .evidence import Evidence
 from .memory import MemoryEntry
-from .section import Section, coerce, normalize, parse_document, quote, unquote
-
-_LABEL = re.compile(r"^([A-Za-z][\w ]*):\s*$")
+from .section import Section, coerce, labelled_blocks, normalize, parse_document, quote, unquote
 
 
 @dataclass
@@ -155,7 +152,7 @@ class SessionStore:
             timestamp = datetime.fromisoformat(body.field("timestamp"))
         except ValueError:
             timestamp = datetime.now(timezone.utc)
-        blocks = _labelled_blocks(section.lines)
+        blocks = labelled_blocks(section.lines)
         context: dict[str, Any] = {}
         for bullet in body.bullets:
             key, separator, value = bullet.partition(": ")
@@ -241,26 +238,3 @@ class SessionStore:
             evidence=evidence,
             timestamp=timestamp,
         )
-
-
-def _labelled_blocks(lines: list[str]) -> dict[str, str]:
-    """Collect `Label:` lines followed by blockquotes into label -> text,
-    e.g. the Intent and Decision blocks of a session entry."""
-    blocks: dict[str, str] = {}
-    label: Optional[str] = None
-    pending: list[str] = []
-    for line in lines + [""]:
-        match = _LABEL.match(line.strip())
-        stripped = line.strip()
-        if match:
-            if label and pending:
-                blocks[normalize(label)] = unquote(pending)
-            label, pending = match.group(1), []
-        elif stripped.startswith(">"):
-            pending.append(line)
-        elif stripped and label and pending:
-            blocks[normalize(label)] = unquote(pending)
-            label, pending = None, []
-    if label and pending:
-        blocks[normalize(label)] = unquote(pending)
-    return blocks

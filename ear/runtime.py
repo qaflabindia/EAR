@@ -157,7 +157,11 @@ class Runtime:
 
         decision = self.orchestrator.orchestrate(self, intent, plan=scheduled)
 
+        data = self._formalize(intent, scheduled, decision)
+
         evidence = self._build_evidence(intent, scheduled, recalled)
+        if data:
+            evidence.sources["data"] = data
         explanation = self.explainer.explain(evidence, decision, model_binding=self.model_binding)
         evidence.sources["explanation"] = explanation
         self.reasoning_log.record(
@@ -191,6 +195,43 @@ class Runtime:
         given intent through it, within the spawning limits the strategy in
         memory.md declares."""
         return self.spawner.spawn(self, persona, intent)
+
+    def _formalize(self, intent: Intent, plan: list[Workflow], decision: Any) -> dict[str, Any]:
+        """Honor the plan's Contracts: extract each workflow's declared
+        deliverable fields from the decision with the bound model, judge
+        the extraction against the authored meanings (one hinted retry),
+        and return only conformant data. With no model bound there is
+        nothing honest to extract, so the skip itself goes on the record
+        instead of fabricated values."""
+        contracts = [workflow.contract for workflow in plan if workflow.contract is not None]
+        if not contracts:
+            return {}
+        data: dict[str, Any] = {}
+        model_active = self.model_binding is not None and self.model_binding.lm is not None
+        for contract in contracts:
+            if not model_active:
+                self.reasoning_log.record(
+                    stage="contract",
+                    inputs={"contract": contract.name, "fields": contract.render_fields()},
+                    output="skipped -- no model bound to extract the deliverable",
+                    model=model_name(self.model_binding),
+                )
+                continue
+            extracted = contract.extract(decision, intent, self.model_binding)
+            conforms, rationale = contract.judge(extracted, self.model_binding)
+            if not conforms:
+                extracted = contract.extract(decision, intent, self.model_binding, hint=rationale)
+                conforms, rationale = contract.judge(extracted, self.model_binding)
+            self.reasoning_log.record(
+                stage="contract",
+                inputs={"contract": contract.name, "fields": contract.render_fields(), "data": extracted},
+                output="conformant" if conforms else "NONCONFORMING -- data withheld from the decision",
+                rationale=rationale,
+                model=model_name(self.model_binding),
+            )
+            if conforms:
+                data.update(extracted)
+        return data
 
     def _build_evidence(self, intent: Intent, plan: list[Workflow], recalled: str) -> Evidence:
         """Capture why this decision was reached -- separately from what

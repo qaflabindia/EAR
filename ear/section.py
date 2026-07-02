@@ -74,6 +74,47 @@ def unquote(lines: list[str]) -> str:
     return "\n".join(recovered)
 
 
+def labelled_blocks(lines: list[str]) -> dict[str, str]:
+    """Collect `Label:` lines followed by blockquotes into label -> text --
+    the reading half of the `Label:\\n> ...` idiom every markdown artifact
+    in this package (session entries, trail records, decision documents)
+    writes with `quote`. Labels are normalized; a label with no quote
+    beneath it yields nothing."""
+    blocks: dict[str, str] = {}
+    label: str = ""
+    pending: list[str] = []
+
+    def commit() -> None:
+        nonlocal label, pending
+        if label and pending:
+            blocks[normalize(label)] = unquote(pending)
+        label, pending = "", []
+
+    for line in lines + [""]:
+        stripped = line.strip()
+        if stripped.startswith(">"):
+            if label:
+                pending.append(line)
+        elif _is_label(stripped):
+            commit()
+            label = stripped[:-1]
+        elif stripped:
+            commit()
+        elif label and pending:
+            commit()
+    commit()
+    return blocks
+
+
+def _is_label(stripped: str) -> bool:
+    """A label line is a short word-or-phrase ending in a bare colon,
+    e.g. 'Decision:' or 'Evidence basis:' -- never a sentence."""
+    if not stripped.endswith(":") or len(stripped) > 40:
+        return False
+    head = stripped[:-1]
+    return bool(head) and head[0].isalpha() and all(ch.isalnum() or ch in " _-" for ch in head)
+
+
 @dataclass
 class Body:
     """A Section's content, structured: recognized `Key: value` fields,

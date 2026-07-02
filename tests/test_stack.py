@@ -616,6 +616,280 @@ def test_policy_judge_returns_the_rationale_offline():
 
 
 # ---------------------------------------------------------------------------
+# Contracts: a workflow's Deliverable, declared in natural language,
+# extracted and judged by the model at runtime, delivered as ## Data.
+# ---------------------------------------------------------------------------
+
+CONTRACT_WORKFLOW = (
+    "# Workflows\n\n## Underwriting Workflow\n\n"
+    "1. Band the profile and assign a risk grade. (Credit Risk Guru)\n"
+    "2. Decide approve or decline against the grade. (Credit Risk Guru)\n\n"
+    "Policies: Loan Amount Cap\n\n"
+    "### Deliverable\n\nThe decision as structured facts.\n\n"
+    "- decision: exactly one of approve or decline\n"
+    "- risk grade: the letter grade from A to E\n"
+)
+
+
+def test_deliverable_section_becomes_the_workflow_contract(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = CONTRACT_WORKFLOW
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+
+    workflow = runtime.processes[0].workflows[0]
+    contract = workflow.contract
+    assert contract is not None
+    assert contract.name == "Underwriting Workflow Deliverable"
+    assert [f.name for f in contract.fields] == ["decision", "risk grade"]
+    assert contract.fields[1].identifier == "risk_grade"
+    assert "structured facts" in contract.description
+    # The Deliverable section is the workflow's contract, never a workflow
+    # or a process of its own.
+    assert [process.name for process in runtime.processes] == ["Underwrite Consumer Loan"]
+    assert len(workflow.steps) == 2
+
+
+def test_deliverable_with_no_workflow_above_fails_loudly(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = "# Workflows\n\n### Deliverable\n\n- decision: approve or decline\n"
+    with pytest.raises(ValueError, match="no workflow above"):
+        load_runtime(write_stack(tmp_path / "stack", **stack))
+
+
+def test_deliverable_field_without_a_meaning_fails_loudly(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = CONTRACT_WORKFLOW.replace("- decision: exactly one of approve or decline", "- decision")
+    with pytest.raises(ValueError, match="must be written as 'name: meaning'"):
+        load_runtime(write_stack(tmp_path / "stack", **stack))
+
+
+def test_contract_judge_falls_back_to_structural_presence():
+    from ear import Contract
+
+    contract = Contract(name="Deliverable").add_field("decision", "approve or decline")
+    conforms, rationale = contract.judge({"decision": "approve"})
+    assert conforms is True and "structural" in rationale
+    conforms, rationale = contract.judge({"decision": "  "})
+    assert conforms is False and "decision" in rationale
+
+
+def test_offline_contract_extraction_is_skipped_on_the_record(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = CONTRACT_WORKFLOW
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    runtime.reason(Intent(text="Underwrite a consumer loan", context={"loan_amount": 5000}))
+
+    record = runtime.reasoning_log.for_stage("contract")[0]
+    assert "skipped" in record.output and "no model" in record.output
+    # No fabricated data reaches the evidence.
+    assert "data" not in runtime.memory.working[-1].evidence.sources
+
+
+def test_data_section_round_trips_typed_values():
+    from ear.exchange import data_from_decision_document
+
+    document = (
+        "# Decision -- x\n\n## Data\n\n"
+        "- decision: approve\n- risk grade: B\n- monthly_payment: 372.5\n- defaults: 0\n"
+    )
+    data = data_from_decision_document(document)
+    assert data == {"decision": "approve", "risk grade": "B", "monthly_payment": 372.5, "defaults": 0}
+
+
+# ---------------------------------------------------------------------------
+# The Examiner: markdown-native evaluation with honest offline grading.
+# ---------------------------------------------------------------------------
+
+
+def test_intent_from_markdown_skips_named_sections():
+    intent = Intent.from_markdown(
+        "# Underwrite a loan\n\n## Expected\n\nIt should be approved.\n\n## Context\n\n- loan_amount: 1000\n",
+        skip_sections=("expected",),
+    )
+    assert "approved" not in intent.text
+    assert intent.context == {"loan_amount": 1000}
+
+
+def test_examiner_grades_structurally_offline_and_reports(tmp_path):
+    from ear import Examiner
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    evaluations = directory / "evaluations"
+    evaluations.mkdir()
+    (evaluations / "resolves.md").write_text(
+        "# Underwrite a small consumer loan\n\n## Context\n\n- loan_amount: 5000\n\n"
+        "## Expected\n\n- decision: resolved\n",
+        encoding="utf-8",
+    )
+    (evaluations / "blocked.md").write_text(
+        "# Underwrite an oversized loan\n\n## Context\n\n- loan_amount: 90000\n\n"
+        "## Expected\n\n- decision: Loan Amount Cap\n",
+        encoding="utf-8",
+    )
+    (evaluations / "prose-only.md").write_text(
+        "# Underwrite anything\n\n## Expected\n\nThe decision must be conservative.\n",
+        encoding="utf-8",
+    )
+
+    runtime = load_runtime(directory)
+    examination = Examiner().examine(runtime, evaluations)
+
+    assert examination.counts() == {"examined": 3, "passed": 2, "failed": 0, "ungraded": 1}
+    assert examination.passed is True
+    ungraded = next(result for result in examination.results if result.passed is None)
+    assert "need a model" in ungraded.rationale
+
+    report = (evaluations / "report.md").read_text(encoding="utf-8")
+    assert "Passed: 2" in report and "Ungraded: 1" in report
+    assert [record.output for record in runtime.reasoning_log.for_stage("evaluation")] == [
+        "passed",
+        "ungraded",
+        "passed",
+    ]
+
+
+def test_examiner_failed_expectation_fails_the_suite(tmp_path):
+    from ear import Examiner
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    evaluations = directory / "evaluations"
+    evaluations.mkdir()
+    (evaluations / "impossible.md").write_text(
+        "# Underwrite a loan\n\n## Context\n\n- loan_amount: 5000\n\n"
+        "## Expected\n\n- decision: an outcome that cannot possibly appear\n",
+        encoding="utf-8",
+    )
+    examination = Examiner().examine(load_runtime(directory), evaluations)
+    assert examination.passed is False
+    assert examination.results[0].verdict == "FAILED"
+
+
+# ---------------------------------------------------------------------------
+# Optimizer: the trail as the training corpus, reviews as the labels.
+# ---------------------------------------------------------------------------
+
+
+def test_optimizer_builds_trainset_from_jsonl_trail(tmp_path):
+    from ear import Optimizer
+
+    runtime = Runtime(name="Trained-Runtime")
+    runtime.reasoning_log.path = str(tmp_path / "trail.jsonl")
+    runtime.reason(Intent(text="first cycle", context={"loan_amount": 100}))
+    runtime.reason(Intent(text="second cycle"))
+
+    trainset = Optimizer().trainset_from_trail(runtime.reasoning_log.path)
+    assert len(trainset) == 2
+    assert trainset[0].intent == "first cycle"
+    assert trainset[0].decision.startswith("[Trained-Runtime]")
+
+
+def test_optimizer_builds_trainset_from_markdown_trail(tmp_path):
+    from ear import Optimizer
+
+    runtime = Runtime(name="MD-Runtime")
+    runtime.reasoning_log.path = str(tmp_path / "trail.md")
+    runtime.reason(Intent(text="first cycle"))
+
+    trainset = Optimizer().trainset_from_trail(runtime.reasoning_log.path)
+    assert len(trainset) == 1
+    assert trainset[0].intent == "first cycle"
+    assert trainset[0].decision.startswith("[MD-Runtime]")
+
+
+def test_optimizer_reads_reviewer_verdicts_and_excludes_the_unlabelled(tmp_path):
+    from ear import Optimizer
+
+    decisions = tmp_path / "decisions"
+    decisions.mkdir()
+    (decisions / "reviewed.md").write_text(
+        "# Decision -- Underwrite a loan\n\n## Intent\n\n> Underwrite a loan\n\n"
+        "## Decision\n\n> Approved at grade B.\n\n"
+        "## Review\n\nVerdict: correct\n\n> Well reasoned and within policy.\n",
+        encoding="utf-8",
+    )
+    (decisions / "unreviewed.md").write_text(
+        "# Decision -- Another loan\n\n## Decision\n\n> Declined.\n",
+        encoding="utf-8",
+    )
+    (decisions / "ambiguous.md").write_text(
+        "# Decision -- A third loan\n\n## Decision\n\n> Approved.\n\n## Review\n\nVerdict: maybe\n",
+        encoding="utf-8",
+    )
+
+    labelled = Optimizer().verdicts_from_documents(decisions)
+    assert len(labelled) == 1
+    assert labelled[0].verdict is True
+    assert labelled[0].intent == "Underwrite a loan"
+    assert labelled[0].decision == "Approved at grade B."
+    assert "Well reasoned" in labelled[0].note
+
+
+def test_optimizer_metric_offline_uses_normalized_containment():
+    from types import SimpleNamespace
+
+    from ear import Optimizer
+
+    metric = Optimizer().metric(None)
+    assert metric(SimpleNamespace(decision="approve the loan"), "I would approve the loan today.") == 1.0
+    assert metric(SimpleNamespace(decision="approve the loan"), "Declined outright.") == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Live: contracts extracted and judged, evaluations graded, by a real model.
+# ---------------------------------------------------------------------------
+
+LIVE_MEMORY = (
+    "# Memory & Strategy\n\n## Model Selection\n\n"
+    "Reason with anthropic/claude-haiku-4-5, reading the credential from\n"
+    "ANTHROPIC_API_KEY, at a temperature of 0.2.\n"
+)
+
+
+@requires_anthropic_key
+def test_contract_extraction_delivers_typed_data_live(tmp_path):
+    from ear.exchange import data_from_decision_document
+
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = CONTRACT_WORKFLOW
+    stack["memory"] = LIVE_MEMORY
+    directory = write_stack(tmp_path / "stack", **stack)
+    (directory / "intent.md").write_text(
+        "# Underwrite a $12,000 personal loan for a strong applicant\n\n"
+        "## Context\n\n- loan_amount: 12000\n- credit_score: 785\n- debt_to_income: 0.2\n"
+        "- existing_defaults: 0\n",
+        encoding="utf-8",
+    )
+
+    runtime = load_runtime(directory)
+    Exchange(directory).run(runtime)
+
+    record = runtime.reasoning_log.for_stage("contract")[-1]
+    assert record.output == "conformant"
+    data = data_from_decision_document((directory / "decision.md").read_text(encoding="utf-8"))
+    assert "approve" in str(data.get("decision", "")).lower()
+    assert data.get("risk grade")
+
+
+@requires_anthropic_key
+def test_examiner_grades_the_example_suite_live(tmp_path, monkeypatch):
+    from ear import Examiner
+
+    directory = tmp_path / "credit_risk_stack"
+    shutil.copytree(EXAMPLE_STACK, directory)
+    memory = (directory / "memory.md").read_text(encoding="utf-8")
+    (directory / "memory.md").write_text(
+        memory.replace("anthropic/claude-opus-4-8", "anthropic/claude-haiku-4-5"), encoding="utf-8"
+    )
+
+    runtime = load_runtime(directory)
+    examination = Examiner().examine(runtime, directory / "evaluations")
+
+    assert examination.counts()["ungraded"] == 0
+    assert examination.passed is True
+    assert (directory / "evaluations" / "report.md").exists()
+
+
+# ---------------------------------------------------------------------------
 # Dynamic-at-runtime stages: selection, scheduling and delegation are
 # judgments the LLM makes per cycle, with deterministic fallbacks offline
 # and an audit record either way.

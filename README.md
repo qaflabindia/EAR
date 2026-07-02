@@ -177,6 +177,62 @@ print(runtime.reasoning_log.render())                      # the skim view
 runtime.reasoning_log.for_stage("deliberation")[-1].inputs  # the full prompt material
 ```
 
+### Contracts — typed deliverables, declared in natural language
+
+A workflow may declare what its decision must *deliver* with a
+`### Deliverable` section directly beneath it in workflow.md — prose
+describing the deliverable, one bullet per field as `name: what it means`:
+
+```markdown
+### Deliverable
+
+- decision: exactly one of approve or decline
+- risk grade: the letter grade from A to E the decision rests on
+```
+
+At runtime the model fills the fields from the prose decision (a DSPy
+signature is built dynamically from the authored meanings) and then judges
+the filling against those meanings — one hinted retry, then nonconforming
+data is withheld, on the record (trail stage `contract`). Conformant data
+travels as a `## Data` section in the decision document, typed by the same
+`coerce` codec as intent context, and parses back via
+`ear.exchange.data_from_decision_document`. With no model bound nothing is
+fabricated: the skip itself is a trail record.
+
+### Evaluation — the Examiner and markdown-native evals
+
+An evaluation is one markdown file in an `evaluations/` directory: an
+ordinary intent document plus an `## Expected` section — prose criteria
+(a blocked refusal can itself be the expectation) and/or bullets of
+`field: value` the delivered Data must carry:
+
+```python
+from ear import Examiner
+examination = Examiner().examine(runtime, "examples/credit_risk_stack/evaluations")
+assert examination.passed          # the CI regression gate
+```
+
+With a model, `JudgeDecisionQuality` grades each outcome with a rationale;
+offline, only the field bullets are checked structurally and prose-only
+criteria are reported **ungraded** rather than faked. Verdicts land on the
+trail (stage `evaluation`) and in `evaluations/report.md`.
+
+### Optimization — the trail is the training corpus
+
+```python
+from ear import Optimizer
+optimizer = Optimizer()
+trainset = optimizer.trainset_from_trail(".ear/reasoning.md")   # or .jsonl
+labels   = optimizer.verdicts_from_documents("decisions/")      # ## Review + Verdict: lines
+optimizer.optimize_from_trail(runtime, ".ear/reasoning.md")     # trail -> GEPA in one call
+```
+
+Deliberation records become `dspy.Example`s (the exact intent, context and
+stacked capabilities the model reasoned with); a reviewer labels a decision
+document by adding a `## Review` section with a `Verdict:` line; and the
+metric grades candidates with the same `JudgeDecisionQuality` the Examiner
+uses — evaluation and optimization share one notion of quality.
+
 Every judgment is made dynamically at runtime, in natural language against
 a live LLM (via [DSPy](https://github.com/stanfordnlp/dspy)) — `Policy`
 compliance, `Discoverer` relevance ranking, `Selector` choice among
@@ -369,6 +425,8 @@ ear/
   persona.py       Persona       — a stack of Skills plus standing instructions
   step.py          Step          — one narrated instruction in a Workflow, delegated to a Persona
   workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies
+  contract.py      Contract      — a workflow's Deliverable: fields with plain-English meanings, extracted and judged at runtime
+  examiner.py      Examiner      — examine: run markdown-native evaluations and grade them, honestly offline
   process.py       Process       — a stack of Workflows that performs an action
   policy.py        Policy        — governance rule, judged in natural language with a safe-eval fallback; attaches runtime-wide or to a Workflow
   runtime.py       Runtime       — runs every cycle through the full operation pipeline below
@@ -398,7 +456,8 @@ ear/
   learner.py       Learner       — learn: fold a cycle into Experience
   adapter.py       Adapter       — adapt: periodically distill a new Adaptation
   evolver.py       Evolver       — evolve: transform a Skill's source (openevolve, dev-time)
-  optimizer.py     Optimizer     — optimize: refine a Persona's skill document (SkillOpt, dev-time)
+  optimizer.py     Optimizer     — optimize: trail -> GEPA trainsets, reviewer verdicts, the shared
+                                   quality metric; plus the SkillOpt loop (dev-time)
   section.py       Section       — the shared structural parser for stacked markdown files
   loader.py        Loader        — load_runtime: stack skills.md/persona.md/workflow.md/
                                    process.md/policy.md/memory.md into a Runtime
