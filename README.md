@@ -247,6 +247,16 @@ trainer = runtime.optimizer.optimize(config="skillopt.yaml", adapter=my_env)
 runtime.optimizer.apply(persona, "skill-name", trainer.train())
 ```
 
+## Roadmap
+
+[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) maps each
+best-in-class capability that exists in isolation elsewhere — DSPy+GEPA
+optimization, Instructor structured outputs, LangSmith/Phoenix evaluation,
+Langfuse observability, LlamaIndex RAG, Temporal durable workflows and
+approval gates, LangGraph graphs, AutoGen multi-agent, PydanticAI typed
+agents, LangChain tools — onto an existing EAR pipeline seam as an
+optional backend, phased so the authored stack never changes shape.
+
 ## Install
 
 ```bash
