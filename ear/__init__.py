@@ -82,6 +82,7 @@ from .governor import Governor
 from .initializer import Initializer
 from .intent import Intent
 from .journey import Journey, Journeys, Leg
+from .k8s import KubeClient, KubeConfig, KubeError, KubeProvider
 from .kernel import Dispatch, Kernel, Task
 from .judgment import Field, Judgment
 from .llm import LM
@@ -180,6 +181,10 @@ __all__ = [
     "Task",
     "Dispatch",
     "Server",
+    "KubeProvider",
+    "KubeClient",
+    "KubeConfig",
+    "KubeError",
     "Panel",
     "Turn",
     "Examiner",

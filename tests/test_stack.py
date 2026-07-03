@@ -4021,3 +4021,151 @@ def test_server_bearer_token_auth_over_a_real_socket(tmp_path):
         assert get("/health", "s3cret") == 200  # right token
     finally:
         server.stop()
+
+
+# ---------------------------------------------------------------------------
+# Kubernetes: EAR instances as Jobs and CronJobs, spoken natively over the
+# K8s REST API. Unit-tested against a faithful fake transport -- not a live
+# cluster (none is available from here); the tests hold it to the API shape.
+# ---------------------------------------------------------------------------
+
+
+class _FakeKube:
+    """Records calls and returns canned Kubernetes API responses."""
+
+    def __init__(self, status=201):
+        self.status = status
+        self.calls = []
+
+    def __call__(self, method, url, headers, body):
+        self.calls.append((method, url, body))
+        name = (body or {}).get("metadata", {}).get("name", "obj")
+        if self.status >= 400:
+            return self.status, {"message": "AlreadyExists"}
+        return self.status, {"metadata": {"name": name}, "status": {}}
+
+
+def test_run_entrypoint_runs_one_cycle_from_the_environment(tmp_path, monkeypatch):
+    import ear.run as run
+
+    stack = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    monkeypatch.setenv("EAR_INTENT", "Underwrite a loan")
+    monkeypatch.setenv("EAR_CONTEXT", '{"loan_amount": 5000}')
+    monkeypatch.setenv("EAR_DECISION_PATH", str(tmp_path / "decision.md"))
+    assert run.main([str(stack)]) == 0
+    assert (tmp_path / "decision.md").exists()
+
+    # A governance block exits 2 (a refusal is a valid outcome, not a crash).
+    monkeypatch.setenv("EAR_CONTEXT", '{"loan_amount": 90000}')
+    assert run.main([str(stack)]) == 2
+    # A missing intent exits 2.
+    monkeypatch.delenv("EAR_INTENT")
+    assert run.main([str(stack)]) == 2
+
+
+def test_k8s_manifests_have_the_right_shape():
+    from ear.k8s import cronjob_manifest, container_spec, job_manifest
+
+    job = job_manifest(
+        "Consumer Lending",
+        "ear:1.0",
+        command=["python", "-m", "ear.run", "/stack"],
+        env={"EAR_INTENT": "x"},
+        namespace="tenants",
+        cpu="500m",
+        memory="512Mi",
+    )
+    assert job["kind"] == "Job" and job["apiVersion"] == "batch/v1"
+    assert job["metadata"]["name"] == "consumer-lending"  # RFC-1123 safe
+    assert job["metadata"]["namespace"] == "tenants"
+    pod = job["spec"]["template"]["spec"]
+    assert pod["restartPolicy"] == "Never"
+    assert pod["containers"][0]["command"] == ["python", "-m", "ear.run", "/stack"]
+    assert pod["containers"][0]["resources"]["limits"] == {"cpu": "500m", "memory": "512Mi"}
+
+    cron = cronjob_manifest("nightly", "ear:1.0", "0 0 * * *", namespace="tenants")
+    assert cron["kind"] == "CronJob" and cron["spec"]["schedule"] == "0 0 * * *"
+    assert cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]["restartPolicy"] == "Never"
+
+
+def test_every_to_cron_maps_periods_and_refuses_sub_minute():
+    from ear.k8s import KubeError, every_to_cron
+
+    assert every_to_cron(60) == "*/1 * * * *"
+    assert every_to_cron(300) == "*/5 * * * *"
+    assert every_to_cron(3600) == "0 */1 * * *"
+    assert every_to_cron(86400) == "0 0 * * *"
+    with pytest.raises(KubeError, match="sub-minute"):
+        every_to_cron(30)
+
+
+def test_kube_client_and_provider_speak_the_api(tmp_path):
+    from ear import Intent, KubeClient, KubeConfig, KubeProvider
+
+    fake = _FakeKube()
+    client = KubeClient(KubeConfig(api_server="https://k8s:443", token="t", namespace="tenants"), transport=fake)
+    provider = KubeProvider(client=client, image="ear:1.0", cpu="500m", memory="256Mi")
+
+    created = provider.run("lending", Intent(text="Underwrite", context={"loan_amount": 5000}))
+    method, url, body = fake.calls[-1]
+    assert method == "POST" and url.endswith("/apis/batch/v1/namespaces/tenants/jobs")
+    assert created["metadata"]["name"].startswith("lending-")
+    env = {e["name"]: e["value"] for e in body["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["EAR_INTENT"] == "Underwrite" and json.loads(env["EAR_CONTEXT"]) == {"loan_amount": 5000}
+
+    provider.schedule("lending", Intent(text="daily"), every=86400)
+    _, cron_url, cron_body = fake.calls[-1]
+    assert cron_url.endswith("/cronjobs") and cron_body["spec"]["schedule"] == "0 0 * * *"
+
+
+def test_kube_client_raises_on_api_errors():
+    from ear import KubeClient, KubeConfig, KubeError
+
+    client = KubeClient(KubeConfig(api_server="https://k8s", token="t"), transport=_FakeKube(status=409))
+    with pytest.raises(KubeError, match="409"):
+        client.create_job({"metadata": {"name": "dup"}})
+
+
+def test_kube_config_reads_in_cluster_service_account(tmp_path, monkeypatch):
+    from ear import KubeConfig
+
+    base = tmp_path / "sa"
+    base.mkdir()
+    (base / "token").write_text("tok-123", encoding="utf-8")
+    (base / "namespace").write_text("prod", encoding="utf-8")
+    (base / "ca.crt").write_text("CA", encoding="utf-8")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT", "443")
+
+    config = KubeConfig.in_cluster(base=str(base))
+    assert config.api_server == "https://10.0.0.1:443"
+    assert config.token == "tok-123" and config.namespace == "prod" and config.ca_cert
+
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST")
+    from ear import KubeError
+
+    with pytest.raises(KubeError, match="not running in a cluster"):
+        KubeConfig.in_cluster(base=str(base))
+
+
+def test_kernel_dispatcher_seam_runs_work_on_the_provider(tmp_path):
+    from ear import Kernel
+
+    runtime = load_runtime(write_stack(tmp_path / "a", **MINIMAL_STACK))
+    kernel = Kernel()
+    kernel.register("lending", runtime)
+
+    seen = []
+
+    def dispatcher(task, rt):
+        seen.append((task.instance, rt))
+        return "dispatched", f"job for {task.instance} created"
+
+    kernel.dispatcher = dispatcher
+    kernel.submit("lending", Intent(text="go", context={"loan_amount": 5000}))
+    dispatch = kernel.drain()[0]
+
+    # The work went to the dispatcher (the cluster), not the in-process cycle.
+    assert dispatch.status == "dispatched" and "job for lending" in dispatch.summary
+    assert seen == [("lending", runtime)]
+    assert not runtime.reasoning_log.records  # reason() was never called in-process

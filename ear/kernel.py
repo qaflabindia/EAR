@@ -82,6 +82,11 @@ class Kernel:
     history: list = field(default_factory=list)
     running: bool = False
     idle_waits: int = 0
+    # An optional execution seam: `dispatcher(task, runtime) -> (status,
+    # summary)`. Unset, work runs in-process (reason/pursue); set to a
+    # KubeProvider.as_dispatcher(), each firing runs on the cluster instead,
+    # while the Kernel stays the single scheduler.
+    dispatcher: Any = None
     _wake: Any = field(default_factory=threading.Event)
     _lock: Any = field(default_factory=threading.Lock)
     _thread: Any = None
@@ -183,6 +188,16 @@ class Kernel:
         started = time.monotonic()
         if runtime is None:
             dispatch = Dispatch(task.id, task.instance, "failed", f"no such instance '{task.instance}'")
+        elif self.dispatcher is not None:
+            # Hand the work to the execution seam (e.g. run it on Kubernetes)
+            # rather than in-process. The Kernel still schedules; the pod runs.
+            try:
+                status, summary = self.dispatcher(task, runtime)
+            except Exception as error:  # noqa: BLE001 -- a dispatch failure never takes the kernel down
+                status, summary = "failed", str(error)
+            dispatch = Dispatch(
+                task.id, task.instance, status, str(summary)[:240], int((time.monotonic() - started) * 1000)
+            )
         else:
             try:
                 if task.goal is not None:

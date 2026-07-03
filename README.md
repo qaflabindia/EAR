@@ -378,6 +378,38 @@ wrapped so one bad request can never take the server down. The routing is a
 **pure function** — `handle(method, path, body) → (status, payload)` — so
 the whole API is testable without opening a socket.
 
+### Kubernetes — instances as Jobs and CronJobs, natively
+
+To run the fleet on Kubernetes — every process a pod, live for the
+recurring occurrence of a task — EAR speaks the **Kubernetes REST API
+directly over the standard library** (`urllib` + `ssl` + `json`), no
+`kubernetes` SDK, no dependency, the same way it speaks to LLM providers
+and MCP servers:
+
+```python
+from ear import KubeConfig, KubeClient, KubeProvider
+provider = KubeProvider(KubeClient(KubeConfig.in_cluster()), image="your-ear-image:1.0")
+
+provider.run("lending", intent)                 # one governed cycle in a Job
+provider.schedule("mortgage", intent, every=86400)   # a daily CronJob
+kernel.dispatcher = provider.as_dispatcher()    # or let the Kernel schedule, pods execute
+```
+
+The mapping is direct: a **runtime instance** runs in a **Job** — one pod,
+one cycle, via the in-pod entrypoint `python -m ear.run <stack>`
+(`ear/run.py`), the intent handed in through the environment and the exit
+code reflecting the outcome (0 decided, 2 blocked, 1 error); a **recurring
+task** is a **CronJob** (`every=` mapped to a cron schedule — minutes,
+hours, days — sub-minute steered back to the in-process Kernel, which has
+no such floor); and `as_dispatcher()` plugs the provider into the **Kernel's
+dispatcher seam**, so the Kernel stays the single scheduler while each
+firing runs in its own pod. Config is the standard in-cluster
+service-account, or an explicit `KubeConfig`; the manifest builders are
+pure functions and the client's transport is injectable, so the whole
+provider is unit-tested against a faithful fake. (It speaks the real API
+but has **not** been run against a live cluster from this repo — the tests
+hold it to the API's shape, not a running control plane.)
+
 ### Kernel — EAR as an OS scheduler
 
 For a server-side, always-on deployment, the `Kernel` runs EAR the way a
@@ -1053,6 +1085,8 @@ ear/
   monitor.py       Monitor       — the premium live TUI: the whole fleet as a factory assembly line, pure ANSI truecolor, zero deps
   kernel.py        Kernel        — EAR as an OS scheduler: process table of instances, a run queue, the run-or-sleep idle loop
   server.py        Server        — the control plane: a stdlib HTTP service over the Kernel (token auth, confined stack loading), zero deps
+  k8s.py           KubeProvider  — run instances as K8s Jobs/CronJobs, spoken natively over the REST API (stdlib, no SDK); the Kernel's execution seam
+  run.py           (entrypoint)  — python -m ear.run <stack>: run one cycle in a pod from EAR_INTENT/EAR_CONTEXT, exit code = outcome
   session_store.py SessionStore  — cross-session data (markdown by default, JSON optional)
   spawner.py       Spawner       — spawn subagent runtimes, bounded by the strategy
   tool.py          Tool          — a tool declared in plain English, surfaced to reasoning
