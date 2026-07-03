@@ -269,6 +269,32 @@ SpeakOrUseTool = Judgment(
     ],
 )
 
+JudgeGoalProgress = Judgment(
+    instruction=(
+        "You are checking whether a session's goal has been met. Read the "
+        "goal -- a completion condition in plain English -- and what has "
+        "happened so far, and decide if it is genuinely satisfied. If it is "
+        "not, name exactly one blocker: 'goal_not_met_yet' (more work would "
+        "help), 'needs_user_input' (a human must supply something), "
+        "'external_wait' (waiting on an outside event or system), "
+        "'missing_evidence' (the work cannot be verified from what is here), "
+        "or 'run_failed' (it went wrong and cannot recover). Ground the "
+        "verdict in the visible evidence, and when the blocker is "
+        "'goal_not_met_yet', give the single next step that would move it "
+        "forward. Never claim satisfaction the evidence does not show."
+    ),
+    inputs=[
+        Field("goal", "The completion condition, in plain English"),
+        Field("progress", "What has happened so far -- the latest outcome and recent history"),
+    ],
+    outputs=[
+        Field("satisfied", "True only if the goal is genuinely met", "bool"),
+        Field("blocker", "Exactly one blocker word, empty when satisfied", "str"),
+        Field("evidence", "The visible evidence behind the verdict", "text"),
+        Field("next_step", "The single next step when goal_not_met_yet; empty otherwise", "text"),
+    ],
+)
+
 GistPassage = Judgment(
     instruction=(
         "Write a one-line gist of a reference passage for a retrieval "

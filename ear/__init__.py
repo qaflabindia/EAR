@@ -77,6 +77,7 @@ from .exchange import Exchange
 from .executor import Executor
 from .experience import Experience
 from .explainer import Explainer
+from .goal import Goal, GoalEvaluation, GoalKeeper, GoalOutcome
 from .governor import Governor
 from .initializer import Initializer
 from .intent import Intent
@@ -188,6 +189,10 @@ __all__ = [
     "Strategy",
     "SessionStore",
     "Spawner",
+    "Goal",
+    "GoalKeeper",
+    "GoalEvaluation",
+    "GoalOutcome",
     "Sandbox",
     "SandboxResult",
     "SandboxViolation",

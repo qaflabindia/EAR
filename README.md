@@ -334,6 +334,42 @@ malformed JSON fails loudly as an `McpError`, and — wrapped by the binder
 the author; connecting one is the runtime reaching out to what memory.md
 already names, never a capability from nowhere.
 
+### Session Goals — a completion condition that drives itself
+
+Attach a plain-English **completion condition** and let the runtime pursue
+it — running cycle after cycle until the goal is met, genuinely blocked, or
+the budget runs out:
+
+```python
+outcome = runtime.pursue(
+    "Reach a clear approve-or-decline decision, with the risk grade stated.",
+    intent,
+)
+outcome.status      # "satisfied" | "blocked" | "exhausted" | "ungraded"
+outcome.blocker     # the typed reason it stopped
+```
+
+After each cycle a `JudgeGoalProgress` judgment decides whether the goal is
+met and, if not, names exactly **one typed blocker**:
+
+- `goal_not_met_yet` — more work would help → **continue autonomously**
+- `needs_user_input` — a human must supply something → stop, surface it
+- `external_wait` — waiting on an outside event/system → stop, surface it
+- `missing_evidence` — the work can't be verified → stop, surface it
+- `run_failed` — it went wrong and can't recover → stop, surface it
+
+Only `goal_not_met_yet` earns a continuation: the keeper takes the
+evaluator's own `next_step` and drives another cycle. The loop is **bounded
+in code** — a maximum number of continuations (default 8) and a
+**no-progress breaker** that stops after the same non-progress verdict
+repeats (default 2×), so an autonomous loop can never run away. Governance
+stops map to blockers with no special-casing: an approval gate
+(`ApprovalRequired`) is `needs_user_input`; any other refusal is
+`run_failed`. Every evaluation is a `goal` trail record with its blocker
+and evidence. Offline, with no model to judge, the keeper stops at
+`ungraded` after the first cycle and **never fabricates** satisfaction or a
+continuation — a judgment nobody made is never written down.
+
 ### Sandbox — each runtime instance in its own workspace
 
 Declare a `## Sandbox` section in memory.md and every runtime instance gets
@@ -863,6 +899,7 @@ ear/
   approval.py      Approval      — a human's verdict on a parked cycle; ApprovalRequired parks it
   tool_binder.py   ToolBinder    — declared tools meet executables; every invocation on the trail, tool-scoped policies enforced
   sandbox.py       Sandbox       — each runtime instance's confined workspace + governed command runner (stdlib, no Docker); nests per subagent
+  goal.py          GoalKeeper    — session goals: a completion condition pursued with typed blockers and a bounded autonomous continuation loop
   mcp_client.py    McpClient     — the native MCP client: JSON-RPC over stdio from the stdlib, tools bound into cycles
   panel.py         Panel         — multi-persona deliberation in authored prose patterns; judged speakers, early consensus, tools in turns
   journey.py       Journey       — durable, resumable, prose-routed execution; the state a markdown record; Journeys is the runner

@@ -3461,3 +3461,163 @@ def test_spawned_subagents_nest_their_own_child_sandbox(tmp_path):
     # The child's box is nested under the parent's root.
     assert str(runtime.sandbox.root) in str(child.sandbox.root)
     assert [tool.name for tool in child.tool_binder.sandbox_tools]  # tools nested too
+
+
+# ---------------------------------------------------------------------------
+# Session Goals: a completion condition that drives the runtime forward with
+# typed blockers, bounded autonomous continuation, on the trail.
+# ---------------------------------------------------------------------------
+
+
+def _goal_runtime(goal_replies, decisions=None):
+    """A minimal runtime whose reason() is stubbed, so the only model calls
+    are the goal judgments -- letting a scripted LM drive the loop
+    deterministically."""
+    from types import SimpleNamespace
+
+    from ear.reasoning_log import ReasoningLog
+
+    calls = {"n": 0}
+    decisions = decisions or []
+    runtime = SimpleNamespace(
+        name="Goal-Fake",
+        reasoning_log=ReasoningLog(),
+        memory=None,
+        model_binding=SimpleNamespace(lm=ScriptedLM(list(goal_replies)), model_id="anthropic/test"),
+    )
+
+    def reason(intent, approval=None):
+        index = calls["n"]
+        calls["n"] += 1
+        return decisions[index] if index < len(decisions) else f"decision {index}"
+
+    runtime.reason = reason
+    runtime.calls = calls
+    return runtime
+
+
+def _goal_reply(satisfied, blocker="", evidence="e", next_step=""):
+    return (
+        f"## satisfied\n\n{satisfied}\n\n## blocker\n\n{blocker}\n\n"
+        f"## evidence\n\n{evidence}\n\n## next_step\n\n{next_step}\n"
+    )
+
+
+def test_goal_satisfied_stops_immediately_on_the_record():
+    from ear import GoalKeeper
+
+    runtime = _goal_runtime([_goal_reply("yes", evidence="all criteria met")])
+    outcome = GoalKeeper().pursue(runtime, "finish the analysis", Intent(text="start"))
+
+    assert outcome.satisfied and outcome.status == "satisfied"
+    assert outcome.continuations == 0 and runtime.calls["n"] == 1
+    record = runtime.reasoning_log.for_stage("goal")[-1]
+    assert record.output == "satisfied" and record.rationale == "all criteria met"
+
+
+def test_goal_not_met_drives_a_bounded_autonomous_continuation():
+    from ear import GoalKeeper
+
+    runtime = _goal_runtime(
+        [_goal_reply("no", "goal_not_met_yet", "still missing X", "compute X"), _goal_reply("yes", evidence="X done")]
+    )
+    outcome = GoalKeeper().pursue(runtime, "produce X", Intent(text="start"))
+
+    # One continuation cycle, then satisfied -- two cycles total.
+    assert outcome.status == "satisfied"
+    assert outcome.continuations == 1 and runtime.calls["n"] == 2
+    assert [e.blocker for e in outcome.history] == ["goal_not_met_yet", "satisfied"]
+
+
+def test_goal_typed_blockers_stop_and_surface_the_reason():
+    from ear import GoalKeeper
+
+    for blocker in ("needs_user_input", "external_wait", "missing_evidence", "run_failed"):
+        runtime = _goal_runtime([_goal_reply("no", blocker, f"blocked: {blocker}")])
+        outcome = GoalKeeper().pursue(runtime, "g", Intent(text="start"))
+        assert outcome.status == "blocked" and outcome.blocker == blocker
+        assert runtime.calls["n"] == 1  # a stop blocker never continues
+
+
+def test_goal_no_progress_breaker_stops_a_stuck_loop():
+    from ear import GoalKeeper
+
+    # The same non-progress verdict, over and over.
+    runtime = _goal_runtime([_goal_reply("no", "goal_not_met_yet", "same", "same")] * 5)
+    outcome = GoalKeeper().pursue(runtime, "g", Intent(text="start"))
+    assert outcome.status == "exhausted" and outcome.blocker == "no_progress"
+    assert outcome.continuations == 2  # default no-progress cap
+
+
+def test_goal_continuation_budget_is_enforced_in_code():
+    from ear import Goal, GoalKeeper
+
+    # Distinct next steps each time (so the no-progress breaker never fires),
+    # but the continuation budget of 2 stops it.
+    runtime = _goal_runtime(
+        [
+            _goal_reply("no", "goal_not_met_yet", "e1", "s1"),
+            _goal_reply("no", "goal_not_met_yet", "e2", "s2"),
+            _goal_reply("no", "goal_not_met_yet", "e3", "s3"),
+        ]
+    )
+    outcome = GoalKeeper().pursue(runtime, Goal(condition="g", max_continuations=2), Intent(text="start"))
+    assert outcome.status == "exhausted" and outcome.blocker == "max_continuations"
+    assert outcome.continuations == 2
+
+
+def test_goal_maps_an_approval_gate_to_needs_user_input():
+    from ear import GoalKeeper
+    from ear.approval import ApprovalRequired
+
+    runtime = _goal_runtime([])
+
+    def park(intent, approval=None):
+        raise ApprovalRequired([type("P", (), {"name": "Large Loan Approval"})()])
+
+    runtime.reason = park
+    outcome = GoalKeeper().pursue(runtime, "underwrite the loan", Intent(text="start"))
+    assert outcome.status == "blocked" and outcome.blocker == "needs_user_input"
+
+
+def test_goal_is_ungraded_offline_and_never_fabricates_a_continuation(tmp_path):
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    outcome = runtime.pursue("underwrite it", Intent(text="Underwrite", context={"loan_amount": 5000}))
+
+    # No model -> the goal cannot be judged; stop honestly after one cycle.
+    assert outcome.status == "ungraded" and outcome.blocker == "ungraded"
+    assert outcome.continuations == 0
+    record = runtime.reasoning_log.for_stage("goal")[-1]
+    assert record.model == "" and "no model bound" in record.rationale
+
+
+def test_goal_reads_from_markdown():
+    from ear import Goal
+
+    assert Goal.from_markdown("# Task\n\n## Goal\n\nFinish and pass all tests.\n").condition == "Finish and pass all tests."
+    assert Goal.from_markdown("Just do the thing.").condition == "Just do the thing."
+
+
+@requires_anthropic_key
+def test_goal_pursued_live_reaches_a_terminal_outcome(tmp_path):
+    directory = tmp_path / "credit_risk_stack"
+    shutil.copytree(EXAMPLE_STACK, directory)
+    memory = (directory / "memory.md").read_text(encoding="utf-8")
+    (directory / "memory.md").write_text(
+        memory.replace("anthropic/claude-opus-4-8", "anthropic/claude-haiku-4-5"), encoding="utf-8"
+    )
+    runtime = load_runtime(directory)
+    outcome = runtime.pursue(
+        "Reach a clear approve-or-decline decision for the applicant, with the risk grade stated.",
+        Intent(
+            text="Underwrite a $15,000 consumer loan",
+            context={"loan_amount": 15000, "debt_to_income": 0.30, "credit_score": 720},
+        ),
+    )
+    # It terminates cleanly, within the budget, and records each judgment.
+    assert outcome.status in ("satisfied", "blocked", "exhausted")
+    assert outcome.continuations <= 8
+    assert runtime.reasoning_log.for_stage("goal")
+    assert all(blocker in {
+        "goal_not_met_yet", "needs_user_input", "external_wait", "missing_evidence", "run_failed", "satisfied"
+    } for blocker in [e.blocker for e in outcome.history])

@@ -39,6 +39,7 @@ from .evidence import Evidence
 from .executor import Executor
 from .experience import Experience
 from .explainer import Explainer
+from .goal import Goal, GoalKeeper, GoalOutcome
 from .governor import Governor
 from .initializer import Initializer
 from .intent import Intent
@@ -91,6 +92,7 @@ class Runtime:
     spawner: Spawner = field(default_factory=Spawner)
     tool_binder: ToolBinder = field(default_factory=ToolBinder)
     panel: Panel = field(default_factory=Panel)
+    goal_keeper: GoalKeeper = field(default_factory=GoalKeeper)
     # The instance's isolated workspace and governed command runner, when a
     # Sandbox section is declared in memory.md (see ear/sandbox.py). None
     # means the runtime shares the host filesystem, as before.
@@ -191,6 +193,14 @@ class Runtime:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(report, encoding="utf-8")
         return report
+
+    def pursue(self, goal: Any, intent: Any) -> "GoalOutcome":
+        """Pursue a session goal: run the intent, then keep driving the
+        runtime forward until the goal is met, genuinely blocked, or the
+        continuation budget is spent -- the model judging satisfaction and
+        the typed blocker, code enforcing the caps, all on the trail (see
+        ear/goal.py)."""
+        return self.goal_keeper.pursue(self, goal, intent)
 
     def add_process(self, process: Process) -> "Runtime":
         self.processes.append(process)
