@@ -3689,3 +3689,83 @@ def test_tool_loop_recovery_budget_is_bounded_then_concludes():
     assert decision == "Concluded with what I have"
     recoveries = [r for r in runtime.reasoning_log.for_stage("tool") if r.inputs.get("recovery")]
     assert len(recoveries) == _MAX_TOOL_RECOVERIES  # never unbounded
+
+
+# ---------------------------------------------------------------------------
+# The Monitor: a premium live TUI of the whole fleet as a factory assembly
+# line, rendered from the trail with zero dependencies.
+# ---------------------------------------------------------------------------
+
+
+def _strip_ansi(text):
+    import re
+
+    return re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", text)
+
+
+def test_monitor_renders_an_assembly_line_frame_from_the_fleet(tmp_path):
+    from datetime import datetime, timezone
+
+    from ear import Monitor
+
+    a = load_runtime(write_stack(tmp_path / "a", **MINIMAL_STACK))
+    for i in range(4):
+        a.reason(Intent(text=f"c{i}", context={"loan_amount": 5000 + i}))
+    b = load_runtime(write_stack(tmp_path / "b", **MINIMAL_STACK))
+    b.reason(Intent(text="one", context={"loan_amount": 5000}))
+
+    frame = Monitor().render_frame(
+        {"consumer-lending": a, "smb-lending": b}, width=100, frame=2, now=datetime.now(timezone.utc)
+    )
+    plain = _strip_ansi(frame)
+
+    # It's a truecolor terminal frame...
+    assert "\x1b[38;2;" in frame
+    # ...laid out as the assembly line, with both instances as lanes...
+    assert "ASSEMBLY LINE" in plain
+    assert "consumer-lending" in plain and "smb-lending" in plain
+    # ...the pipeline stations and KPI tiles...
+    assert "GOV" in plain and "DLB" in plain and "LRN" in plain
+    assert "INSTANCES" in plain and "HEALTHY" in plain and "CYCLES" in plain
+    # ...and every rendered row padded to the width (no ragged edges).
+    for line in frame.split("\n"):
+        assert _visible_width(line) == 100
+
+
+def test_monitor_frame_reflects_health_and_animates_between_frames(tmp_path):
+    from datetime import datetime, timezone
+
+    from ear import Monitor
+
+    healthy = load_runtime(write_stack(tmp_path / "h", **MINIMAL_STACK))
+    healthy.reason(Intent(text="ok", context={"loan_amount": 5000}))
+
+    # A broken audit chain -> the fleet shows a broken instance.
+    broken = load_runtime(write_stack(tmp_path / "k", **MINIMAL_STACK))
+    broken.reasoning_log.path = str(tmp_path / "k.jsonl")
+    broken.reason(Intent(text="ok", context={"loan_amount": 5000}))
+    trail = tmp_path / "k.jsonl"
+    trail.write_text(trail.read_text(encoding="utf-8").replace("ok", "hax", 1), encoding="utf-8")
+
+    now = datetime(2026, 7, 3, 12, 0, 0, tzinfo=timezone.utc)
+    monitor = Monitor()
+    frame0 = monitor.render_frame({"good-one": healthy, "bad-one": broken}, width=100, frame=0, now=now)
+    frame1 = monitor.render_frame({"good-one": healthy, "bad-one": broken}, width=100, frame=1, now=now)
+
+    plain0 = _strip_ansi(frame0)
+    assert "BROKEN" in plain0 and "✗" in plain0  # the broken instance is surfaced
+    # The animation phase differs frame to frame (spinner/sweep/shimmer).
+    assert frame0 != frame1
+
+
+def test_monitor_handles_an_empty_fleet_without_crashing():
+    from ear import Monitor
+
+    frame = Monitor().render_frame({}, width=80, frame=0)
+    assert "no runtime instances" in _strip_ansi(frame)
+
+
+def _visible_width(text):
+    import re
+
+    return len(re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", text))

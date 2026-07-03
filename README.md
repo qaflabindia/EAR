@@ -600,6 +600,31 @@ bars extending and appearing on their own. A per-runtime **heartbeat**
 live runtime from a quiet or hung one. No daemon, no websocket — an
 auto-refreshing static page over `http.server`.
 
+**The control room: a live TUI.** For a wall-of-screens view there's the
+`Monitor` — the whole fleet as a **factory assembly line**, drawn in the
+terminal with nothing but ANSI and Unicode (truecolor, zero dependencies):
+
+```python
+from ear import Monitor
+Monitor().run({"lending": rt_a, "mortgage": rt_b})   # live, until Ctrl-C
+Monitor().run("trails/")                              # a directory of JSONL trails
+```
+```
+python -m ear.monitor trails/
+```
+
+Each runtime instance is an **assembly lane**; the latest cycle lights up
+the pipeline stations it passed (`GOV·DIS·SEL·SCH·DEL·RES·TOL·DLB·EXP·AUD·LRN`)
+with a scanning sweep, a **conveyor** of recent outcomes streams past
+coloured by status, a block sparkline trends tokens, and a health glyph +
+live pulse mark each lane. A gradient banner, KPI tiles (instances / health
+/ cycles / tokens / cost), a running clock and a spinner update on a tick,
+so an operator *watches the fleet breathe*. `render_frame(...)` returns one
+frame as a string (testable without a terminal); `run(...)` drives the live
+loop over the alternate screen buffer, restoring the terminal on exit. It
+reads the same fleet the Dashboard does — one source of truth for health,
+two ways to look at it.
+
 Run more than one runtime and the board goes fleet-wide:
 
 ```python
@@ -955,6 +980,7 @@ ear/
   exchange.py      Exchange      — the markdown boundary: intents/*.md in, decisions/*.md out
   reasoning_log.py ReasoningLog  — the reasoning audit trail (markdown/JSONL); hash-chained + verify(), retention rotation, usage ledger
   dashboard.py     Dashboard     — self-contained HTML runtime board from the trail (TensorBoard-equivalent): render_fleet, live auto-ticking render_gantt, zero deps
+  monitor.py       Monitor       — the premium live TUI: the whole fleet as a factory assembly line, pure ANSI truecolor, zero deps
   session_store.py SessionStore  — cross-session data (markdown by default, JSON optional)
   spawner.py       Spawner       — spawn subagent runtimes, bounded by the strategy
   tool.py          Tool          — a tool declared in plain English, surfaced to reasoning

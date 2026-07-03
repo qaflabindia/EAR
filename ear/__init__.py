@@ -91,6 +91,7 @@ from .loader import Loader, load_runtime
 from .mcp_client import McpClient, McpError, McpTool
 from .mcp_server import McpServer
 from .memory import Memory, MemoryEntry
+from .monitor import Monitor
 from .model_binding import ModelBinding
 from .ontology import Ontology
 from .optimizer import Example, Optimizer, SearchOutcome
@@ -186,6 +187,7 @@ __all__ = [
     "ReasoningLog",
     "ReasoningRecord",
     "Dashboard",
+    "Monitor",
     "Strategy",
     "SessionStore",
     "Spawner",
