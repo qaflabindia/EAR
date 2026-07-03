@@ -192,3 +192,15 @@ def _ssl_context() -> ssl.SSLContext:
     if ca_file and os.path.exists(ca_file):
         return ssl.create_default_context(cafile=ca_file)
     return ssl.create_default_context()
+
+
+def fetch_text(url: str, timeout: int = 60) -> str:
+    """GET a text document over the same native transport the LM client
+    uses -- standard library, proxy and CA-bundle aware, verification
+    always on. Used by the loader for URL knowledge sources."""
+    request = urllib.request.Request(url, headers={"user-agent": "ear-knowledge"})
+    try:
+        with urllib.request.urlopen(request, context=_ssl_context(), timeout=timeout) as response:
+            return response.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise LMError(f"Fetch of {url} failed: {error}") from error

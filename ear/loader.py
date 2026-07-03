@@ -28,12 +28,14 @@ from __future__ import annotations
 
 import difflib
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 
 from .contract import Contract
-from .knowledge import Knowledge
+from .knowledge import Knowledge, KnowledgeSource
+from .llm import LMError, fetch_text
 from .persona import Persona
 from .policy import Policy
 from .process import Process
@@ -311,11 +313,7 @@ class Loader:
             runtime.reasoning_log.resume()
 
         if strategy.knowledge_sources:
-            knowledge = Knowledge()
-            for name, pattern in strategy.knowledge_sources:
-                for path in self._knowledge_paths(name, pattern):
-                    knowledge.add_document(name, path.name, path.read_text(encoding="utf-8"))
-            runtime.librarian.knowledge = knowledge
+            runtime.librarian.knowledge = self._load_knowledge(runtime, strategy)
 
         instructions = self.directory / ".ear" / "instructions.md"
         if instructions.exists():
@@ -323,6 +321,86 @@ class Loader:
             # (see Optimizer.load_instructions for scope).
             runtime.optimizer.load_instructions(instructions)
 
+
+    def _load_knowledge(self, runtime: Runtime, strategy: Strategy) -> Knowledge:
+        """Build the Librarian's corpus from the declared sources -- files
+        resolved against the stack directory, URLs fetched over the native
+        client and cached -- then attach the persisted gist index, writing
+        gists for uncovered passages when a model is bound."""
+        knowledge = Knowledge()
+        for source in strategy.knowledge_sources:
+            if source.url:
+                path = self._fetch_knowledge(source)
+                knowledge.add_document(source.name, path.name, path.read_text(encoding="utf-8"))
+            else:
+                for path in self._knowledge_paths(source.name, source.pattern):
+                    knowledge.add_document(source.name, path.name, path.read_text(encoding="utf-8"))
+        self._index_knowledge(runtime, knowledge)
+        return knowledge
+
+    def _fetch_knowledge(self, source: KnowledgeSource) -> Path:
+        """The cached file for a URL source, refetching when the declared
+        cadence says the cache is stale. A failed refresh falls back to
+        the cached copy (stale beats absent; the next load retries); a
+        failed first fetch fails loudly -- knowledge the author declared
+        and the runtime silently doesn't have is a governance hole."""
+        suffix = ".md" if source.url.partition("?")[0].endswith(".md") else ".txt"
+        path = self.directory / ".ear" / "knowledge" / (normalize(source.name).replace(" ", "-") + suffix)
+        if path.exists():
+            age_days = (time.time() - path.stat().st_mtime) / 86400
+            if source.refresh_days is None or age_days < source.refresh_days:
+                return path
+        try:
+            text = fetch_text(source.url)
+        except LMError as error:
+            if path.exists():
+                return path
+            raise ValueError(
+                f"Knowledge source '{source.name}' could not be fetched from {source.url} "
+                f"and has no cached copy: {error}"
+            ) from error
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def _index_knowledge(self, runtime: Runtime, knowledge: Knowledge) -> None:
+        """Attach the persisted gist index and, with a model bound, gist
+        the passages it doesn't cover -- on the record, like every other
+        model call. Offline, BM25 over the raw text stands, and the
+        retrieval record labels it as such."""
+        from .reasoning_log import calls_so_far, usage_since
+
+        index_path = self.directory / ".ear" / "index.md"
+        knowledge.load_index(index_path)
+        missing = knowledge.missing_gists()
+        if not missing or runtime.model_binding is None:
+            return
+        lm = runtime.model_binding.activate()
+        start = calls_so_far(lm)
+        failure = ""
+        try:
+            knowledge.build_gists(lm)
+        except LMError as error:
+            # Gists built before the failure still persist; the rest are
+            # retried on the next load.
+            failure = str(error)
+        gisted = len(missing) - len(knowledge.missing_gists())
+        if gisted:
+            knowledge.write_index(index_path, model_label=runtime.model_binding.model_id)
+        runtime.reasoning_log.record(
+            stage="indexing",
+            inputs={"passages": len(knowledge), "gists_written": gisted},
+            output=(
+                f"gist index at {index_path}" if not failure else f"indexing interrupted: {failure}"
+            ),
+            rationale=(
+                "one-line gists per passage, persisted by content hash so "
+                "differently-phrased questions still find their passages"
+            ),
+            model=runtime.model_binding.model_id,
+            usage=usage_since(lm, start),
+        )
+        runtime.reasoning_log.flush()
 
     def _knowledge_paths(self, name: str, pattern: str) -> list[Path]:
         """Resolve one declared knowledge source to real files, loudly:

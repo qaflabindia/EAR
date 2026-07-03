@@ -303,17 +303,30 @@ nothing was decided yet.
 ### Knowledge — RAG with citations, declared in natural language
 
 Reference material is stacked in memory.md under a Knowledge section, one
-bullet per source (paths or globs, resolved relative to the stack; a
-source that matches nothing fails loudly at load):
+bullet per source — paths or globs resolved relative to the stack (a
+source that matches nothing fails loudly at load), or a URL fetched over
+EAR's own HTTPS client, cached under `.ear/knowledge/`, and refreshed on
+the cadence the same bullet declares in prose:
 
 ```markdown
 ## Knowledge
 
 - underwriting manual: `knowledge/underwriting-manual.md`
+- market brief: https://example.com/brief.md, refetch weekly
 ```
 
 Markdown sources are chunked into passages by the same Section parser the
-stack is authored with. Per cycle, the `Librarian` narrows the corpus
+stack is authored with. Narrowing is native BM25 — inverse document
+frequency, term saturation, length normalization, in pure Python — scored
+over each passage's text *and* its gist: a one-line, model-written summary
+in everyday words, built once per corpus and persisted to `.ear/index.md`
+keyed by content hash (edit a source and only its entries re-gist on the
+next load; delete the file and it rebuilds). The gist is what lets a
+question phrased in synonyms find the passage whose jargon never uses
+them; offline the gists are simply absent, BM25 over the raw text stands,
+and the `retrieval` record's `narrowing` input says which is in force.
+
+Per cycle, the `Librarian` narrows the corpus
 structurally and the model judges which passages a careful analyst would
 actually consult — choosing none is a valid judgment, and it can only
 choose among real passages. What was consulted is first-class evidence:
@@ -374,8 +387,10 @@ fabricated: the skip itself is a trail record.
 
 An evaluation is one markdown file in an `evaluations/` directory: an
 ordinary intent document plus an `## Expected` section — prose criteria
-(a blocked refusal can itself be the expectation) and/or bullets of
-`field: value` the delivered Data must carry:
+(a blocked refusal can itself be the expectation), bullets of
+`field: value` the delivered Data must carry, and colon-less bullets as a
+graded rubric, each criterion judged separately with its own verdict and
+rationale:
 
 ```python
 from ear import Examiner
@@ -383,10 +398,29 @@ examination = Examiner().examine(runtime, "examples/credit_risk_stack/evaluation
 assert examination.passed          # the CI regression gate
 ```
 
-With a model, `JudgeDecisionQuality` grades each outcome with a rationale;
-offline, only the field bullets are checked structurally and prose-only
-criteria are reported **ungraded** rather than faked. Verdicts land on the
-trail (stage `evaluation`) and in `evaluations/report.md`.
+With a model, `JudgeDecisionQuality` grades each outcome with a rationale
+— once for the prose-and-fields expectation, once per rubric criterion (a
+failed criterion fails the evaluation); offline, only the field bullets
+are checked structurally and prose criteria are reported **ungraded**
+rather than faked. Verdicts land on the trail (stage `evaluation`) and in
+`evaluations/report.md` — and every run is regression history: reports
+archive to `evaluations/reports/<timestamp>.md`, and each report diffs
+itself against the previous one (**newly failing / newly passing / still
+failing**), so a prompt edit shows its consequences as a markdown
+document.
+
+Two stacks compare head-to-head over the same directory:
+
+```python
+comparison = Examiner().compare(runtime_a, runtime_b, "evaluations", judge=referee_binding)
+```
+
+Both answer every evaluation; a pairwise `JudgePreference` judgment picks
+A, B or tie per expectation (an unreadable preference records as a tie,
+never a silent winner), and the report lands in
+`evaluations/comparison.md`. Pass a dedicated `judge` binding to keep the
+referee independent of the contestants. `compare` refuses to run without
+a model: a preference judgment nobody made is never written down.
 
 ### Optimization — the trail is the training corpus
 
@@ -613,8 +647,8 @@ ear/
   panel.py         Panel         — multi-persona deliberation in authored prose patterns, native
   journey.py       Journey       — durable, resumable step-wise execution; the state a markdown record
   contract.py      Contract      — a workflow's Deliverable: fields with plain-English meanings, extracted and judged at runtime
-  examiner.py      Examiner      — examine: run markdown-native evaluations and grade them, honestly offline
-  knowledge.py     Knowledge     — the declared reference corpus, chunked through the Section parser
+  examiner.py      Examiner      — examine: markdown evals, rubric criteria, report history + regression diffs, A/B compare
+  knowledge.py     Knowledge     — the declared reference corpus: Section-parsed chunks, BM25 narrowing, persisted gist index
   librarian.py     Librarian     — research: retrieve relevant Knowledge with citations, on the record
   process.py       Process       — a stack of Workflows that performs an action
   policy.py        Policy        — governance rule, judged in natural language with a safe-eval fallback; attaches runtime-wide or to a Workflow

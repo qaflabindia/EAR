@@ -29,6 +29,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .knowledge import KnowledgeSource
 from .mcp_server import McpServer
 from .model_binding import ModelBinding
 from .ontology import Ontology
@@ -115,7 +116,7 @@ class Strategy:
 
     # Knowledge -> the Librarian's reference corpus.
     knowledge: str = ""
-    knowledge_sources: list[tuple[str, str]] = field(default_factory=list)
+    knowledge_sources: list[KnowledgeSource] = field(default_factory=list)
 
     # Pricing -> dollars on usage records. Rates are the author's
     # declaration, never a price table shipped in code.
@@ -181,14 +182,19 @@ class Strategy:
             name, description = _split_declaration(bullet)
             command, url, cleaned = _extract_reach(description)
             if url:
-                raise ValueError(
-                    f"Knowledge source '{name}' is a URL -- URL sources are not supported yet; "
-                    "copy the document into the stack directory instead"
+                # A URL source, fetched over the native client and cached;
+                # its refresh cadence is declared in the same bullet
+                # ("refetch weekly", "refresh every 3 days").
+                self.knowledge_sources.append(
+                    KnowledgeSource(name=name, url=url, refresh_days=_refresh_days(cleaned))
                 )
+                continue
             pattern = command or cleaned
             if not pattern:
-                raise ValueError(f"Knowledge source '{name}' declares no path -- write '- name: path-or-glob'")
-            self.knowledge_sources.append((name, pattern))
+                raise ValueError(
+                    f"Knowledge source '{name}' declares no path -- write '- name: path-or-glob' or '- name: URL'"
+                )
+            self.knowledge_sources.append(KnowledgeSource(name=name, pattern=pattern))
 
     def _read_pricing(self, prose: str) -> None:
         """Read token rates from prose. The reliable form is per million:
@@ -251,7 +257,9 @@ class Strategy:
         if temperature:
             self.temperature = float(temperature.group(1))
         for match in _MODEL_ID.finditer(prose):
-            left, right = match.group(1), match.group(2)
+            # A model id written at the end of a sentence must not swallow
+            # the sentence's period.
+            left, right = match.group(1), match.group(2).rstrip(".")
             # A model id either names a known provider or carries a digit
             # ("claude-opus-4-8"); this keeps prose like "approve/decline"
             # from being mistaken for one.
@@ -342,6 +350,42 @@ def _declared_path(prose: str) -> str:
         if "/" in match:
             return match
     return matches[0] if matches else ""
+
+
+# Refresh cadences a URL knowledge source may declare in prose, in days.
+# Plain word scanning -- "refetch weekly", "refresh every 3 days" -- so the
+# author writes a sentence, not a schema.
+_CADENCE_DAYS = {
+    "hourly": 1 / 24,
+    "daily": 1.0,
+    "nightly": 1.0,
+    "weekly": 7.0,
+    "fortnightly": 14.0,
+    "monthly": 30.0,
+    "quarterly": 91.0,
+    "yearly": 365.0,
+    "annually": 365.0,
+}
+_UNIT_DAYS = {"hour": 1 / 24, "day": 1.0, "week": 7.0, "month": 30.0, "year": 365.0}
+
+
+def _refresh_days(text: str) -> Optional[float]:
+    """The refresh cadence a source's prose declares, in days -- a cadence
+    word ("weekly") or a count with a unit ("every 3 days"). None when no
+    cadence was authored: the fetch is then cached indefinitely."""
+    words = [word.strip(".,;:()").lower() for word in text.split()]
+    for word in words:
+        if word in _CADENCE_DAYS:
+            return _CADENCE_DAYS[word]
+    for position, word in enumerate(words[:-1]):
+        try:
+            count = float(word)
+        except ValueError:
+            continue
+        unit = words[position + 1].rstrip("s")
+        if unit in _UNIT_DAYS:
+            return count * _UNIT_DAYS[unit]
+    return None
 
 
 def _split_declaration(bullet: str) -> tuple[str, str]:

@@ -1,9 +1,10 @@
 """Librarian -- research: retrieve the knowledge passages relevant to an
 intent, with citations, before deliberation.
 
-Retrieval is a runtime judgment: Knowledge's structural scoring narrows
-the corpus to a handful of candidates (mechanics, like the Discoverer's
-keyword fallback), and the model then judges which of those a careful
+Retrieval is a runtime judgment: Knowledge's BM25 narrowing (over passage
+text and, when the corpus is indexed, the model-written gists) brings the
+corpus down to a handful of candidates -- retrieval mechanics, like the
+Discoverer's keyword fallback -- and the model then judges which of those a careful
 analyst would actually consult -- choosing none is a valid judgment, and
 the model can only choose among the narrowed candidates, never invent a
 passage. With no model bound, retrieval falls back to the structural
@@ -61,7 +62,7 @@ class Librarian:
         else:
             # Structural retrieval only -- and the record says so.
             chosen = candidates[:3]
-            rationale = "structural retrieval only (no model bound): best word-overlap candidates included"
+            rationale = "structural retrieval only (no model bound): best BM25 candidates included"
         research = Research(
             passages=chosen,
             citations=[passage.source for passage in chosen],
@@ -74,6 +75,7 @@ class Librarian:
                 inputs={
                     "intent": intent.text,
                     "candidates": [passage.source for passage in candidates],
+                    "narrowing": self._narrowing_basis(),
                 },
                 output="; ".join(research.citations) or "nothing judged relevant",
                 rationale=rationale,
@@ -81,6 +83,16 @@ class Librarian:
                 usage=usage_since(getattr(model_binding, "lm", None), start),
             )
         return research
+
+    def _narrowing_basis(self) -> str:
+        """How the candidates were narrowed, for the retrieval record --
+        a custom retriever's own judgment, or Knowledge's BM25 with or
+        without the gist index."""
+        if self.retriever is not None:
+            return f"custom retriever ({type(self.retriever).__name__})"
+        if self.knowledge is not None and len(self.knowledge):
+            return self.knowledge.narrowing()
+        return "no corpus"
 
     def _candidates(self, intent: Intent) -> list[Passage]:
         if self.retriever is not None:

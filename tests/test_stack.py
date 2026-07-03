@@ -19,6 +19,7 @@ import pytest
 from ear import (
     Exchange,
     Intent,
+    KnowledgeSource,
     Loader,
     Persona,
     Runtime,
@@ -735,7 +736,15 @@ def test_examiner_grades_structurally_offline_and_reports(tmp_path):
     runtime = load_runtime(directory)
     examination = Examiner().examine(runtime, evaluations)
 
-    assert examination.counts() == {"examined": 3, "passed": 2, "failed": 0, "ungraded": 1}
+    assert examination.counts() == {
+        "examined": 3,
+        "passed": 2,
+        "failed": 0,
+        "ungraded": 1,
+        "criteria": 0,
+        "criteria_passed": 0,
+        "criteria_failed": 0,
+    }
     assert examination.passed is True
     ungraded = next(result for result in examination.results if result.passed is None)
     assert "need a model" in ungraded.rationale
@@ -1747,13 +1756,22 @@ def knowledge_stack(tmp_path):
     return directory
 
 
-def test_strategy_reads_knowledge_sources_and_rejects_urls():
+def test_strategy_reads_file_and_url_knowledge_sources():
     strategy = Strategy.from_markdown(KNOWLEDGE_MEMORY)
-    assert strategy.knowledge_sources == [("underwriting manual", "knowledge/manual.md")]
+    assert strategy.knowledge_sources == [
+        KnowledgeSource(name="underwriting manual", pattern="knowledge/manual.md")
+    ]
     assert "reference material" in strategy.knowledge
 
-    with pytest.raises(ValueError, match="URL sources are not supported"):
-        Strategy.from_markdown("## Knowledge\n\n- manual: https://example.com/manual\n")
+    declared = Strategy.from_markdown(
+        "## Knowledge\n\n- market brief: https://example.com/brief.md, refetch weekly\n"
+    ).knowledge_sources
+    assert declared == [
+        KnowledgeSource(name="market brief", url="https://example.com/brief.md", refresh_days=7.0)
+    ]
+
+    with pytest.raises(ValueError, match="declares no path"):
+        Strategy.from_markdown("## Knowledge\n\n- manual\n")
 
 
 def test_loader_builds_knowledge_chunked_by_section(tmp_path):
@@ -2070,3 +2088,323 @@ def test_example_credit_risk_stack_loads_and_reasons(tmp_path, monkeypatch):
 
     with pytest.raises(PermissionError, match="Loan Amount Cap"):
         runtime.reason(Intent(text="Underwrite a large loan", context={"loan_amount": 90000}))
+
+
+# ---------------------------------------------------------------------------
+# N2: evaluation & knowledge depth -- BM25 narrowing, the persisted gist
+# index, URL knowledge sources, report history with regression diffs,
+# rubric criteria, and A/B stack comparison.
+# ---------------------------------------------------------------------------
+
+
+def test_bm25_ranks_rare_terms_above_repeated_common_ones():
+    from ear import Knowledge, Passage
+
+    knowledge = Knowledge(
+        passages=[
+            Passage(
+                source="manual § plants",
+                text="Loan loan loan loan loan loan loan paperwork is filed on Fridays with the loan clerk.",
+            ),
+            Passage(source="manual § subordination", text="A subordination agreement reprioritizes the loan lien."),
+        ]
+    )
+    # "subordination" is rare (idf-heavy); the first passage's seven
+    # repetitions of the common word "loan" saturate instead of winning.
+    ranked = knowledge.candidates("subordination of a loan", limit=2)
+    assert ranked[0].source == "manual § subordination"
+
+
+def test_gist_bridges_the_synonym_phrasing_word_matching_misses():
+    from ear import Knowledge, Passage
+
+    debt = Passage(
+        source="manual § 4.2",
+        text="A grade C applicant whose debt-to-income band is not low must be declined.",
+    )
+    plants = Passage(source="manual § 9.9", text="Water the office plants on Fridays.")
+    knowledge = Knowledge(passages=[plants, debt])
+    query = "heavy existing borrowings"
+
+    # Without the gist index the synonym phrasing shares no word with any
+    # passage: no signal, so the corpus-order fallback surfaces plants.
+    assert knowledge.narrowing() == "BM25 over passage text alone (no gist index)"
+    assert knowledge.candidates(query, limit=1)[0].source == "manual § 9.9"
+
+    debt.gist = "whether an applicant with heavy existing borrowings or high debt can be approved for a loan"
+    assert knowledge.narrowing() == "BM25 over passage text and index gists"
+    assert knowledge.candidates(query, limit=1)[0].source == "manual § 4.2"
+
+
+def test_gist_index_persists_by_content_hash_and_retires_on_edit(tmp_path):
+    from ear import Knowledge
+
+    document = "# M\n\n## Ratios\n\nDebt banding governs declines.\n\n## Plants\n\nWater plants on Fridays.\n"
+    knowledge = Knowledge().add_document("manual", "m.md", document)
+    lm = ScriptedLM(
+        ["## gist\n\nhow heavy borrowings force a decline\n", "## gist\n\ncaring for office greenery\n"]
+    )
+    assert knowledge.build_gists(lm) == 2
+
+    index_path = tmp_path / ".ear" / "index.md"
+    knowledge.write_index(index_path, model_label="anthropic/test")
+    index_text = index_path.read_text(encoding="utf-8")
+    assert "anthropic/test" in index_text and "office greenery" in index_text
+
+    # A fresh load of the same corpus reuses every gist without a model.
+    reloaded = Knowledge().add_document("manual", "m.md", document)
+    assert reloaded.load_index(index_path) == 2
+    assert not reloaded.missing_gists()
+
+    # Editing one section retires only that entry: the edited passage
+    # hashes differently, misses the index, and needs re-gisting.
+    edited = document.replace("Water plants", "Water plants twice")
+    partially = Knowledge().add_document("manual", "m.md", edited)
+    assert partially.load_index(index_path) == 1
+    assert [passage.source for passage in partially.missing_gists()] == ["manual -- m.md § Plants"]
+
+
+def test_url_knowledge_source_fetches_once_and_reuses_the_cache(tmp_path, monkeypatch):
+    fetches = []
+
+    def fake_fetch(url, timeout=60):
+        fetches.append(url)
+        return "# Brief\n\n## Outlook\n\nRates are expected to hold.\n"
+
+    monkeypatch.setattr("ear.loader.fetch_text", fake_fetch)
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = "## Knowledge\n\n- market brief: https://example.com/brief.md\n"
+    directory = write_stack(tmp_path / "stack", **stack)
+
+    runtime = load_runtime(directory)
+    assert fetches == ["https://example.com/brief.md"]
+    assert (directory / ".ear" / "knowledge" / "market-brief.md").exists()
+    assert any("Rates are expected to hold" in p.text for p in runtime.librarian.knowledge.passages)
+
+    # No refresh cadence declared: the cache stands indefinitely.
+    load_runtime(directory)
+    assert len(fetches) == 1
+
+
+def test_url_knowledge_source_honors_the_declared_refresh_cadence(tmp_path, monkeypatch):
+    from ear.llm import LMError
+
+    fetches = []
+
+    def fake_fetch(url, timeout=60):
+        fetches.append(url)
+        if len(fetches) == 3:
+            raise LMError("network down")
+        return "# Brief\n\nRates hold.\n"
+
+    monkeypatch.setattr("ear.loader.fetch_text", fake_fetch)
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = "## Knowledge\n\n- market brief: https://example.com/brief.md, refetch weekly\n"
+    directory = write_stack(tmp_path / "stack", **stack)
+
+    load_runtime(directory)
+    load_runtime(directory)  # fresh cache -> no refetch
+    assert len(fetches) == 1
+
+    cached = directory / ".ear" / "knowledge" / "market-brief.md"
+    eight_days_ago = time.time() - 8 * 86400
+    os.utime(cached, (eight_days_ago, eight_days_ago))
+    load_runtime(directory)  # stale by the declared week -> refetch
+    assert len(fetches) == 2
+
+    os.utime(cached, (eight_days_ago, eight_days_ago))
+    runtime = load_runtime(directory)  # refetch fails -> the stale cache stands
+    assert len(fetches) == 3
+    assert any("Rates hold" in p.text for p in runtime.librarian.knowledge.passages)
+
+
+def test_url_knowledge_source_with_no_cache_fails_loudly(tmp_path, monkeypatch):
+    from ear.llm import LMError
+
+    def failing_fetch(url, timeout=60):
+        raise LMError("unreachable")
+
+    monkeypatch.setattr("ear.loader.fetch_text", failing_fetch)
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = "## Knowledge\n\n- market brief: https://example.com/brief.md\n"
+    with pytest.raises(ValueError, match="no cached copy"):
+        load_runtime(write_stack(tmp_path / "stack", **stack))
+
+
+def test_retrieval_record_names_its_narrowing_basis(tmp_path):
+    directory = knowledge_stack(tmp_path)
+    runtime = load_runtime(directory)
+    runtime.reason(Intent(text="Underwrite a marginal grade C applicant", context={"loan_amount": 9000}))
+    retrieval = runtime.reasoning_log.for_stage("retrieval")[0]
+    assert retrieval.inputs["narrowing"] == "BM25 over passage text alone (no gist index)"
+
+
+def test_reports_archive_and_diff_newly_failing_and_passing(tmp_path):
+    from ear import Examiner
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    evaluations = directory / "evaluations"
+    evaluations.mkdir()
+    passing = "# Underwrite a loan\n\n## Context\n\n- loan_amount: 5000\n\n## Expected\n\n- decision: resolved\n"
+    failing = passing.replace("resolved", "unobtainium")
+    (evaluations / "steady.md").write_text(passing, encoding="utf-8")
+    (evaluations / "flaky.md").write_text(passing, encoding="utf-8")
+
+    runtime = load_runtime(directory)
+    first = Examiner().examine(runtime, evaluations)
+    assert first.prior_verdicts is None  # no history yet -> nothing to diff
+    assert "Changes Since Last Report" not in (evaluations / "report.md").read_text(encoding="utf-8")
+    assert len(list((evaluations / "reports").glob("*.md"))) == 1
+
+    (evaluations / "flaky.md").write_text(failing, encoding="utf-8")
+    second = Examiner().examine(runtime, evaluations)
+    assert second.changes() == {"newly failing": ["flaky"], "newly passing": [], "still failing": []}
+
+    third = Examiner().examine(runtime, evaluations)
+    assert third.changes()["still failing"] == ["flaky"]
+
+    (evaluations / "flaky.md").write_text(passing, encoding="utf-8")
+    fourth = Examiner().examine(runtime, evaluations)
+    assert fourth.changes() == {"newly failing": [], "newly passing": ["flaky"], "still failing": []}
+    report = (evaluations / "report.md").read_text(encoding="utf-8")
+    assert "- newly passing: flaky" in report
+    assert len(list((evaluations / "reports").glob("*.md"))) == 4
+
+
+def test_rubric_criteria_are_ungraded_offline_never_faked(tmp_path):
+    from ear import Examiner
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    evaluations = directory / "evaluations"
+    evaluations.mkdir()
+    (evaluations / "rubric.md").write_text(
+        "# Underwrite a loan\n\n## Context\n\n- loan_amount: 5000\n\n"
+        "## Expected\n\n- decision: resolved\n- names the responsible persona\n- states a concrete amount\n",
+        encoding="utf-8",
+    )
+    runtime = load_runtime(directory)
+    examination = Examiner().examine(runtime, evaluations)
+
+    result = examination.results[0]
+    assert result.passed is True  # the field expectation still grades structurally
+    assert [criterion.passed for criterion in result.criteria] == [None, None]
+    assert all("needs a model" in criterion.rationale for criterion in result.criteria)
+    report = (evaluations / "report.md").read_text(encoding="utf-8")
+    assert "Rubric:" in report and "- ungraded: names the responsible persona" in report
+
+
+def test_rubric_criteria_grade_separately_and_a_failed_criterion_fails(tmp_path):
+    from ear import Examiner, ModelBinding
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    runtime = load_runtime(directory)
+    binding = ModelBinding(provider="anthropic", model="test")
+    binding.lm = ScriptedLM()
+    runtime.model_binding = binding
+
+    graded, rationale, criteria = Examiner()._grade(
+        runtime,
+        expected_prose="The loan is approved.",
+        expected_fields={},
+        criteria=["cites the underwriting manual", "names a concrete amount"],
+        outcome="Approved at $5,000 per the manual.",
+    )
+    # ScriptedLM without a script answers '## decision' sections, which the
+    # bool field reads as unparseable -- so script the three judgments.
+    binding.lm = ScriptedLM(
+        [
+            "## passed\n\nyes\n\n## rationale\n\nMatches the expectation.\n",
+            "## passed\n\nno\n\n## rationale\n\nNo citation appears.\n",
+            "## passed\n\nyes\n\n## rationale\n\n$5,000 is concrete.\n",
+        ]
+    )
+    graded, rationale, criteria = Examiner()._grade(
+        runtime,
+        expected_prose="The loan is approved.",
+        expected_fields={},
+        criteria=["cites the underwriting manual", "names a concrete amount"],
+        outcome="Approved at $5,000 per the manual.",
+    )
+    assert graded is False  # the failed criterion fails the evaluation
+    assert [criterion.passed for criterion in criteria] == [False, True]
+    assert "No citation" in criteria[0].rationale
+
+
+def test_compare_refuses_without_a_model(tmp_path):
+    from ear import Examiner
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    evaluations = directory / "evaluations"
+    evaluations.mkdir()
+    (evaluations / "any.md").write_text("# Underwrite\n\n## Expected\n\nApproved.\n", encoding="utf-8")
+    runtime_a = load_runtime(directory, name="A")
+    runtime_b = load_runtime(directory, name="B")
+    with pytest.raises(ValueError, match="never written down"):
+        Examiner().compare(runtime_a, runtime_b, evaluations)
+    assert not (evaluations / "comparison.md").exists()
+
+
+def test_compare_prefers_on_the_record_with_a_scripted_judge(tmp_path):
+    from ear import Examiner, ModelBinding
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    evaluations = directory / "evaluations"
+    evaluations.mkdir()
+    (evaluations / "small-loan.md").write_text(
+        "# Underwrite a loan\n\n## Context\n\n- loan_amount: 5000\n\n## Expected\n\nThe loan is handled.\n",
+        encoding="utf-8",
+    )
+    runtime_a = load_runtime(directory, name="Stack-A")
+    runtime_b = load_runtime(directory, name="Stack-B")
+    binding = ModelBinding(provider="anthropic", model="test")
+    binding.lm = ScriptedLM(
+        ["## preference\n\nB\n\n## rationale\n\nB states the amount plainly.\n"]
+    )
+
+    # The referee is a dedicated judge binding, independent of the two
+    # contestants -- both runtimes reason with their deterministic
+    # pipeline, and the script is consumed by the preference alone.
+    comparison = Examiner().compare(runtime_a, runtime_b, evaluations, judge=binding)
+    assert comparison.counts() == {"A": 0, "B": 1, "tie": 0}
+    assert comparison.results[0].preference == "B"
+
+    rendered = (evaluations / "comparison.md").read_text(encoding="utf-8")
+    assert "A: Stack-A vs B: Stack-B" in rendered and "Preferred B: 1" in rendered
+    record = runtime_a.reasoning_log.for_stage("comparison")[0]
+    assert record.output == "B" and "amount plainly" in record.rationale
+
+
+@requires_anthropic_key
+def test_gist_index_builds_once_and_reloads_live(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = (
+        KNOWLEDGE_MEMORY
+        + "\n## Model Selection\n\nReason with anthropic/claude-haiku-4-5. "
+        "The key lives in ANTHROPIC_API_KEY.\n"
+    )
+    directory = write_stack(tmp_path / "stack", **stack)
+    (directory / "knowledge").mkdir()
+    (directory / "knowledge" / "manual.md").write_text(MANUAL, encoding="utf-8")
+
+    runtime = load_runtime(directory)
+    index_path = directory / ".ear" / "index.md"
+    assert index_path.exists()
+    assert index_path.read_text(encoding="utf-8").count("## Passage") == 2
+    indexing = runtime.reasoning_log.for_stage("indexing")[0]
+    assert indexing.inputs["gists_written"] == 2
+    assert indexing.input_tokens and indexing.output_tokens  # indexing is on the record, billed
+
+    # The corpus indexes once: a fresh load reuses every gist by content
+    # hash and asks the model for nothing.
+    reloaded = load_runtime(directory)
+    assert not reloaded.reasoning_log.for_stage("indexing")
+    assert not reloaded.librarian.knowledge.missing_gists()
+    assert reloaded.librarian.knowledge.narrowing() == "BM25 over passage text and index gists"
+
+
+def test_model_id_at_sentence_end_keeps_no_period():
+    strategy = Strategy.from_markdown(
+        "## Model Selection\n\nReason with anthropic/claude-haiku-4-5. The key lives in ANTHROPIC_API_KEY.\n"
+    )
+    assert strategy.model == "anthropic/claude-haiku-4-5"
+    assert strategy.provider == "anthropic"

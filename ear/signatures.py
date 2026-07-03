@@ -10,9 +10,10 @@ prompts, and the model decides.
 Used deliberately, only where genuine judgment lives: policy compliance,
 process relevance, selection, scheduling, delegation, the core decision,
 recall, audit, explanation, history summarisation, experience distillation,
-knowledge relevance, contract conformance, decision-quality grading, and
-panel deliberation. Mechanical stages (composing, validating) stay plain
-Python.
+knowledge relevance, passage gisting for the retrieval index, contract
+conformance, decision-quality grading, pairwise preference between stacks,
+and panel deliberation. Mechanical stages (composing, validating) stay
+plain Python.
 """
 
 from __future__ import annotations
@@ -197,6 +198,37 @@ SelectRelevantPassages = Judgment(
     outputs=[
         Field("relevant_numbers", "The numbers of the relevant passages; empty if none apply", "list"),
         Field("rationale", "One sentence explaining the choice", "text"),
+    ],
+)
+
+GistPassage = Judgment(
+    instruction=(
+        "Write a one-line gist of a reference passage for a retrieval "
+        "index. Say what the passage covers in plain, everyday words -- "
+        "including the synonyms a searcher might use for its key terms -- "
+        "so a differently-phrased question still finds it. One line, no "
+        "heading, no quotation."
+    ),
+    inputs=[Field("passage", "The passage, headed by its [source]")],
+    outputs=[Field("gist", "One plain-English line covering the passage and its synonyms", "text")],
+)
+
+JudgePreference = Judgment(
+    instruction=(
+        "Two configurations of a runtime answered the same intent. Judge "
+        "which outcome better satisfies the evaluator's expectation, the "
+        "way a careful reviewer would: ground the preference in the "
+        "expectation alone, never in length or style, and call it a tie "
+        "when neither is genuinely better."
+    ),
+    inputs=[
+        Field("expected", "What the evaluator said should happen, in plain English"),
+        Field("outcome_a", "The outcome runtime A reached"),
+        Field("outcome_b", "The outcome runtime B reached"),
+    ],
+    outputs=[
+        Field("preference", "Exactly one of: A, B, tie", "str"),
+        Field("rationale", "One sentence explaining the preference", "text"),
     ],
 )
 

@@ -244,7 +244,7 @@ a declared MCP server's tool runs in a cycle, on the record.
 | Phase | Weeks | Theme | Exit test |
 |---|---|---|---|
 | **N1** ✅ shipped | 1–3 | reasoning & optimization depth | ✅ live search kept-or-beat baseline on held-out references; per-stage tokens/latency on every record; prose-declared Pricing prices usage; LM retries with backoff, on the record; demos + instructions persisted as markdown and loader-applied |
-| **N2** | 4–6 | evaluation & knowledge depth | regression diff between two reports; gist-index reload; synonym retrieval win |
+| **N2** ✅ shipped | 4–6 | evaluation & knowledge depth | ✅ report history diffs newly failing/passing/still failing; rubric criteria graded separately; A/B `compare` with an independent judge (refuses offline); BM25 narrowing; gist index built live once, reloaded by content hash; synonym query retrieved via gist what word overlap missed; URL sources fetched natively, cached, refreshed on the declared cadence |
 | **N3** | 7–10 | execution depth | routed skip, leg retry, deadline escalation, early panel consensus — each on the record |
 | **N4** | 11–14 | governance & connectivity | broken-chain detection; off-list approver refused; tool call policy-blocked; MCP tool invoked natively |
 

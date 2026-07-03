@@ -71,7 +71,7 @@ from .delegator import Delegator
 from .deliberator import Deliberator
 from .discoverer import Discoverer
 from .evidence import Evidence
-from .examiner import Examination, EvaluationResult, Examiner
+from .examiner import Comparison, CriterionResult, Examination, EvaluationResult, Examiner, PreferenceResult
 from .exchange import Exchange
 from .executor import Executor
 from .experience import Experience
@@ -82,7 +82,7 @@ from .intent import Intent
 from .journey import Journey, Leg
 from .judgment import Field, Judgment
 from .llm import LM
-from .knowledge import Knowledge, Passage
+from .knowledge import Knowledge, KnowledgeSource, Passage
 from .learner import Learner
 from .librarian import Librarian, Research
 from .loader import Loader, load_runtime
@@ -162,6 +162,7 @@ __all__ = [
     "Contract",
     "ContractField",
     "Knowledge",
+    "KnowledgeSource",
     "Passage",
     "Librarian",
     "Research",
@@ -172,6 +173,9 @@ __all__ = [
     "Examiner",
     "Examination",
     "EvaluationResult",
+    "CriterionResult",
+    "Comparison",
+    "PreferenceResult",
     "Loader",
     "load_runtime",
     "ReasoningLog",
