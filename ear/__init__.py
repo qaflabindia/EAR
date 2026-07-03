@@ -68,6 +68,7 @@ from .policy import Policy
 from .process import Process
 from .reasoner import Reasoner
 from .recaller import Recaller
+from .router import AllProvidersFailed, Router, RoutingStrategy
 from .runtime import Runtime
 from .scheduler import Scheduler
 from .selector import Selector
@@ -88,6 +89,9 @@ __all__ = [
     "Policy",
     "Runtime",
     "ModelBinding",
+    "Router",
+    "RoutingStrategy",
+    "AllProvidersFailed",
     "Evidence",
     "Memory",
     "MemoryEntry",

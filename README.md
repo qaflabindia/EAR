@@ -160,6 +160,62 @@ result = runtime.reason(Intent(text="Create PO for laptops under approved budget
 before any judgment-laden stage runs, so `Policy`, `Discoverer`, the
 `Reasoner` and the `Explainer` all reason against the same live model.
 
+## Provider-agnostic routing: the omni-route `Router`
+
+A single `ModelBinding` speaks to one provider. A `Router` is the
+OmniRoute-style, provider-agnostic agent: it stacks *many* provider
+bindings — any LiteLLM provider (Anthropic, OpenAI, Gemini, Bedrock, Groq,
+Ollama, … 250+), each reading its own key from the environment — behind one
+binding, picks which to try first by a **routing strategy**, **falls back**
+to the next provider when one errors or is rate-limited, and trips a
+**circuit breaker** that benches a failing provider for a cooldown window so
+the next call routes around it.
+
+Crucially a `Router` *is* a drop-in `ModelBinding` — same `activate()`,
+`lm` and `model_id` surface — so you assign it to `runtime.model_binding`
+and the whole pipeline (`Governor`, `Discoverer`, `Policy`, `Reasoner`,
+`Explainer`) becomes provider-agnostic without any stage knowing a router
+is there.
+
+```python
+from ear import ModelBinding, Router, RoutingStrategy
+
+router = Router.across(
+    ModelBinding(provider="anthropic", model="claude-opus-4-8", priority=10),
+    ModelBinding(provider="openai", model="gpt-4o", priority=20),
+    ModelBinding(provider="groq", model="llama-3.3-70b", is_free=True, priority=30),
+    strategy=RoutingStrategy.PRIORITY,   # ordered fallback: 10 -> 20 -> 30
+)
+runtime.model_binding = router
+```
+
+The strategy only decides *who goes first*; the Router always walks the
+ordered list and falls back on failure:
+
+| Strategy | Orders providers by |
+| --- | --- |
+| `PRIORITY` | lowest `priority` number first (ordered fallback) |
+| `CHEAPEST` | lowest `cost_per_1k` first |
+| `FREE_FIRST` | `is_free` providers first, then by priority |
+| `ROUND_ROBIN` | rotates the starting provider each call |
+| `WEIGHTED` | random order, biased by each binding's `weight` |
+| `RANDOM` | uniform random order |
+
+Because the config belongs in the environment, never hardcoded, a Router
+can be built straight from an env var — a JSON array of providers, or a
+shorthand `provider/model` list:
+
+```python
+# EAR_ROUTER='anthropic/claude-opus-4-8, openai/gpt-4o, groq/llama-3.3-70b'
+router = Router.from_env("EAR_ROUTER", strategy=RoutingStrategy.PRIORITY)
+```
+
+The selection order, the fallback walk and the cooldown breaker are plain,
+deterministic Python (`router.order()`, `router.dispatch(...)`), so the
+routing behaviour is fully testable with fake per-provider callables and no
+LLM configured at all — the same offline/live two-tier testability the rest
+of the package keeps.
+
 ## Memory: Evidence, Memory, Experience and Adaptation
 
 AI systems routinely conflate four distinct concerns: *why* a decision was
@@ -220,6 +276,7 @@ ear/
   policy.py        Policy        — governance rule, judged in natural language with a safe-eval fallback; attaches runtime-wide or to a Workflow
   runtime.py       Runtime       — runs every cycle through the full operation pipeline below
   model_binding.py ModelBinding  — LLM provider binding (model, credentials, params -> a DSPy LM)
+  router.py        Router        — omni-route: routes across many providers with fallback + cooldown (a drop-in ModelBinding)
   evidence.py      Evidence      — why this decision was made
   memory.py        Memory        — persistent memory (working + compressed layers)
   experience.py    Experience    — the pattern aggregated from repeated Memory entries

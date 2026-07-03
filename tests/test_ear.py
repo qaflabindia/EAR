@@ -24,6 +24,7 @@ from ear import (
     Adaptation,
     AdaptationBank,
     Adapter,
+    AllProvidersFailed,
     Auditor,
     Composer,
     Decider,
@@ -46,6 +47,8 @@ from ear import (
     Process,
     Reasoner,
     Recaller,
+    Router,
+    RoutingStrategy,
     Runtime,
     Scheduler,
     Selector,
@@ -424,6 +427,182 @@ def test_runtime_reason_rejects_malformed_discoverer_output_via_validator():
 
 
 # ---------------------------------------------------------------------------
+# Offline: the omni-route Router -- selection order, fallback and the
+# circuit-breaker cooldown are plain Python, exercised with fake per-provider
+# callables and no LLM configured at all.
+# ---------------------------------------------------------------------------
+
+
+class _Clock:
+    """A hand-cranked clock so cooldown windows are deterministic in tests."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def fake_provider(name: str, result: str = None, fail: bool = False, **meta) -> ModelBinding:
+    """A ModelBinding whose `lm` is a fake callable -- so `build()` returns
+    it without importing dspy, and `dispatch` can drive it offline."""
+    binding = ModelBinding(provider=name, model=name, **meta)
+
+    def lm(**kwargs):
+        if fail:
+            raise RuntimeError(f"{name} failed")
+        return result if result is not None else name
+
+    binding.lm = lm
+    return binding
+
+
+def test_router_is_a_drop_in_model_binding():
+    router = Router(providers=[fake_provider("a"), fake_provider("b")])
+    assert "omni-route" in router.model_id
+    assert hasattr(router, "activate") and hasattr(router, "lm")
+
+
+def test_router_priority_orders_by_priority_number():
+    router = Router(
+        providers=[
+            fake_provider("a", priority=30),
+            fake_provider("b", priority=10),
+            fake_provider("c", priority=20),
+        ]
+    )
+    assert [p.provider for p in router.order()] == ["b", "c", "a"]
+
+
+def test_router_cheapest_orders_by_cost():
+    router = Router(
+        providers=[
+            fake_provider("a", cost_per_1k=5.0),
+            fake_provider("b", cost_per_1k=1.0),
+            fake_provider("c", cost_per_1k=3.0),
+        ],
+        strategy=RoutingStrategy.CHEAPEST,
+    )
+    assert [p.provider for p in router.order()] == ["b", "c", "a"]
+
+
+def test_router_free_first_prefers_free_providers():
+    router = Router(
+        providers=[
+            fake_provider("paid", priority=1, is_free=False),
+            fake_provider("free", priority=9, is_free=True),
+        ],
+        strategy=RoutingStrategy.FREE_FIRST,
+    )
+    assert [p.provider for p in router.order()] == ["free", "paid"]
+
+
+def test_router_round_robin_rotates_the_starting_provider():
+    router = Router(
+        providers=[fake_provider("a"), fake_provider("b"), fake_provider("c")],
+        strategy=RoutingStrategy.ROUND_ROBIN,
+    )
+    assert [p.provider for p in router.order()] == ["a", "b", "c"]
+    assert [p.provider for p in router.order()] == ["b", "c", "a"]
+    assert [p.provider for p in router.order()] == ["c", "a", "b"]
+
+
+def test_router_weighted_order_is_deterministic_and_complete():
+    import random
+
+    router = Router(
+        providers=[fake_provider("a", weight=1.0), fake_provider("b", weight=50.0)],
+        strategy=RoutingStrategy.WEIGHTED,
+        rng=random.Random(0),
+    )
+    order = [p.provider for p in router.order()]
+    assert set(order) == {"a", "b"} and len(order) == 2
+
+
+def test_router_dispatch_returns_first_successful_provider():
+    router = Router(providers=[fake_provider("a", result="from-a"), fake_provider("b", result="from-b")])
+    assert router.dispatch(lambda lm: lm()) == "from-a"
+    assert router.last_served.provider == "a"
+
+
+def test_router_falls_back_on_failure_and_benches_provider():
+    clock = _Clock()
+    a = fake_provider("a", fail=True, priority=10)
+    b = fake_provider("b", result="from-b", priority=20)
+    router = Router(providers=[a, b], cooldown_seconds=30.0, clock=clock)
+
+    # a errors, so the call falls back to b.
+    assert router.dispatch(lambda lm: lm()) == "from-b"
+    assert router.last_served is b
+    # a is now benched by the circuit breaker; only b is offered next.
+    assert [p.model_id for p in router.order()] == ["b/b"]
+    # once the cooldown elapses, a returns to the rotation.
+    clock.now = 30.0
+    assert [p.model_id for p in router.order()] == ["a/a", "b/b"]
+
+
+def test_router_success_resets_a_providers_failure_state():
+    clock = _Clock()
+    flaky = fake_provider("flaky", fail=True, priority=10)
+    backup = fake_provider("backup", result="ok", priority=20)
+    router = Router(providers=[flaky, backup], max_failures=2, cooldown_seconds=30.0, clock=clock)
+
+    # First failure: with max_failures=2 the breaker has not tripped yet, so
+    # flaky is still offered (it just isn't the one that served the call).
+    router.dispatch(lambda lm: lm())
+    assert flaky in router.order()
+
+    # Recover flaky, then a success clears its accumulated failure count.
+    flaky.lm = lambda **kwargs: "flaky-back"
+    assert router.dispatch(lambda lm: lm()) == "flaky-back"
+    assert router._failures.get("flaky/flaky", 0) == 0
+
+
+def test_router_raises_when_every_provider_fails():
+    router = Router(providers=[fake_provider("a", fail=True), fake_provider("b", fail=True)])
+    with pytest.raises(AllProvidersFailed):
+        router.dispatch(lambda lm: lm())
+
+
+def test_router_from_spec_parses_shorthand():
+    router = Router.from_spec("anthropic/claude-opus-4-8, openai/gpt-4o; groq/llama-3.3-70b")
+    assert [(p.provider, p.model) for p in router.providers] == [
+        ("anthropic", "claude-opus-4-8"),
+        ("openai", "gpt-4o"),
+        ("groq", "llama-3.3-70b"),
+    ]
+    assert [p.priority for p in router.providers] == [0, 1, 2]
+
+
+def test_router_from_spec_parses_json():
+    router = Router.from_spec(
+        '[{"provider": "anthropic", "model": "claude-opus-4-8", "priority": 10},'
+        ' {"provider": "groq", "model": "llama-3.3-70b", "free": true}]'
+    )
+    assert router.providers[0].priority == 10
+    assert router.providers[1].is_free is True
+    assert router.providers[1].priority == 1
+
+
+def test_router_from_env_reads_the_environment(monkeypatch):
+    monkeypatch.setenv("EAR_ROUTER", "anthropic/claude-opus-4-8, openai/gpt-4o")
+    router = Router.from_env("EAR_ROUTER")
+    assert [p.provider for p in router.providers] == ["anthropic", "openai"]
+
+
+def test_router_from_env_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("EAR_ROUTER", raising=False)
+    with pytest.raises(ValueError):
+        Router.from_env("EAR_ROUTER")
+
+
+def test_router_activate_builds_a_routing_lm():
+    router = Router(providers=[fake_provider("a")])
+    lm = router.activate()
+    assert lm is router.lm and lm is not None
+
+
+# ---------------------------------------------------------------------------
 # Live: natural-language reasoning against a real Claude model.
 # ---------------------------------------------------------------------------
 
@@ -522,3 +701,28 @@ def test_reasoner_compiles_default_dspy_program_with_llm():
 
     decision = reasoner.reason(Intent(text="Approve a $5,000 loan for an applicant with credit score 780"))
     assert decision is not None
+
+
+@requires_anthropic_key
+def test_router_falls_back_across_providers_in_a_real_runtime_cycle():
+    # A broken provider (a model that does not exist) sits ahead of a working
+    # one by priority. Every judgment-laden stage should route past the broken
+    # provider to the working model, proving cross-provider fallback end to end.
+    broken = ModelBinding(provider="anthropic", model="claude-does-not-exist-9999", priority=10)
+    working = ModelBinding(provider="anthropic", model=ANTHROPIC_TEST_MODEL, priority=20)
+    router = Router.across(broken, working, strategy=RoutingStrategy.PRIORITY)
+
+    runtime = Runtime(name="Credit-Risk-Runtime", model_binding=router)
+    process = Process(
+        name="Evaluate Credit Application",
+        description="Reviews a loan applicant's credit history, income and debts to decide approval.",
+    )
+    process.add_workflow(Workflow(name="Credit Review Workflow"))
+    runtime.add_process(process)
+
+    decision = runtime.reason(
+        Intent(text="Evaluate a $5,000 loan for an applicant with credit score 780")
+    )
+    assert isinstance(decision, str) and decision.strip()
+    # The working provider is the one that actually served the reasoning.
+    assert router.last_served is working
