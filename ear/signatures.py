@@ -201,6 +201,74 @@ SelectRelevantPassages = Judgment(
     ],
 )
 
+RouteAfterLeg = Judgment(
+    instruction=(
+        "A journey through authored workflow steps has just completed one "
+        "step. Read the authored routing prose and the step's outcome, and "
+        "choose what to walk next: answer with the number of an authored "
+        "step to jump to, 'next' to continue in order, or 'conclude' to "
+        "end the journey complete. Choose only among the authored steps -- "
+        "never invent one -- and follow the routing prose exactly; when no "
+        "route applies, answer 'next'."
+    ),
+    inputs=[
+        Field("routes", "The authored routing prose, verbatim"),
+        Field("completed_step", "The step just completed, as 'number: instruction'"),
+        Field("outcome", "The decision that step reached"),
+        Field("steps", "Every authored step, one 'number: instruction' per line"),
+    ],
+    outputs=[
+        Field("next_step", "An authored step number, 'next', or 'conclude'", "str"),
+        Field("rationale", "One sentence explaining the routing choice", "text"),
+    ],
+)
+
+ChooseNextSpeaker = Judgment(
+    instruction=(
+        "Moderate a panel deliberation: read the authored pattern, the "
+        "personas at the table and the transcript so far, and choose who "
+        "should speak next -- or whether the panel has genuinely converged "
+        "and should conclude. Answer with exactly one listed persona's "
+        "name, or 'conclude' when another turn would add nothing; when the "
+        "pattern prescribes an order, follow it."
+    ),
+    inputs=[
+        Field("intent_text", "What the panel is deliberating"),
+        Field("pattern", "The authored deliberation pattern, in plain English"),
+        Field("personas", "One 'name: instructions' line per persona at the table"),
+        Field("transcript", "The turns so far, speakers bracketed"),
+    ],
+    outputs=[
+        Field("speaker", "Exactly one listed persona's name, or 'conclude'", "str"),
+        Field("rationale", "One sentence explaining the choice", "text"),
+    ],
+)
+
+SpeakOrUseTool = Judgment(
+    instruction=(
+        "Speak one turn in a panel deliberation, entirely as the given "
+        "persona -- and you may first use tools to get facts. If a tool "
+        "would ground the turn, call exactly one: name it and give its "
+        "arguments, leaving the statement empty. Otherwise give the "
+        "statement: engage concretely with earlier speakers, honor the "
+        "authored pattern, and keep it to a few sentences. Never invent a "
+        "tool that is not listed."
+    ),
+    inputs=[
+        Field("intent_text", "What the panel is deliberating"),
+        Field("persona", "Who is speaking: instructions and stacked skills"),
+        Field("pattern", "The authored deliberation pattern, in plain English"),
+        Field("transcript", "The turns so far, speakers bracketed"),
+        Field("tools", "One 'name(parameters): description' line per available tool"),
+        Field("gathered", "Results of tool calls made so far, or 'none yet'"),
+    ],
+    outputs=[
+        Field("tool", "The name of the one tool to call now, or empty to speak", "str"),
+        Field("arguments", "The tool's arguments as '- name: value' lines; empty when speaking", "list"),
+        Field("statement", "This persona's turn, a few sentences; given only when no tool is called", "text"),
+    ],
+)
+
 GistPassage = Judgment(
     instruction=(
         "Write a one-line gist of a reference passage for a retrieval "

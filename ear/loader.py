@@ -43,7 +43,7 @@ from .runtime import Runtime
 from .section import Document, Section, normalize, parse_document
 from .session_store import SessionStore
 from .skill import Skill
-from .strategy import Strategy
+from .strategy import Strategy, count_in_prose, days_in_prose
 from .workflow import Workflow
 
 _FILE_CANDIDATES = {
@@ -154,15 +154,35 @@ class Loader:
         scopes: dict[str, str] = {}
         for section in document.sections:
             body = section.body(
-                field_keys=("fallback", "fallback expression", "applies to", "applies", "scope", "approval")
+                field_keys=(
+                    "fallback",
+                    "fallback expression",
+                    "applies to",
+                    "applies",
+                    "scope",
+                    "approval",
+                    "escalate",
+                    "escalation",
+                )
             )
             statement = "\n".join(filter(None, [body.prose] + [f"- {bullet}" for bullet in body.bullets]))
             key = normalize(section.name)
+            escalation = body.field("escalate", "escalation")
+            escalation_days = days_in_prose(escalation) if escalation else None
+            if escalation and escalation_days is None:
+                # A deadline the author declared and the runner silently
+                # can't read is a governance hole, not a default.
+                raise ValueError(
+                    f"Policy '{section.name}' declares Escalate '{escalation}' but no readable "
+                    "period -- write 'Escalate: after 3 days'"
+                )
             policies[key] = Policy(
                 name=section.name,
                 statement=statement,
                 fallback_expression=body.field("fallback", "fallback expression"),
                 approval_required=self._read_approval_field(section.name, body.field("approval")),
+                escalation=escalation,
+                escalation_days=escalation_days,
             )
             scopes[key] = body.field("applies to", "applies", "scope")
         return policies, scopes
@@ -204,8 +224,33 @@ class Loader:
                     )
                 last_workflow.contract = self._load_contract(section, last_workflow)
                 continue
-            body = section.body(field_keys=("persona", "delegate to", "delegate", "policies", "policy", "pattern"))
-            workflow = Workflow(name=section.name, pattern=body.field("pattern"))
+            body = section.body(
+                field_keys=(
+                    "persona",
+                    "delegate to",
+                    "delegate",
+                    "policies",
+                    "policy",
+                    "pattern",
+                    "routes",
+                    "route",
+                    "retries",
+                    "retry",
+                )
+            )
+            workflow = Workflow(
+                name=section.name,
+                pattern=body.field("pattern"),
+                routes=body.field("routes", "route"),
+            )
+            retries = body.field("retries", "retry")
+            if retries:
+                workflow.retry_budget = count_in_prose(retries)
+                if workflow.retry_budget is None:
+                    raise ValueError(
+                        f"Workflow '{section.name}' declares Retries '{retries}' but no readable "
+                        "count -- write 'Retries: retry a failed leg twice'"
+                    )
             default_persona: Optional[Persona] = None
             default_reference = body.field("persona", "delegate to", "delegate")
             if default_reference:

@@ -124,6 +124,11 @@ class Strategy:
     input_rate_per_million: Optional[float] = None
     output_rate_per_million: Optional[float] = None
 
+    # Execution resilience -> the Journey's leg retry budget, unless a
+    # workflow declares its own.
+    execution: str = ""
+    leg_retry_budget: Optional[int] = None
+
     # Ontological settings -> the reasoning vocabulary.
     ontology: Ontology = field(default_factory=Ontology)
 
@@ -142,6 +147,8 @@ class Strategy:
                 strategy._read_knowledge(body)
             elif "pricing" in heading or "price" in heading or "cost" in heading:
                 strategy._read_pricing(prose)
+            elif "retry" in heading or "retries" in heading or "resilien" in heading or "execution" in heading:
+                strategy._read_execution(prose)
             elif "mcp" in heading:
                 strategy._read_mcp(body)
             elif "discover" in heading:
@@ -186,7 +193,7 @@ class Strategy:
                 # its refresh cadence is declared in the same bullet
                 # ("refetch weekly", "refresh every 3 days").
                 self.knowledge_sources.append(
-                    KnowledgeSource(name=name, url=url, refresh_days=_refresh_days(cleaned))
+                    KnowledgeSource(name=name, url=url, refresh_days=days_in_prose(cleaned))
                 )
                 continue
             pattern = command or cleaned
@@ -235,6 +242,13 @@ class Strategy:
         if self.output_rate_per_million is not None:
             cost += output_tokens * self.output_rate_per_million / 1_000_000
         return cost
+
+    def _read_execution(self, prose: str) -> None:
+        """Read the leg retry budget from prose: 'Retry a failed leg twice
+        before giving up.' A section with no readable count declares no
+        budget -- a journey then keeps its crash-and-resume semantics."""
+        self.execution = prose
+        self.leg_retry_budget = count_in_prose(prose)
 
     def _read_subagents(self, prose: str) -> None:
         self.subagent_spawning = prose
@@ -369,10 +383,11 @@ _CADENCE_DAYS = {
 _UNIT_DAYS = {"hour": 1 / 24, "day": 1.0, "week": 7.0, "month": 30.0, "year": 365.0}
 
 
-def _refresh_days(text: str) -> Optional[float]:
-    """The refresh cadence a source's prose declares, in days -- a cadence
-    word ("weekly") or a count with a unit ("every 3 days"). None when no
-    cadence was authored: the fetch is then cached indefinitely."""
+def days_in_prose(text: str) -> Optional[float]:
+    """The period a sentence of prose declares, in days -- a cadence word
+    ("weekly"), or a count with a unit ("every 3 days", "after 2 weeks").
+    None when no period was authored. Used for knowledge refresh cadences
+    and approval escalation deadlines alike."""
     words = [word.strip(".,;:()").lower() for word in text.split()]
     for word in words:
         if word in _CADENCE_DAYS:
@@ -385,6 +400,39 @@ def _refresh_days(text: str) -> Optional[float]:
         unit = words[position + 1].rstrip("s")
         if unit in _UNIT_DAYS:
             return count * _UNIT_DAYS[unit]
+    return None
+
+
+# Spoken counts a declaration may use ("retry twice", "no retries").
+_COUNT_WORDS = {
+    "no": 0,
+    "never": 0,
+    "zero": 0,
+    "once": 1,
+    "one": 1,
+    "twice": 2,
+    "two": 2,
+    "thrice": 3,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+
+
+def count_in_prose(text: str) -> Optional[int]:
+    """The first count a sentence of prose declares -- a digit or a spoken
+    number ("retry a failed leg twice" -> 2, "no retries" -> 0). None when
+    no count was authored."""
+    for word in (word.strip(".,;:()").lower() for word in text.split()):
+        if word.isdigit():
+            return int(word)
+        if word in _COUNT_WORDS:
+            return _COUNT_WORDS[word]
     return None
 
 

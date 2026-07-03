@@ -36,6 +36,14 @@ class Workflow:
     # e.g. "adversarial debate, the risk officer has the last word" --
     # prose the Panel follows, never an enum.
     pattern: str = ""
+    # Routing prose (`Routes:` in workflow.md), e.g. "if the grade is D or
+    # E, skip to the customer note step" -- judged after each Journey leg;
+    # the model chooses only among authored steps, never invents one.
+    routes: str = ""
+    # How many times a failed (raising) Journey leg is retried before the
+    # journey gives up (`Retries:` in workflow.md, e.g. "retry a failed
+    # leg twice"). None keeps plain crash-and-resume semantics.
+    retry_budget: Optional[int] = None
 
     def add_persona(self, persona: Persona) -> "Workflow":
         self.personas.append(persona)

@@ -78,6 +78,21 @@ class ToolBinder:
         the model naming a tool loosely still resolves to the right one."""
         return normalize(name)
 
+    @staticmethod
+    def parse_arguments(items: Any) -> dict[str, Any]:
+        """Read a tool call's arguments from the model's '- name: value'
+        lines into a typed kwargs dict, coerced by the same codec as
+        intent context so numbers arrive as numbers. Shared by every
+        native tool loop (deliberation and panel turns alike)."""
+        from .section import coerce
+
+        arguments: dict[str, Any] = {}
+        for item in items or []:
+            name, separator, value = str(item).partition(":")
+            if separator and name.strip():
+                arguments[name.strip()] = coerce(value)
+        return arguments
+
     def bind(self, name: str, handler: Callable[..., Any]) -> "ToolBinder":
         self.bindings[normalize(name)] = handler
         return self

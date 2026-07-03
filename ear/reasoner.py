@@ -116,7 +116,6 @@ class Reasoner:
         lands on the trail), feed the result back, and repeat until the
         model decides or the iteration budget is spent. No framework -- the
         model's choices are markdown, parsed by the shared codec."""
-        from .section import coerce
         from .signatures import ChooseToolAction, ReasonAboutIntent
         from .tool_binder import ToolBinder
 
@@ -138,7 +137,7 @@ class Reasoner:
                 if str(action.decision).strip():
                     return str(action.decision).strip()
                 break  # no tool and no decision -- fall through to a plain decision
-            arguments = _parse_arguments(action.arguments, coerce)
+            arguments = ToolBinder.parse_arguments(action.arguments)
             invoke = binder.logged_handler(runtime, chosen) if binder is not None else chosen.handler
             result = invoke(**arguments)
             gathered.append(f"{chosen.name}({arguments}) -> {result}")
@@ -258,15 +257,3 @@ class Reasoner:
                 insights = "\n".join(f"- {a.insight}" for a in relevant)
                 block += f"\n\nLearned adaptations:\n{insights}"
         return block
-
-
-def _parse_arguments(items: Any, coerce: Any) -> dict[str, Any]:
-    """Read a tool call's arguments from the model's '- name: value' lines
-    into a typed kwargs dict, coerced by the same codec as intent context
-    so numbers arrive as numbers."""
-    arguments: dict[str, Any] = {}
-    for item in items or []:
-        name, separator, value = str(item).partition(":")
-        if separator and name.strip():
-            arguments[name.strip()] = coerce(value)
-    return arguments

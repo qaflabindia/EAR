@@ -200,14 +200,26 @@ Pattern: adversarial debate; the Credit Risk Guru has the last word
 2. Make the applicant's case. (Customer Advocate)
 ```
 
+Who speaks next is a judgment, not a rotation: each turn a moderator
+judgment reads the pattern and the transcript and chooses the next
+speaker — or concludes the panel early when it has genuinely converged,
+so consensus ends the deliberation before the budget does. Code guards
+what the model may not decide: only listed personas speak (an unreadable
+choice falls back to rotation, on the record), conclusion is honored only
+once every persona has spoken, and the turn budget still caps everything.
+Personas whose skills carry bound tools may use the native tool loop
+inside their turns — get the facts, then speak — every invocation a
+`tool` record exactly as in deliberation.
+
 Each turn one persona speaks — instructions and stacked skills in hand,
 the transcript in view — and a synthesis concludes the panel into the one
 decision the pipeline continues with. Governance is untouched: the
 Governor gated the cycle before the panel sat, the Validator and
 Contracts still check the synthesis, every turn is a trail record (stage
-`conversation`) and the synthesis is the cycle's `deliberation`. Budgets
-are code: `rounds` and a hard `max_turns` cap. Offline the panel never
-fakes a debate — it reports who would have deliberated, and says so.
+`conversation`, with who chose the speaker and why) and the synthesis is
+the cycle's `deliberation`. Budgets are code: `rounds` and a hard
+`max_turns` cap. Offline the panel never fakes a debate — it rotates
+deterministically, reports who would have deliberated, and says so.
 
 ### Journeys — durable, resumable execution, native
 
@@ -223,11 +235,50 @@ journey.run(fresh_runtime)        # resumes exactly where the record ends
 ```
 
 A hard block ends the journey (`BLOCKED`); an approval gate parks it
-(`PENDING APPROVAL`) until `run` is called again with the human's
-`Approval`; a completed journey is settled and replays nothing. The
-record is the same natural language as everything else — and a journey
-refuses to resume over a stack whose steps no longer match the legs it
-already walked: continuing a changed plan would forge the record.
+(`PENDING APPROVAL`, stamping when and which policies it awaits) until
+`run` is called again with the human's `Approval`; a completed journey is
+settled and replays nothing. The record is the same natural language as
+everything else — and a journey refuses to resume over a stack whose
+steps no longer match the legs it already walked: continuing a changed
+plan would forge the record.
+
+Control flow is authored in prose, judged at runtime:
+
+```markdown
+## Underwriting Workflow
+
+Routes: if the risk grade is C or worse, skip straight to the decline note.
+Retries: retry a failed leg twice before giving up.
+
+1. Band the profile and assign a risk grade. (Credit Risk Guru)
+2. Prepare the approval paperwork. (Credit Risk Guru)
+3. Write the decline note. (Credit Risk Guru)
+```
+
+- **Routing** — after each leg of a routed workflow, a routing judgment
+  reads the authored routes and the leg's outcome and chooses the next
+  authored step: jump, continue in order, or conclude. The model chooses
+  **only among authored steps, never invents one**; loops are legal, and
+  a per-step revisit budget in code refuses runaway ones. Every choice is
+  a `routing` record; offline the routes are not judged and the journey
+  continues in order, saying so.
+- **Retries** — declared on the workflow or in a memory.md
+  execution/resilience section ("retry a failed leg twice"); a leg whose
+  cycle *raises* is retried within the budget, every attempt a `retry`
+  record, exhaustion ending the journey `FAILED` on the record. With no
+  budget declared, a crash keeps plain crash-and-resume semantics.
+- **Events** — external signals as markdown: drop
+  `events/<journey-stem>*.md` beside the record and its Context bullets
+  merge into the journey's context on resume, each consumed exactly once
+  (an `event` record, and an `## Events` line in the journey file).
+
+`Journeys.run_all(runtime, "journeys/")` is the runner: one pass over
+every record — resume the resumable, release the approved
+(`approvals/<journey-stem>.md`), and escalate the expired. A gated policy
+may declare `Escalate: after 3 days`; a parked journey found past that
+deadline is marked `ESCALATED` with the reason in its record — still
+releasable by an approval, but no longer quietly waiting. No daemon: the
+runner is one call, and *when* it runs is the operator's cron.
 
 ### Tools — execution on the record
 
@@ -644,8 +695,8 @@ ear/
   workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies
   approval.py      Approval      — a human's verdict on a parked cycle; ApprovalRequired parks it
   tool_binder.py   ToolBinder    — declared tools meet executables; every invocation on the trail
-  panel.py         Panel         — multi-persona deliberation in authored prose patterns, native
-  journey.py       Journey       — durable, resumable step-wise execution; the state a markdown record
+  panel.py         Panel         — multi-persona deliberation in authored prose patterns; judged speakers, early consensus, tools in turns
+  journey.py       Journey       — durable, resumable, prose-routed execution; the state a markdown record; Journeys is the runner
   contract.py      Contract      — a workflow's Deliverable: fields with plain-English meanings, extracted and judged at runtime
   examiner.py      Examiner      — examine: markdown evals, rubric criteria, report history + regression diffs, A/B compare
   knowledge.py     Knowledge     — the declared reference corpus: Section-parsed chunks, BM25 narrowing, persisted gist index

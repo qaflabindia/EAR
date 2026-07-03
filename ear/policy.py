@@ -31,6 +31,11 @@ class Policy:
     statement: str = ""
     fallback_expression: str = ""
     approval_required: bool = False
+    # An approval gate may declare when a parked journey escalates
+    # (`Escalate: after 3 days` in policy.md); the Journeys runner marks a
+    # journey ESCALATED once the declared period passes unapproved.
+    escalation: str = ""
+    escalation_days: Optional[float] = None
 
     def evaluate(self, model_binding: Optional[Any] = None, **context: Any) -> bool:
         """Return True when the policy is satisfied (or not applicable)."""

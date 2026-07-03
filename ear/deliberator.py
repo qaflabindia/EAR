@@ -40,7 +40,7 @@ class Deliberator:
             return decision
         style, personas = self._panel_call(plan)
         if style and len(personas) >= 2:
-            return runtime.panel.convene(runtime, personas, intent, style=style)
+            return runtime.panel.convene(runtime, personas, intent, style=style, plan=plan)
         return runtime.reasoner.reason(intent, runtime=runtime, plan=plan, research=research)
 
     @staticmethod

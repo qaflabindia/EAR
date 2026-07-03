@@ -79,7 +79,7 @@ from .explainer import Explainer
 from .governor import Governor
 from .initializer import Initializer
 from .intent import Intent
-from .journey import Journey, Leg
+from .journey import Journey, Journeys, Leg
 from .judgment import Field, Judgment
 from .llm import LM
 from .knowledge import Knowledge, KnowledgeSource, Passage
@@ -167,6 +167,7 @@ __all__ = [
     "Librarian",
     "Research",
     "Journey",
+    "Journeys",
     "Leg",
     "Panel",
     "Turn",

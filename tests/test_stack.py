@@ -999,7 +999,9 @@ def test_panel_debates_live(tmp_path):
         )
     )
     turns = runtime.reasoning_log.for_stage("conversation")
-    assert len(turns) == 4
+    # Speakers are judged now, and consensus may conclude the panel before
+    # the budget of four -- but never before both sides have spoken.
+    assert 2 <= len(turns) <= 4
     assert {record.inputs["speaker"] for record in turns} == {"Credit Risk Guru", "Customer Advocate"}
     assert all(record.model == "anthropic/claude-haiku-4-5" for record in turns)
     assert decision and "no model bound" not in decision
@@ -2408,3 +2410,453 @@ def test_model_id_at_sentence_end_keeps_no_period():
     )
     assert strategy.model == "anthropic/claude-haiku-4-5"
     assert strategy.provider == "anthropic"
+
+
+# ---------------------------------------------------------------------------
+# N3: execution depth -- prose-authored routing, leg retry policies, the
+# journey runner with escalation, event documents, and dynamic panels.
+# ---------------------------------------------------------------------------
+
+ROUTED_WORKFLOW = (
+    "# Workflows\n\n## Underwriting Workflow\n\n"
+    "Routes: if the risk grade is C or worse, skip straight to the decline note; "
+    "otherwise continue in order.\n\n"
+    "1. Band the profile and assign a risk grade. (Credit Risk Guru)\n"
+    "2. Prepare the approval paperwork. (Credit Risk Guru)\n"
+    "3. Write the decline note. (Credit Risk Guru)\n\n"
+    "Policies: Loan Amount Cap\n"
+)
+
+
+def test_routes_retries_and_escalation_are_authored_in_prose(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = ROUTED_WORKFLOW.replace(
+        "Routes:", "Retries: retry a failed leg twice before giving up.\nRoutes:"
+    )
+    stack["policy"] = MINIMAL_STACK["policy"].replace(
+        "Fallback: loan_amount <= 75000\nApplies to: Underwriting Workflow\n",
+        "Fallback: loan_amount <= 75000\nApplies to: Underwriting Workflow\n"
+        "Approval: required\nEscalate: after 3 days\n",
+    )
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    workflow = runtime.processes[0].workflows[0]
+    assert "skip straight to the decline note" in workflow.routes
+    assert workflow.retry_budget == 2
+    cap = workflow.policies[0]
+    assert cap.escalation == "after 3 days" and cap.escalation_days == 3.0
+
+    bad = dict(MINIMAL_STACK)
+    bad["workflow"] = MINIMAL_STACK["workflow"].replace(
+        "Policies:", "Retries: whenever it feels right\nPolicies:"
+    )
+    with pytest.raises(ValueError, match="no readable count"):
+        load_runtime(write_stack(tmp_path / "bad-retries", **bad))
+
+    bad_policy = dict(MINIMAL_STACK)
+    bad_policy["policy"] = MINIMAL_STACK["policy"].replace(
+        "Applies to: runtime\n", "Applies to: runtime\nEscalate: someday, surely\n"
+    )
+    with pytest.raises(ValueError, match="no readable period"):
+        load_runtime(write_stack(tmp_path / "bad-escalate", **bad_policy))
+
+
+def test_strategy_reads_the_leg_retry_budget_from_prose():
+    strategy = Strategy.from_markdown(
+        "## Execution Resilience\n\nRetry a failed leg twice before giving up.\n"
+    )
+    assert strategy.leg_retry_budget == 2
+    assert "Retry a failed leg" in strategy.execution
+    assert Strategy.from_markdown("## Execution\n\nNo retries; fail fast.\n").leg_retry_budget == 0
+
+
+def test_routed_journey_offline_continues_in_order_and_says_so(tmp_path):
+    from ear import Journey
+
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = ROUTED_WORKFLOW
+    directory = write_stack(tmp_path / "stack", **stack)
+    runtime = load_runtime(directory)
+    journey = Journey(directory / "journeys" / "loan.md")
+    status = journey.run(runtime, Intent(text="Underwrite a loan", context={"loan_amount": 5000}))
+
+    assert status == "completed"
+    assert [leg.step for leg in journey.legs] == [1, 2, 3]
+    routings = runtime.reasoning_log.for_stage("routing")
+    assert len(routings) == 3
+    assert all("no model bound" in record.rationale for record in routings)
+    assert routings[-1].output == "conclude the journey"
+
+
+def test_routing_judgment_never_invents_a_step_and_honors_the_revisit_budget(tmp_path):
+    from ear import Journey, ModelBinding, Workflow
+
+    binding = ModelBinding(provider="anthropic", model="test")
+    runtime = Runtime(name="Routed-Runtime", model_binding=binding)
+    workflow = Workflow(name="W", routes="loop until done")
+    workflow.add_step("first")
+    workflow.add_step("second")
+    authored = [(workflow, step) for step in workflow.steps]
+    journey = Journey(tmp_path / "j.md", intent_text="x")
+
+    from ear.journey import Leg
+
+    leg = Leg(number=1, workflow="W", instruction="first", decision="d", status="decided", step=1)
+
+    # A step number the stack never authored is refused, never improvised.
+    binding.lm = ScriptedLM(["## next step\n\n9\n\n## rationale\n\nJump far.\n"])
+    assert journey._route(runtime, workflow, authored, leg, {1: 1}) == 2
+    assert "names no authored step" in runtime.reasoning_log.for_stage("routing")[-1].rationale
+
+    # A legal loop is honored -- until the revisit budget refuses it.
+    binding.lm = ScriptedLM(["## next step\n\n1\n\n## rationale\n\nDo it again.\n"])
+    assert journey._route(runtime, workflow, authored, leg, {1: 1}) == 1
+    binding.lm = ScriptedLM(["## next step\n\n1\n\n## rationale\n\nAgain, forever.\n"])
+    assert journey._route(runtime, workflow, authored, leg, {1: 3}) == 2
+    assert "revisit budget" in runtime.reasoning_log.for_stage("routing")[-1].rationale
+
+    # 'conclude' ends the journey; 'next' continues in order.
+    binding.lm = ScriptedLM(["## next step\n\nconclude\n\n## rationale\n\nNothing left.\n"])
+    assert journey._route(runtime, workflow, authored, leg, {1: 1}) is None
+    binding.lm = ScriptedLM(["## next step\n\nnext\n\n## rationale\n\nIn order.\n"])
+    assert journey._route(runtime, workflow, authored, leg, {1: 1}) == 2
+
+
+def test_journey_retries_a_failing_leg_within_the_declared_budget(tmp_path):
+    from ear import Journey
+
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = MINIMAL_STACK["workflow"].replace(
+        "Policies:", "Retries: retry a failed leg twice before giving up.\nPolicies:"
+    )
+    directory = write_stack(tmp_path / "stack", **stack)
+    runtime = load_runtime(directory)
+    attempts = {"count": 0}
+    true_reason = runtime.reason
+
+    def flaky_reason(intent, approval=None):
+        attempts["count"] += 1
+        if attempts["count"] <= 2:
+            raise RuntimeError("transient worker failure")
+        return true_reason(intent, approval=approval)
+
+    runtime.reason = flaky_reason
+    journey = Journey(directory / "journeys" / "loan.md")
+    status = journey.run(runtime, Intent(text="Underwrite a loan", context={"loan_amount": 5000}))
+
+    assert status == "completed"
+    retries = runtime.reasoning_log.for_stage("retry")
+    assert len(retries) == 2
+    assert all("retrying" in record.output for record in retries)
+    assert retries[0].inputs["error"] == "transient worker failure"
+
+
+def test_journey_fails_on_the_record_when_the_retry_budget_is_exhausted(tmp_path):
+    from ear import Journey
+
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = MINIMAL_STACK["workflow"].replace(
+        "Policies:", "Retries: retry once.\nPolicies:"
+    )
+    directory = write_stack(tmp_path / "stack", **stack)
+    runtime = load_runtime(directory)
+
+    def doomed_reason(intent, approval=None):
+        raise RuntimeError("the worker never comes back")
+
+    runtime.reason = doomed_reason
+    journey = Journey(directory / "journeys" / "loan.md")
+    status = journey.run(runtime, Intent(text="Underwrite a loan", context={"loan_amount": 5000}))
+
+    assert status == "FAILED"
+    assert journey.legs[-1].status == "FAILED"
+    assert "retry budget exhausted" in journey.legs[-1].decision
+    record = (directory / "journeys" / "loan.md").read_text(encoding="utf-8")
+    assert "Status: FAILED" in record
+    assert "exhausted" in runtime.reasoning_log.for_stage("retry")[-1].output
+    # Settled: another run replays nothing.
+    assert Journey(journey.path).run(runtime) == "FAILED"
+
+
+def test_journey_without_a_declared_budget_keeps_crash_semantics(tmp_path):
+    from ear import Journey
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    runtime = load_runtime(directory)
+
+    def crashing_reason(intent, approval=None):
+        raise RuntimeError("worker died")
+
+    runtime.reason = crashing_reason
+    with pytest.raises(RuntimeError, match="worker died"):
+        Journey(directory / "journeys" / "loan.md").run(
+            runtime, Intent(text="Underwrite", context={"loan_amount": 5000})
+        )
+    assert runtime.reasoning_log.for_stage("retry") == []
+
+
+def test_journey_consumes_event_documents_exactly_once(tmp_path):
+    from ear import Journey
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    runtime = load_runtime(directory)
+    journeys = directory / "journeys"
+
+    # Crash after the first leg so the journey waits mid-walk.
+    calls = {"count": 0}
+    true_reason = runtime.reason
+
+    def crash_on_second(intent, approval=None):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("worker died mid-journey")
+        return true_reason(intent, approval=approval)
+
+    runtime.reason = crash_on_second
+    with pytest.raises(RuntimeError):
+        Journey(journeys / "loan.md").run(runtime, Intent(text="Underwrite", context={"loan_amount": 5000}))
+
+    (journeys / "events").mkdir()
+    (journeys / "events" / "loan-appraisal.md").write_text(
+        "# Event -- appraisal received\n\n## Context\n\n- appraisal_value: 250000\n",
+        encoding="utf-8",
+    )
+    runtime.reason = true_reason
+    resumed = Journey(journeys / "loan.md")
+    assert resumed.run(runtime) == "completed"
+    assert resumed.context["appraisal_value"] == 250000
+    event = runtime.reasoning_log.for_stage("event")[0]
+    assert event.inputs["event"] == "loan-appraisal.md"
+    record = (journeys / "loan.md").read_text(encoding="utf-8")
+    assert "## Events" in record and "loan-appraisal.md" in record
+    assert "appraisal_value: 250000" in record
+
+    # A fresh run consumes nothing twice.
+    again = Journey(journeys / "loan.md")
+    again.run(runtime)
+    assert len(runtime.reasoning_log.for_stage("event")) == 1
+
+
+def gated_stack(tmp_path, escalate=""):
+    # One step per workflow: an approval waives the gate for one governed
+    # cycle, so the gated walk is a single leg -- the same shape as
+    # approval_stack above.
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = (
+        "# Workflows\n\n## Underwriting Workflow\n\n"
+        "1. Decide approve or decline. (Credit Risk Guru)\n"
+    )
+    stack["policy"] = (
+        "# Policies\n\n## Loan Amount Cap\nThe loan must not exceed $75,000.\n\n"
+        "Fallback: loan_amount <= 75000\nApplies to: Underwriting Workflow\n\n"
+        "## Large Loan Approval\nLoans over $50,000 need a human.\n\n"
+        "Fallback: loan_amount <= 50000\nApplies to: Underwriting Workflow\n"
+        "Approval: required\n" + (f"Escalate: {escalate}\n" if escalate else "")
+    )
+    return write_stack(tmp_path / "stack", **stack)
+
+
+def test_runner_resumes_releases_and_escalates_in_one_pass(tmp_path):
+    from ear import Journey, Journeys
+
+    directory = gated_stack(tmp_path, escalate="after 3 days")
+    runtime = load_runtime(directory)
+    journeys = directory / "journeys"
+
+    # a: crashes on its first leg -- the record already exists, in progress.
+    def crash(intent, approval=None):
+        raise RuntimeError("died")
+
+    true_reason = runtime.reason
+    runtime.reason = crash
+    with pytest.raises(RuntimeError):
+        Journey(journeys / "a.md").run(runtime, Intent(text="Underwrite", context={"loan_amount": 5000}))
+    runtime.reason = true_reason
+
+    # b: parks on the approval gate; a human verdict awaits in approvals/.
+    assert (
+        Journey(journeys / "b.md").run(runtime, Intent(text="Underwrite big", context={"loan_amount": 60000}))
+        == "PENDING APPROVAL"
+    )
+    (journeys / "approvals").mkdir()
+    (journeys / "approvals" / "b.md").write_text(
+        "# Approval\n\nVerdict: approved\nApprover: lakshmi@gigkri.com\n\n> Collateral covers it.\n",
+        encoding="utf-8",
+    )
+
+    # c: parks on the same gate with no approval -- and a declared deadline.
+    assert (
+        Journey(journeys / "c.md").run(runtime, Intent(text="Underwrite big", context={"loan_amount": 61000}))
+        == "PENDING APPROVAL"
+    )
+
+    four_days = 4 * 86400
+    outcomes = Journeys().run_all(runtime, journeys, now=time.time() + four_days)
+    assert outcomes["a.md"] == "completed"
+    assert outcomes["b.md"] == "completed"
+    assert outcomes["c.md"] == "ESCALATED"
+
+    c_record = (journeys / "c.md").read_text(encoding="utf-8")
+    assert "Status: ESCALATED" in c_record and "## Escalation" in c_record
+    assert "deadline has passed" in c_record
+    escalation = runtime.reasoning_log.for_stage("escalation")[0]
+    assert escalation.inputs["journey"] == "c.md"
+
+    # A second pass is idempotent: settled stays settled, escalated stays
+    # escalated with no duplicate record, and an approval still releases c.
+    again = Journeys().run_all(runtime, journeys, now=time.time() + four_days)
+    assert again == {"a.md": "completed", "b.md": "completed", "c.md": "ESCALATED"}
+    assert len(runtime.reasoning_log.for_stage("escalation")) == 1
+
+    (journeys / "approvals" / "c.md").write_text(
+        "# Approval\n\nVerdict: approved\nApprover: lakshmi@gigkri.com\n", encoding="utf-8"
+    )
+    released = Journeys().run_all(runtime, journeys, now=time.time() + four_days)
+    assert released["c.md"] == "completed"
+
+
+def test_runner_refuses_an_unreadable_approval_on_the_record(tmp_path):
+    from ear import Journey, Journeys
+
+    directory = gated_stack(tmp_path)
+    runtime = load_runtime(directory)
+    journeys = directory / "journeys"
+    Journey(journeys / "big.md").run(runtime, Intent(text="Underwrite big", context={"loan_amount": 60000}))
+    (journeys / "approvals").mkdir()
+    (journeys / "approvals" / "big.md").write_text("# Approval\n\nVerdict: perhaps\n", encoding="utf-8")
+
+    outcomes = Journeys().run_all(runtime, journeys)
+    assert outcomes["big.md"] == "PENDING APPROVAL"
+    refusal = runtime.reasoning_log.for_stage("approval")[-1]
+    assert "unreadable verdict" in refusal.output
+
+
+def test_panel_speaker_is_judged_and_concludes_early_after_all_have_spoken():
+    from ear import ModelBinding, Panel
+
+    binding = ModelBinding(provider="anthropic", model="test")
+    binding.lm = ScriptedLM(
+        [
+            # Turn 1: the model tries to conclude before anyone spoke -- refused.
+            "## speaker\n\nconclude\n\n## rationale\n\nSeems obvious.\n",
+            "## statement\n\nGrade C; decline.\n",
+            # Turn 2: the model picks the advocate by name.
+            "## speaker\n\nCustomer Advocate\n\n## rationale\n\nThe other side must answer.\n",
+            "## statement\n\nAgreed -- decline, with a referral.\n",
+            # Turn 3: both have spoken; consensus concludes the panel early.
+            "## speaker\n\nconclude\n\n## rationale\n\nBoth agree on decline.\n",
+            "## decision\n\nDecline, with a referral to the secured product.\n",
+        ]
+    )
+    runtime = Runtime(name="Panel-Runtime", model_binding=binding)
+    personas = [Persona(name="Credit Risk Guru"), Persona(name="Customer Advocate")]
+    decision = Panel(rounds=3).convene(runtime, personas, Intent(text="Underwrite a marginal loan"))
+
+    turns = runtime.reasoning_log.for_stage("conversation")
+    assert len(turns) == 2  # concluded early, well under the budget of 6
+    assert "conclusion refused" in turns[0].inputs["chosen_by"]
+    assert turns[1].inputs["chosen_by"] == "model"
+    assert turns[1].inputs["choice_rationale"] == "The other side must answer."
+    deliberation = runtime.reasoning_log.for_stage("deliberation")[0]
+    assert deliberation.inputs["concluded_early"] == "Both agree on decline."
+    assert decision == "Decline, with a referral to the secured product."
+
+
+def test_panel_rotation_stands_when_the_choice_names_nobody():
+    from ear import ModelBinding, Panel
+
+    binding = ModelBinding(provider="anthropic", model="test")
+    binding.lm = ScriptedLM(
+        [
+            "## speaker\n\nThe Moderator\n\n## rationale\n\nA phantom.\n",
+            "## statement\n\nFirst word.\n",
+            "## speaker\n\nB\n\n## rationale\n\nB's turn.\n",
+            "## statement\n\nSecond word.\n",
+            "## decision\n\nSettled.\n",
+        ]
+    )
+    runtime = Runtime(name="Panel-Runtime", model_binding=binding)
+    personas = [Persona(name="A"), Persona(name="B")]
+    Panel(rounds=1).convene(runtime, personas, Intent(text="anything"))
+    turns = runtime.reasoning_log.for_stage("conversation")
+    assert [record.inputs["speaker"] for record in turns] == ["A", "B"]
+    assert "names no listed persona" in turns[0].inputs["chosen_by"]
+
+
+def test_panel_persona_uses_tools_inside_a_turn_on_the_record(tmp_path):
+    from ear import ModelBinding, Panel
+
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = "## Tools\n\n- credit lookup: fetch the applicant's bureau score\n"
+    directory = write_stack(tmp_path / "stack", **stack)
+    runtime = load_runtime(directory)
+    runtime.tool_binder.bind("credit lookup", lambda applicant_id: f"score for {applicant_id}: 668")
+
+    binding = ModelBinding(provider="anthropic", model="test")
+    binding.lm = ScriptedLM(
+        [
+            "## speaker\n\nAnalyst\n\n## rationale\n\nFacts first.\n",
+            # The turn calls the tool, then speaks with the fact in hand.
+            "## tool\n\ncredit lookup\n\n## arguments\n\n- applicant_id: 42\n\n## statement\n\n\n",
+            "## tool\n\n\n\n## arguments\n\n\n\n## statement\n\nThe bureau score is 668; marginal.\n",
+            "## decision\n\nDecline at 668.\n",
+        ]
+    )
+    runtime.model_binding = binding
+    personas = [Persona(name="Analyst")]
+    decision = Panel(rounds=1).convene(runtime, personas, Intent(text="Underwrite"))
+
+    tool_record = runtime.reasoning_log.for_stage("tool")[0]
+    assert tool_record.inputs["tool"] == "credit lookup"
+    assert "668" in tool_record.output
+    turn = runtime.reasoning_log.for_stage("conversation")[0]
+    assert turn.output == "The bureau score is 668; marginal."
+    assert decision == "Decline at 668."
+
+
+@requires_anthropic_key
+def test_journey_routes_the_authored_skip_live(tmp_path):
+    from ear import Journey
+
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = ROUTED_WORKFLOW
+    stack["memory"] = LIVE_MEMORY
+    directory = write_stack(tmp_path / "stack", **stack)
+    runtime = load_runtime(directory)
+    journey = Journey(directory / "journeys" / "marginal.md")
+    status = journey.run(
+        runtime,
+        Intent(
+            text="Underwrite a $9,000 loan for a marginal applicant",
+            context={"loan_amount": 9000, "credit_score": 580, "debt_to_income": 0.42},
+        ),
+    )
+
+    assert status == "completed"
+    steps_walked = [leg.step for leg in journey.legs]
+    assert steps_walked[0] == 1
+    assert 2 not in steps_walked  # the approval paperwork was skipped
+    assert 3 in steps_walked
+    routing = runtime.reasoning_log.for_stage("routing")[0]
+    assert routing.model == "anthropic/claude-haiku-4-5"
+
+
+@requires_anthropic_key
+def test_panel_concludes_early_on_consensus_live(tmp_path):
+    stack = dict(PANEL_STACK)
+    stack["memory"] = LIVE_MEMORY
+    stack["workflow"] = PANEL_STACK["workflow"].replace(
+        "Pattern: adversarial debate; the Credit Risk Guru has the last word",
+        "Pattern: one short turn each, then conclude immediately once both have spoken -- "
+        "do not keep talking past agreement",
+    )
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    runtime.panel.rounds = 3  # budget of six turns the consensus should beat
+    decision = runtime.reason(
+        Intent(
+            text="Underwrite a $2,000 loan for a prime applicant with excellent credit",
+            context={"loan_amount": 2000, "credit_score": 810, "debt_to_income": 0.05},
+        )
+    )
+    turns = runtime.reasoning_log.for_stage("conversation")
+    assert 2 <= len(turns) < 6  # concluded before the budget
+    assert decision and "no model bound" not in decision
