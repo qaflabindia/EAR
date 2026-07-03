@@ -3907,3 +3907,22 @@ def test_kernel_background_loop_wakes_on_submit_and_stops(tmp_path):
     finally:
         kernel.stop()
     assert kernel.running is False
+
+
+def test_monitor_shows_a_station_legend_tooltip(tmp_path):
+    from datetime import datetime, timezone
+
+    from ear import Monitor
+
+    runtime = load_runtime(write_stack(tmp_path / "a", **MINIMAL_STACK))
+    runtime.reason(Intent(text="c", context={"loan_amount": 5000}))
+    frame = Monitor().render_frame({"lending": runtime}, width=100, frame=0, now=datetime(2026, 7, 3, tzinfo=timezone.utc))
+    plain = _strip_ansi(frame)
+
+    # The on-screen key expands every abbreviated station code.
+    assert "STATIONS" in plain
+    for code, name in [("GOV", "govern"), ("DLB", "deliberate"), ("AUD", "audit"), ("LRN", "learn")]:
+        assert code in plain and name in plain
+    # Wrapped to fit -- the width invariant still holds on every row.
+    for line in frame.split("\n"):
+        assert _visible_width(line) == 100

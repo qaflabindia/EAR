@@ -112,6 +112,22 @@ _STATIONS = [
     ("LRN", ("adaptation",)),
 ]
 
+# The full name behind each station code -- the on-screen key ("tooltip")
+# so the abbreviated assembly line reads at a glance.
+_STATION_NAMES = {
+    "GOV": "govern",
+    "DIS": "discover",
+    "SEL": "select",
+    "SCH": "schedule",
+    "DEL": "delegate",
+    "RES": "research",
+    "TOL": "tool",
+    "DLB": "deliberate",
+    "EXP": "explain",
+    "AUD": "audit",
+    "LRN": "learn",
+}
+
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _BLOCKS = " ▁▂▃▄▅▆▇█"
 _PULSE = "◦∙●∙"
@@ -134,6 +150,7 @@ class Monitor:
         lanes = [_lane(name, log, strategy, moment) for name, log, strategy in fleet]
         lines: list[str] = []
         lines += _banner(lanes, frame, moment, width)
+        lines += _legend(width)
         lines.append("")
         if not lanes:
             lines.append(_pad("  " + _fg(MUTE) + "no runtime instances on the line yet" + RESET, width))
@@ -247,6 +264,38 @@ def _banner(lanes: list, frame: int, moment: datetime, width: int) -> list:
     kpi2 = _row(width, "  " + "   ".join(totals), "")
     bottom = f"{_fg(LINE)}╰{'─' * (width - 2)}╯{RESET}"
     return [top, header, kpi1, kpi2, bottom]
+
+
+def _legend(width: int) -> list:
+    """The station key -- an always-on-screen tooltip expanding the codes
+    into their meanings, each code in its category colour, wrapped across
+    lines so it never exceeds the frame width."""
+    label = f"  {_fg(FAINT)}STATIONS{RESET}  "
+    indent = " " * 12
+    chips = [
+        _fg(_CAT_RGB.get(_CATEGORY.get(stages[0], "neutral"), MUTE))
+        + BOLD
+        + code
+        + RESET
+        + _fg(MUTE)
+        + " "
+        + _STATION_NAMES[code]
+        + RESET
+        for code, stages in _STATIONS
+    ]
+    sep = "   "
+    lines: list = []
+    current = label
+    for chip in chips:
+        joiner = "" if current in (label, indent) else sep
+        candidate = current + joiner + chip
+        if _visible(candidate) > width - 2 and current not in (label, indent):
+            lines.append(current)
+            current = indent + chip
+        else:
+            current = candidate
+    lines.append(current)
+    return lines
 
 
 def _render_lane(lane: _Lane, frame: int, width: int, index: int) -> list:
