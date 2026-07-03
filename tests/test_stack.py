@@ -3769,3 +3769,141 @@ def _visible_width(text):
     import re
 
     return len(re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", text))
+
+
+# ---------------------------------------------------------------------------
+# The Kernel: EAR as an OS-style scheduler -- run work when there is work,
+# sleep until an interrupt when there is not.
+# ---------------------------------------------------------------------------
+
+
+def test_kernel_is_idle_until_work_is_submitted(tmp_path):
+    from ear import Kernel
+
+    runtime = load_runtime(write_stack(tmp_path / "a", **MINIMAL_STACK))
+    kernel = Kernel()
+    kernel.register("lending", runtime)
+
+    # No work -> the loop reports idle, never blocks in tick().
+    assert kernel.tick() is None
+    assert kernel.idle_waits == 1 and kernel.pending == 0
+
+    kernel.submit("lending", Intent(text="Underwrite", context={"loan_amount": 5000}))
+    assert kernel.pending == 1
+    dispatch = kernel.tick()
+    assert dispatch is not None and dispatch.status == "ran" and dispatch.instance == "lending"
+    assert kernel.tick() is None  # back to idle
+
+
+def test_kernel_dispatches_to_the_named_instance_and_records_history(tmp_path):
+    from ear import Kernel
+
+    a = load_runtime(write_stack(tmp_path / "a", **MINIMAL_STACK))
+    b = load_runtime(write_stack(tmp_path / "b", **MINIMAL_STACK))
+    kernel = Kernel()
+    kernel.register("lending", a)
+    kernel.register("mortgage", b)
+
+    kernel.submit("lending", Intent(text="one", context={"loan_amount": 5000}))
+    kernel.submit("mortgage", Intent(text="two", context={"loan_amount": 6000}))
+    kernel.submit("lending", Intent(text="three", context={"loan_amount": 7000}))
+    ran = kernel.drain()
+
+    assert [d.instance for d in ran] == ["lending", "mortgage", "lending"]
+    assert all(d.status == "ran" for d in ran)
+    # The work actually landed on each instance's own trail.
+    assert len({r.cycle for r in a.reasoning_log.records if r.stage == "intent"}) == 2
+    assert len({r.cycle for r in b.reasoning_log.records if r.stage == "intent"}) == 1
+    assert len(kernel.history) == 3
+
+
+def test_kernel_parks_a_governance_stop_and_keeps_running(tmp_path):
+    from ear import Kernel
+
+    runtime = load_runtime(write_stack(tmp_path / "a", **MINIMAL_STACK))
+    kernel = Kernel()
+    kernel.register("lending", runtime)
+
+    kernel.submit("lending", Intent(text="oversized", context={"loan_amount": 90000}))  # blocked by policy
+    kernel.submit("lending", Intent(text="fine", context={"loan_amount": 5000}))  # should still run
+    ran = kernel.drain()
+
+    assert ran[0].status == "blocked" and "Loan Amount Cap" in ran[0].summary
+    assert ran[1].status == "ran"  # one task's stop never takes the kernel down
+
+
+def test_kernel_fails_a_task_for_an_unknown_instance_without_crashing():
+    from ear import Kernel
+
+    kernel = Kernel()
+    kernel.submit("ghost", Intent(text="x"))
+    dispatch = kernel.drain()[0]
+    assert dispatch.status == "failed" and "no such instance" in dispatch.summary
+
+
+def test_kernel_runs_a_goal_task_through_pursue(tmp_path):
+    from ear import Kernel
+
+    runtime = load_runtime(write_stack(tmp_path / "a", **MINIMAL_STACK))
+    kernel = Kernel()
+    kernel.register("lending", runtime)
+
+    kernel.submit("lending", Intent(text="Underwrite", context={"loan_amount": 5000}), goal="reach a decision")
+    dispatch = kernel.drain()[0]
+    # Offline the goal is ungraded, but it ran through pursue and is recorded.
+    assert dispatch.status == "ran" and "goal ungraded" in dispatch.summary
+    assert runtime.reasoning_log.for_stage("goal")
+
+
+def test_kernel_recurring_task_reschedules_forward_and_one_shots_clear(tmp_path):
+    import time as _time
+
+    from ear import Kernel
+
+    runtime = load_runtime(write_stack(tmp_path / "a", **MINIMAL_STACK))
+    kernel = Kernel()
+    kernel.register("lending", runtime)
+
+    one_shot = kernel.submit("lending", Intent(text="once", context={"loan_amount": 5000}))
+    recurring = kernel.submit(
+        "lending", Intent(text="recur", context={"loan_amount": 6000}), every=100, delay=0
+    )
+    kernel.drain()
+
+    # The one-shot is gone; the recurring task remains, its next firing in
+    # the future, having run once.
+    assert one_shot not in kernel.queue
+    assert recurring in kernel.queue
+    assert recurring.runs == 1 and recurring.due > _time.monotonic()
+    assert kernel.tick() is None  # not due again yet -> idle
+
+
+def test_kernel_cancel_removes_a_queued_task(tmp_path):
+    from ear import Kernel
+
+    runtime = load_runtime(write_stack(tmp_path / "a", **MINIMAL_STACK))
+    kernel = Kernel()
+    kernel.register("lending", runtime)
+    task = kernel.submit("lending", Intent(text="x", context={"loan_amount": 5000}), delay=100)
+    assert kernel.pending == 1
+    assert kernel.cancel(task) is True and kernel.pending == 0
+
+
+def test_kernel_background_loop_wakes_on_submit_and_stops(tmp_path):
+    import time as _time
+
+    from ear import Kernel
+
+    runtime = load_runtime(write_stack(tmp_path / "a", **MINIMAL_STACK))
+    kernel = Kernel()
+    kernel.register("lending", runtime)
+    kernel.start()
+    try:
+        kernel.submit("lending", Intent(text="bg", context={"loan_amount": 5000}))
+        deadline = _time.time() + 3
+        while _time.time() < deadline and not kernel.history:
+            _time.sleep(0.02)
+        assert kernel.history and kernel.history[-1].status == "ran"
+    finally:
+        kernel.stop()
+    assert kernel.running is False

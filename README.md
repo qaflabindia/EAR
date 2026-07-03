@@ -343,6 +343,41 @@ malformed JSON fails loudly as an `McpError`, and — wrapped by the binder
 the author; connecting one is the runtime reaching out to what memory.md
 already names, never a capability from nowhere.
 
+### Kernel — EAR as an OS scheduler
+
+For a server-side, always-on deployment, the `Kernel` runs EAR the way a
+CPU runs a kernel — the classic idle loop:
+
+```text
+while running:
+    if there_is_work:  run_work()            # dispatch the next task to its instance
+    else:              sleep_until_interrupt()  # block until a task or a timer fires
+```
+
+```python
+from ear import Kernel
+kernel = Kernel()
+kernel.register("lending", rt_a)             # the process table: named instances
+kernel.register("mortgage", rt_b)
+kernel.submit("lending", intent)             # enqueue work (an interrupt that wakes the loop)
+kernel.schedule("mortgage", intent, every=3600)   # a recurring timer task
+kernel.start()                               # drive the loop in the background; stop() to halt
+```
+
+The Kernel holds a **process table** of `Runtime` instances (each with its
+own sandbox, memory and trail) and a **run queue**. `submit()` enqueues a
+task and wakes the loop, the way a syscall raises an interrupt;
+`schedule(…, every=…)` makes it recur, the way a timer fires — so an
+instance **stays live for the recurring occurrence of a task** without a
+busy-wait (between firings the loop genuinely sleeps on a
+`threading.Event`). Dispatch runs the instance's normal cycle (`reason`, or
+`pursue` for a goal), so policies still gate it, the sandbox still confines
+it, the trail still records it — and a governance stop parks the task as
+`blocked` (an error as `failed`) without taking the kernel down. `tick()` /
+`drain()` advance it synchronously (the testable heartbeat); `snapshot()`
+gives a control-room glance for the Monitor. The Kernel decides only *when*
+work runs — the control plane — while the judgment stays in the instances.
+
 ### Session Goals — a completion condition that drives itself
 
 Attach a plain-English **completion condition** and let the runtime pursue
@@ -981,6 +1016,7 @@ ear/
   reasoning_log.py ReasoningLog  — the reasoning audit trail (markdown/JSONL); hash-chained + verify(), retention rotation, usage ledger
   dashboard.py     Dashboard     — self-contained HTML runtime board from the trail (TensorBoard-equivalent): render_fleet, live auto-ticking render_gantt, zero deps
   monitor.py       Monitor       — the premium live TUI: the whole fleet as a factory assembly line, pure ANSI truecolor, zero deps
+  kernel.py        Kernel        — EAR as an OS scheduler: process table of instances, a run queue, the run-or-sleep idle loop
   session_store.py SessionStore  — cross-session data (markdown by default, JSON optional)
   spawner.py       Spawner       — spawn subagent runtimes, bounded by the strategy
   tool.py          Tool          — a tool declared in plain English, surfaced to reasoning
