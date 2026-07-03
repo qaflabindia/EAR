@@ -343,6 +343,41 @@ malformed JSON fails loudly as an `McpError`, and — wrapped by the binder
 the author; connecting one is the runtime reaching out to what memory.md
 already names, never a capability from nowhere.
 
+### Server — EAR as a control-plane service
+
+The `Server` puts an HTTP front door on the Kernel, so a fleet of instances
+can be created, driven and observed over the network — the server-side face
+of the same picture. Zero dependencies: the standard library's threading
+HTTP server speaking JSON, with the Kernel running the work behind it.
+
+```python
+from ear import Server
+Server(stacks_root="./stacks", port=8080).serve()   # blocking; Ctrl-C to stop
+```
+```
+python -m ear.server --stacks ./stacks --port 8080
+```
+
+| method | path | what |
+| --- | --- | --- |
+| `GET` | `/health` | uptime, instance count, queue depth |
+| `GET` | `/kernel` | the scheduler snapshot (process table, recent dispatches) |
+| `GET`/`POST` | `/instances` | list, or create `{name, stack?}` |
+| `DELETE` | `/instances/{name}` | remove |
+| `POST` | `/instances/{name}/submit` | enqueue `{intent, context?, goal?, every?}` |
+| `GET` | `/instances/{name}/status` | health + progress from the trail |
+| `GET` | `/instances/{name}/decision` · `/trail` | the latest decision · recent records |
+
+Solid by construction, not afterthought: a **bearer token** read from
+`EAR_SERVER_TOKEN` (never hardcoded, compared in constant time) guards
+every request but health — unset means open, and the server says so loudly
+on start. Loading a stack is **confined** under `stacks_root`; a path that
+escapes it is refused, the same discipline as the sandbox. Request bodies
+are capped, malformed JSON is a 400 not a crash, and every handler is
+wrapped so one bad request can never take the server down. The routing is a
+**pure function** — `handle(method, path, body) → (status, payload)` — so
+the whole API is testable without opening a socket.
+
 ### Kernel — EAR as an OS scheduler
 
 For a server-side, always-on deployment, the `Kernel` runs EAR the way a
@@ -1017,6 +1052,7 @@ ear/
   dashboard.py     Dashboard     — self-contained HTML runtime board from the trail (TensorBoard-equivalent): render_fleet, live auto-ticking render_gantt, zero deps
   monitor.py       Monitor       — the premium live TUI: the whole fleet as a factory assembly line, pure ANSI truecolor, zero deps
   kernel.py        Kernel        — EAR as an OS scheduler: process table of instances, a run queue, the run-or-sleep idle loop
+  server.py        Server        — the control plane: a stdlib HTTP service over the Kernel (token auth, confined stack loading), zero deps
   session_store.py SessionStore  — cross-session data (markdown by default, JSON optional)
   spawner.py       Spawner       — spawn subagent runtimes, bounded by the strategy
   tool.py          Tool          — a tool declared in plain English, surfaced to reasoning

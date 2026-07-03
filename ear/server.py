@@ -1,0 +1,355 @@
+"""Server -- EAR as a running control-plane service: a small HTTP front
+door onto the Kernel, so a fleet of runtime instances can be created,
+driven and observed over the network.
+
+It is the server-side face of the same picture: the Kernel is the
+scheduler, each instance is a process with its own sandbox, memory and
+trail, and the Server is the syscall interface -- create an instance,
+submit work to it, ask how it is doing. Zero dependencies: the whole thing
+is the standard library's threading HTTP server speaking JSON, with the
+Kernel running the work behind it.
+
+Solid by construction, not by afterthought:
+
+- **Auth.** A bearer token, read from `EAR_SERVER_TOKEN` (never hardcoded)
+  and compared in constant time; every request but a health check is
+  refused without it. Unset means open, and the server says so loudly on
+  start -- a development convenience you opt into, not a silent default.
+- **Confinement.** Loading a stack is confined under a configured
+  `stacks_root`; a path that escapes it is refused, the same discipline as
+  the sandbox. No `stacks_root`, no loading arbitrary paths from the wire.
+- **Resilience.** Request bodies are capped, malformed JSON is a 400 not a
+  crash, and every handler is wrapped so one bad request can never take the
+  server down. The routing itself is a pure function -- `handle(method,
+  path, body) -> (status, payload)` -- so the whole API is testable without
+  opening a socket.
+
+    from ear import Server
+    server = Server(stacks_root="./stacks", port=8080)
+    server.serve()                     # blocking; Ctrl-C to stop
+
+    python -m ear.server --stacks ./stacks --port 8080
+"""
+
+from __future__ import annotations
+
+import hmac
+import json
+import os
+import threading
+import time
+from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any, Optional, Union
+
+from .intent import Intent
+from .kernel import Kernel
+
+MAX_BODY_BYTES = 1_048_576  # 1 MiB -- a control-plane request is small
+
+
+class _ClientError(Exception):
+    """A request the client got wrong -- surfaced as its HTTP status, never
+    a 500."""
+
+    def __init__(self, status: int, message: str) -> None:
+        self.status = status
+        self.message = message
+        super().__init__(message)
+
+
+@dataclass
+class Server:
+    """The control plane: an HTTP service over a Kernel."""
+
+    kernel: Kernel = field(default_factory=Kernel)
+    stacks_root: Optional[Union[str, Path]] = None
+    host: str = "127.0.0.1"
+    port: int = 8080
+    token: Optional[str] = None
+    started_at: float = field(default_factory=time.monotonic)
+    _httpd: Any = None
+    _thread: Any = None
+
+    def __post_init__(self) -> None:
+        if self.token is None:
+            self.token = os.environ.get("EAR_SERVER_TOKEN")
+        if self.stacks_root is not None:
+            self.stacks_root = Path(self.stacks_root).resolve()
+
+    # -- routing (a pure function -- the whole API, no socket) ----------------
+
+    def handle(self, method: str, path: str, body: Optional[dict] = None) -> tuple:
+        """Route one request to a (status, payload) pair. Pure and
+        synchronous -- the socket layer only translates HTTP to and from
+        this. A client mistake is its own status; anything unexpected is a
+        500 with the reason, never an unhandled crash."""
+        body = body or {}
+        parts = [segment for segment in path.split("?")[0].strip("/").split("/") if segment]
+        try:
+            if method == "GET" and parts == ["health"]:
+                return 200, self._health()
+            if method == "GET" and parts == ["kernel"]:
+                return 200, self.kernel.snapshot()
+            if parts == ["instances"]:
+                if method == "GET":
+                    return 200, {"instances": self._instances()}
+                if method == "POST":
+                    return self._create(body)
+            if len(parts) >= 2 and parts[0] == "instances":
+                name = parts[1]
+                if len(parts) == 2 and method == "DELETE":
+                    return self._delete(name)
+                if len(parts) == 3 and method == "POST" and parts[2] == "submit":
+                    return self._submit(name, body)
+                if len(parts) == 3 and method == "GET" and parts[2] == "status":
+                    return 200, self._status(name)
+                if len(parts) == 3 and method == "GET" and parts[2] == "decision":
+                    return 200, self._decision(name)
+                if len(parts) == 3 and method == "GET" and parts[2] == "trail":
+                    return 200, self._trail(name, body)
+            return 404, {"error": "not found", "method": method, "path": path}
+        except _ClientError as mistake:
+            return mistake.status, {"error": mistake.message}
+        except Exception as failure:  # noqa: BLE001 -- one bad request never takes the server down
+            return 500, {"error": f"{type(failure).__name__}: {failure}"}
+
+    # -- endpoints ------------------------------------------------------------
+
+    def _health(self) -> dict:
+        return {
+            "status": "ok",
+            "instances": len(self.kernel.instances),
+            "pending": self.kernel.pending,
+            "dispatched": len(self.kernel.history),
+            "running": self.kernel.running,
+            "uptime_s": round(time.monotonic() - self.started_at, 1),
+        }
+
+    def _instances(self) -> list:
+        return [self._summary(name, runtime) for name, runtime in list(self.kernel.instances.items())]
+
+    def _create(self, body: dict) -> tuple:
+        name = _require(body, "name")
+        if name in self.kernel.instances:
+            raise _ClientError(409, f"instance '{name}' already exists")
+        stack = body.get("stack")
+        if stack:
+            runtime = self._load_stack(name, str(stack))
+        else:
+            from .runtime import Runtime
+
+            runtime = Runtime(name=name)
+        self.kernel.register(name, runtime)
+        return 201, {"instance": name, "from_stack": bool(stack)}
+
+    def _delete(self, name: str) -> tuple:
+        self._instance(name)
+        self.kernel.remove(name)
+        return 200, {"instance": name, "removed": True}
+
+    def _submit(self, name: str, body: dict) -> tuple:
+        self._instance(name)
+        text = _require(body, "intent")
+        intent = Intent(text=str(text), context=dict(body.get("context") or {}))
+        every = body.get("every")
+        task = self.kernel.submit(
+            name,
+            intent,
+            goal=body.get("goal"),
+            every=float(every) if every is not None else None,
+            delay=float(body.get("delay") or 0.0),
+        )
+        return 202, {"task_id": task.id, "instance": name, "recurring": task.recurring}
+
+    def _status(self, name: str) -> dict:
+        runtime = self._instance(name)
+        summary = self._summary(name, runtime)
+        summary["pending"] = sum(1 for task in list(self.kernel.queue) if task.instance == name)
+        return summary
+
+    def _decision(self, name: str) -> dict:
+        runtime = self._instance(name)
+        deliberations = [record for record in runtime.reasoning_log.records if record.stage == "deliberation"]
+        return {"instance": name, "decision": deliberations[-1].output if deliberations else ""}
+
+    def _trail(self, name: str, body: dict) -> dict:
+        runtime = self._instance(name)
+        limit = max(1, min(int(body.get("limit", 20)), 200))
+        records = runtime.reasoning_log.records[-limit:]
+        return {
+            "instance": name,
+            "records": [
+                {"cycle": r.cycle, "stage": r.stage, "output": r.output[:200], "model": r.model}
+                for r in records
+            ],
+        }
+
+    # -- helpers --------------------------------------------------------------
+
+    def _instance(self, name: str) -> Any:
+        runtime = self.kernel.instances.get(name)
+        if runtime is None:
+            raise _ClientError(404, f"no instance '{name}'")
+        return runtime
+
+    def _load_stack(self, name: str, stack: str) -> Any:
+        if self.stacks_root is None:
+            raise _ClientError(400, "loading a stack requires the server's stacks_root to be configured")
+        target = (Path(self.stacks_root) / stack).resolve()
+        root = Path(self.stacks_root)
+        if target != root and root not in target.parents:
+            raise _ClientError(400, f"stack '{stack}' escapes the stacks root")
+        if not target.is_dir():
+            raise _ClientError(404, f"no stack at '{stack}'")
+        from .loader import load_runtime
+
+        return load_runtime(target, name=name)
+
+    @staticmethod
+    def _summary(name: str, runtime: Any) -> dict:
+        """A lightweight status for one instance -- health and progress from
+        the trail, without building the whole dashboard body."""
+        from .dashboard import _classify, _cycle_status, _freshness, _integrity
+
+        log = runtime.reasoning_log
+        records = log.records
+        cycles = sorted({record.cycle for record in records})
+        blocked = sum(1 for cycle in cycles if _cycle_status(log.for_cycle(cycle)) == "bad")
+        pending = sum(
+            1
+            for record in records
+            if record.stage in ("approval", "escalation")
+            and ("pending" in record.output.lower() or "escalated" in record.output.lower())
+        )
+        failed = sum(1 for record in records if record.stage == "retry" and "exhausted" in record.output.lower())
+        integrity = _integrity(log)
+        status, reason = _classify(integrity, list(getattr(log, "export_errors", []) or []), failed, pending, blocked)
+        last = max((record.timestamp for record in records), default=None)
+        strategy = getattr(runtime, "strategy", None)
+        tokens = sum(record.input_tokens + record.output_tokens for record in records)
+        return {
+            "instance": name,
+            "status": status,
+            "reason": reason,
+            "freshness": _freshness(last, __import__("datetime").datetime.now(__import__("datetime").timezone.utc)),
+            "cycles": len(cycles),
+            "tokens": tokens,
+            "dollars": strategy.dollars(
+                sum(r.input_tokens for r in records), sum(r.output_tokens for r in records)
+            )
+            if strategy is not None
+            else None,
+            "latency_ms": sum(record.latency_ms for record in records),
+            "sandboxed": getattr(runtime, "sandbox", None) is not None,
+        }
+
+    # -- the socket layer -----------------------------------------------------
+
+    def start(self) -> "Server":
+        """Start the background kernel and serve in a daemon thread."""
+        self.kernel.start()
+        self._httpd = ThreadingHTTPServer((self.host, self.port), _make_handler(self))
+        self._thread = threading.Thread(target=self._httpd.serve_forever, name="ear-server", daemon=True)
+        self._thread.start()
+        return self
+
+    @property
+    def address(self) -> tuple:
+        return self._httpd.server_address if self._httpd is not None else (self.host, self.port)
+
+    def stop(self) -> None:
+        if self._httpd is not None:
+            self._httpd.shutdown()
+            self._httpd.server_close()
+            self._httpd = None
+        self.kernel.stop()
+
+    def serve(self) -> None:  # pragma: no cover - blocking
+        self.kernel.start()
+        self._httpd = ThreadingHTTPServer((self.host, self.port), _make_handler(self))
+        guard = "token-protected" if self.token else "OPEN — set EAR_SERVER_TOKEN to require auth"
+        print(f"EAR server on http://{self.host}:{self.port}  ({guard})")
+        try:
+            self._httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.stop()
+
+    def __enter__(self) -> "Server":
+        return self.start()
+
+    def __exit__(self, *exc: Any) -> None:
+        self.stop()
+
+
+def _require(body: dict, key: str) -> Any:
+    if key not in body or body[key] in (None, ""):
+        raise _ClientError(400, f"missing required field '{key}'")
+    return body[key]
+
+
+def _make_handler(server: Server):
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def _authed(self) -> bool:
+            if not server.token:
+                return True
+            presented = self.headers.get("Authorization", "")
+            return hmac.compare_digest(presented, f"Bearer {server.token}")
+
+        def _dispatch(self, method: str) -> None:
+            if not self._authed():
+                return self._send(401, {"error": "unauthorized"})
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BODY_BYTES:
+                return self._send(413, {"error": "request body too large"})
+            raw = self.rfile.read(length) if length else b""
+            try:
+                body = json.loads(raw) if raw else {}
+            except ValueError:
+                return self._send(400, {"error": "invalid JSON body"})
+            if not isinstance(body, dict):
+                return self._send(400, {"error": "JSON body must be an object"})
+            status, payload = server.handle(method, self.path, body)
+            self._send(status, payload)
+
+        def do_GET(self) -> None:
+            self._dispatch("GET")
+
+        def do_POST(self) -> None:
+            self._dispatch("POST")
+
+        def do_DELETE(self) -> None:
+            self._dispatch("DELETE")
+
+        def _send(self, status: int, payload: dict) -> None:
+            data = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args: Any) -> None:  # keep the terminal quiet
+            return
+
+    return Handler
+
+
+def _main() -> None:  # pragma: no cover - CLI entry
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="ear.server", description="Run the EAR control-plane server.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--stacks", default=None, help="root directory of loadable stacks")
+    args = parser.parse_args()
+    Server(host=args.host, port=args.port, stacks_root=args.stacks).serve()
+
+
+if __name__ == "__main__":  # pragma: no cover
+    _main()

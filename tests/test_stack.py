@@ -3926,3 +3926,98 @@ def test_monitor_shows_a_station_legend_tooltip(tmp_path):
     # Wrapped to fit -- the width invariant still holds on every row.
     for line in frame.split("\n"):
         assert _visible_width(line) == 100
+
+
+# ---------------------------------------------------------------------------
+# The Server: EAR as a control-plane HTTP service over the Kernel. The whole
+# API is a pure function, so it's tested without opening a socket -- plus one
+# real-socket check for the auth layer.
+# ---------------------------------------------------------------------------
+
+
+def test_server_health_and_instance_lifecycle(tmp_path):
+    from ear import Server
+
+    stacks = tmp_path / "stacks"
+    stacks.mkdir()
+    write_stack(stacks / "lending", **MINIMAL_STACK)
+    server = Server(stacks_root=stacks)
+
+    status, health = server.handle("GET", "/health")
+    assert status == 200 and health["status"] == "ok" and health["instances"] == 0
+
+    # Create from a stack under the root.
+    status, created = server.handle("POST", "/instances", {"name": "lending", "stack": "lending"})
+    assert status == 201 and created["from_stack"] is True
+    assert server.handle("GET", "/instances")[1]["instances"][0]["instance"] == "lending"
+
+    # Duplicates, missing fields and path escapes are client errors, not crashes.
+    assert server.handle("POST", "/instances", {"name": "lending"})[0] == 409
+    assert server.handle("POST", "/instances", {})[0] == 400
+    assert server.handle("POST", "/instances", {"name": "x", "stack": "../../etc"})[0] == 400
+    # A bare instance needs no stack.
+    assert server.handle("POST", "/instances", {"name": "bare"})[0] == 201
+
+    assert server.handle("DELETE", "/instances/bare")[0] == 200
+    assert server.handle("GET", "/instances/bare/status")[0] == 404
+
+
+def test_server_submits_work_and_reports_status(tmp_path):
+    from ear import Server
+
+    stacks = tmp_path / "stacks"
+    stacks.mkdir()
+    write_stack(stacks / "lending", **MINIMAL_STACK)
+    server = Server(stacks_root=stacks)
+    server.handle("POST", "/instances", {"name": "lending", "stack": "lending"})
+
+    status, accepted = server.handle(
+        "POST", "/instances/lending/submit", {"intent": "Underwrite", "context": {"loan_amount": 5000}}
+    )
+    assert status == 202 and accepted["task_id"] and accepted["recurring"] is False
+    assert server.handle("POST", "/instances/ghost/submit", {"intent": "x"})[0] == 404
+    assert server.handle("POST", "/instances/lending/submit", {})[0] == 400  # intent required
+
+    server.kernel.drain()  # run the queued work
+
+    reported = server.handle("GET", "/instances/lending/status")[1]
+    assert reported["cycles"] == 1 and reported["status"] == "healthy"
+    assert "resolved intent" in server.handle("GET", "/instances/lending/decision")[1]["decision"]
+    assert len(server.handle("GET", "/instances/lending/trail", {"limit": 5})[1]["records"]) == 5
+    assert server.handle("GET", "/kernel")[1]["dispatched"] == 1
+
+
+def test_server_unknown_route_is_a_404():
+    from ear import Server
+
+    server = Server()
+    assert server.handle("GET", "/nope")[0] == 404
+    assert server.handle("PUT", "/instances")[0] == 404
+
+
+def test_server_bearer_token_auth_over_a_real_socket(tmp_path):
+    import urllib.error
+    import urllib.request
+
+    from ear import Server
+
+    server = Server(host="127.0.0.1", port=0, token="s3cret")
+    server.start()
+    try:
+        host, port = server.address
+
+        def get(path, token=None):
+            request = urllib.request.Request(f"http://{host}:{port}{path}")
+            if token:
+                request.add_header("Authorization", f"Bearer {token}")
+            try:
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    return response.status
+            except urllib.error.HTTPError as error:
+                return error.code
+
+        assert get("/health") == 401  # no token
+        assert get("/health", "wrong") == 401  # bad token
+        assert get("/health", "s3cret") == 200  # right token
+    finally:
+        server.stop()

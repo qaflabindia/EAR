@@ -109,6 +109,7 @@ from .runtime import Runtime
 from .sandbox import Sandbox, SandboxResult, SandboxViolation
 from .scheduler import Scheduler
 from .selector import Selector
+from .server import Server
 from .session_store import SessionStore
 from .skill import Skill
 from .spawner import Spawner
@@ -178,6 +179,7 @@ __all__ = [
     "Kernel",
     "Task",
     "Dispatch",
+    "Server",
     "Panel",
     "Turn",
     "Examiner",
