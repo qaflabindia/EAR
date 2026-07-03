@@ -66,6 +66,7 @@ from .approval import Approval, ApprovalRequired
 from .auditor import Auditor
 from .composer import Composer
 from .contract import Contract, ContractField
+from .dashboard import Dashboard
 from .decider import Decider
 from .delegator import Delegator
 from .deliberator import Deliberator
@@ -182,6 +183,7 @@ __all__ = [
     "load_runtime",
     "ReasoningLog",
     "ReasoningRecord",
+    "Dashboard",
     "Strategy",
     "SessionStore",
     "Spawner",

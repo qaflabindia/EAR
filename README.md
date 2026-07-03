@@ -471,6 +471,31 @@ renders the operational ledger from the trail: one row per cycle — model
 calls, tokens, dollars (when Pricing is declared), latency, tool calls —
 with totals, as a markdown document.
 
+### Dashboard — a visual runtime board, native
+
+What TensorBoard is for a training run, the `Dashboard` is for a runtime —
+and, like everything else here, it is a plain file, not a service:
+
+```python
+from ear import Dashboard
+Dashboard().write(runtime, "dashboard.html")   # a self-contained snapshot
+```
+
+The board is a *view* of the ReasoningLog, never a second instrumentation
+path: one HTML document with its CSS, its charts (inline SVG) and its few
+lines of script all embedded — no CDN, no framework, no build step, no
+dependency. It opens in any browser, works offline, and is theme-aware.
+A **cycle** is the step, the **scalars** are the tokens, latency and
+dollars each cycle spent (bar charts), and on top of the scalars it shows
+what a training board cannot: the hash-chain integrity badge, the
+governance table (which policies passed, blocked or parked), the tool
+calls, and a per-cycle accordion where every stage expands to the output,
+rationale and inputs the model actually reasoned with. `render(source)`
+returns the HTML and takes a Runtime, a ReasoningLog, or a JSONL trail
+path (rebuilt losslessly via `ReasoningLog.from_trail`); `serve(source,
+port)` runs a live, self-refreshing view over the standard-library HTTP
+server — the closest thing to `tensorboard --logdir` the stdlib allows.
+
 Every cycle also closes with a `usage` record — model calls, tokens,
 approximate cost and wall-clock latency, read from the bound LM's own call
 history — written for blocked cycles too: a refusal costs whatever it
@@ -805,6 +830,7 @@ ear/
   strategy.py      Strategy      — the memory.md operating strategy, read from plain English
   exchange.py      Exchange      — the markdown boundary: intents/*.md in, decisions/*.md out
   reasoning_log.py ReasoningLog  — the reasoning audit trail (markdown/JSONL); hash-chained + verify(), retention rotation, usage ledger
+  dashboard.py     Dashboard     — a self-contained HTML runtime board rendered from the trail (the TensorBoard-equivalent), zero deps
   session_store.py SessionStore  — cross-session data (markdown by default, JSON optional)
   spawner.py       Spawner       — spawn subagent runtimes, bounded by the strategy
   tool.py          Tool          — a tool declared in plain English, surfaced to reasoning

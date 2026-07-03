@@ -318,6 +318,48 @@ class ReasoningLog:
         self.flushed = len(self.records)
         return self.path or None
 
+    @classmethod
+    def from_trail(cls, path: str) -> "ReasoningLog":
+        """Reconstruct a log from a persisted JSONL trail -- lossless, so a
+        dashboard or ledger can be built from a finished run on disk. (The
+        markdown codec is a human view and not fully reconstructable; JSONL
+        is the machine record, and this reads it back exactly.)"""
+        log = cls(path=path)
+        if not path or not os.path.exists(path) or path.endswith(".md"):
+            return log
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                stamp = data.get("timestamp")
+                try:
+                    when = datetime.fromisoformat(stamp) if stamp else datetime.now(timezone.utc)
+                except (TypeError, ValueError):
+                    when = datetime.now(timezone.utc)
+                log.records.append(
+                    ReasoningRecord(
+                        cycle=int(data.get("cycle", 0)),
+                        stage=str(data.get("stage", "")),
+                        inputs=dict(data.get("inputs") or {}),
+                        output=str(data.get("output", "")),
+                        rationale=str(data.get("rationale", "")),
+                        model=str(data.get("model", "")),
+                        input_tokens=int(data.get("input_tokens") or 0),
+                        output_tokens=int(data.get("output_tokens") or 0),
+                        latency_ms=int(data.get("latency_ms") or 0),
+                        timestamp=when,
+                    )
+                )
+        log.cycle = max((record.cycle for record in log.records), default=0)
+        log.flushed = len(log.records)
+        return log
+
     @staticmethod
     def verify(path: str) -> tuple[bool, str]:
         """Prove a persisted trail unbroken, or name the first broken link.

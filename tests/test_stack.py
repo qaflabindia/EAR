@@ -3100,3 +3100,88 @@ def test_tool_scoped_policy_governs_an_mcp_call(tmp_path):
         assert "blocked by policy 'No Adding'" in blocked
     finally:
         runtime.disconnect_mcp()
+
+
+# ---------------------------------------------------------------------------
+# The runtime dashboard: a self-contained HTML view of the reasoning trail,
+# the TensorBoard-equivalent, rendered from the log with zero dependencies.
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_renders_self_contained_html_from_a_runtime(tmp_path):
+    from ear import Dashboard
+
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    runtime.reason(Intent(text="Underwrite a consumer loan", context={"loan_amount": 5000}))
+    runtime.reason(Intent(text="Underwrite another loan", context={"loan_amount": 6000}))
+
+    html = Dashboard().render(runtime)
+    # Self-contained: a real document, no external fetches of any kind.
+    assert html.startswith("<!doctype html>")
+    assert "<style>" in html and "<svg" in html
+    assert "http://" not in html and "https://" not in html
+    assert "cdn" not in html.lower() and "<script src" not in html
+    # It shows the runtime and its cycles.
+    assert "Credit Risk Runtime" in html
+    assert html.count('class="cycle"') == 2
+    assert 'class="tile"' in html and "Cycles" in html
+    # And it writes the same document to disk.
+    path = tmp_path / "board.html"
+    written = Dashboard().write(runtime, path)
+    assert path.read_text(encoding="utf-8") == written
+
+
+def test_dashboard_integrity_badge_reflects_the_hash_chain(tmp_path):
+    from ear import Dashboard
+
+    trail = tmp_path / "trail.jsonl"
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    runtime.reasoning_log.path = str(trail)
+    runtime.reason(Intent(text="Underwrite a loan", context={"loan_amount": 5000}))
+
+    assert "badge-good" in Dashboard().render(runtime)  # chain intact
+
+    tampered = trail.read_text(encoding="utf-8").replace("Underwrite", "Tampered", 1)
+    trail.write_text(tampered, encoding="utf-8")
+    assert "badge-bad" in Dashboard().render(runtime)  # verify catches the edit
+
+
+def test_dashboard_surfaces_governance_and_tool_calls(tmp_path):
+    from ear import Dashboard
+
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = "## Tools\n\n- credit lookup: fetch the bureau score\n"
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    runtime.tool_binder.bind("credit lookup", lambda applicant: "score 700")
+
+    from ear.tool_binder import BoundTool
+
+    runtime.tool_binder.logged_handler(
+        runtime, BoundTool(name="credit lookup", description="x", handler=lambda applicant: "score 700")
+    )(applicant="a1")
+    runtime.reason(Intent(text="Underwrite a loan", context={"loan_amount": 5000}))
+    with pytest.raises(PermissionError):
+        runtime.reason(Intent(text="Underwrite oversized", context={"loan_amount": 90000}))
+
+    html = Dashboard().render(runtime)
+    assert "Governance" in html and "Loan Amount Cap" in html
+    assert "Tool calls" in html and "credit lookup" in html
+    assert "v-bad" in html  # the blocked policy is flagged
+
+
+def test_dashboard_rebuilds_from_a_persisted_jsonl_trail(tmp_path):
+    from ear import Dashboard
+    from ear.reasoning_log import ReasoningLog
+
+    trail = tmp_path / "trail.jsonl"
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    runtime.reasoning_log.path = str(trail)
+    runtime.reason(Intent(text="Underwrite a loan", context={"loan_amount": 5000}))
+    original = len(runtime.reasoning_log.records)
+
+    # Lossless reconstruction from disk, and a dashboard straight from the path.
+    rebuilt = ReasoningLog.from_trail(str(trail))
+    assert len(rebuilt.records) == original
+    assert rebuilt.records[0].stage == "intent"
+    html = Dashboard().render(str(trail))
+    assert html.startswith("<!doctype html>") and 'class="cycle"' in html
