@@ -928,6 +928,11 @@ authored stack never changes shape.
 pip install -e .
 ```
 
+New here? Start with **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)** —
+it takes you from install to a running, governed agent in a few minutes
+(offline first, no API key needed), then to a markdown-authored stack, a
+live model, the dashboard, and running as a service.
+
 EAR is an independent package with **zero dependencies**: it speaks to LLM
 providers directly over HTTPS from the Python standard library
 (`ear/llm.py`), and its structured prompting is native (`ear/judgment.py`)
