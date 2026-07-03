@@ -90,23 +90,36 @@ class Dashboard:
     def render(self, source: Any, title: Optional[str] = None) -> str:
         log, strategy, name = _resolve(source)
         title = title or f"{name} — Runtime Dashboard"
-        records = log.records
-        cycles = sorted({record.cycle for record in records})
-        rows = [_cycle_row(log, strategy, cycle) for cycle in cycles]
-        totals = _totals(rows)
-        integrity = _integrity(log)
+        body = _runtime_body(log, strategy, name) + _footer()
+        return _PAGE.replace("{{TITLE}}", html.escape(title)).replace("{{BODY}}", body)
 
+    # -- fleet: many runtimes at once -----------------------------------------
+
+    def render_fleet(self, sources: Any, title: str = "Fleet — Runtime Dashboard") -> str:
+        """Render a whole fleet on one page: an overview of every runtime's
+        health and progress, cross-run comparison charts, and each runtime's
+        full board a click away. `sources` is a dict {name: runtime}, a list
+        of runtimes (or (name, runtime) pairs), or a directory of JSONL
+        trails (one run per file, discovered and rebuilt from disk)."""
+        fleet = _fleet_sources(sources)
+        if not fleet:
+            body = _panel("Fleet", '<p class="muted">No runtimes to show yet.</p>') + _footer()
+            return _PAGE.replace("{{TITLE}}", html.escape(title)).replace("{{BODY}}", body)
+        summaries = [_fleet_summary(name, log, strategy) for name, log, strategy in fleet]
         parts = [
-            _head(title),
-            _header(name, totals, integrity, len(cycles)),
-            _scalars_section(rows),
-            _distribution_section(records),
-            _governance_section(records),
-            _tools_section(records),
-            _cycles_section(log, cycles),
+            _fleet_header(summaries),
+            _fleet_comparison(summaries),
+            _fleet_runs(fleet, summaries),
             _footer(),
         ]
         return _PAGE.replace("{{TITLE}}", html.escape(title)).replace("{{BODY}}", "\n".join(parts))
+
+    def write_fleet(self, sources: Any, path: Union[str, Path], title: Optional[str] = None) -> str:
+        html_text = self.render_fleet(sources, title=title or "Fleet — Runtime Dashboard")
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(html_text, encoding="utf-8")
+        return html_text
 
 
 # -- serving -----------------------------------------------------------------
@@ -121,8 +134,13 @@ def serve(source: Any, port: int = 8000, host: str = "127.0.0.1") -> None:  # pr
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     dashboard = Dashboard()
+    is_fleet = isinstance(source, (dict, list, tuple)) or (
+        isinstance(source, (str, Path)) and Path(str(source)).is_dir()
+    )
 
     def current_html() -> str:
+        if is_fleet:
+            return dashboard.render_fleet(source)
         origin = ReasoningLog.from_trail(str(source)) if _is_trail_path(source) else source
         return dashboard.render(origin)
 
@@ -164,6 +182,114 @@ def _resolve(source: Any) -> tuple[ReasoningLog, Any, str]:
     if isinstance(source, ReasoningLog):
         return source, None, "Runtime"
     raise TypeError("Dashboard source must be a Runtime, a ReasoningLog, or a JSONL trail path")
+
+
+def _fleet_sources(sources: Any) -> list[tuple[str, ReasoningLog, Any]]:
+    """Normalize any way of naming a fleet into (name, log, strategy)
+    triples: a {name: runtime} dict, a list of runtimes or (name, runtime)
+    pairs, or a directory of JSONL trails (one run per file)."""
+    if isinstance(sources, dict):
+        items: list[tuple[Optional[str], Any]] = list(sources.items())
+    elif isinstance(sources, (str, Path)) and Path(str(sources)).is_dir():
+        directory = Path(str(sources))
+        files = sorted(list(directory.glob("*.jsonl")) + list(directory.glob("*.json")))
+        items = [(path.stem, str(path)) for path in files]
+    elif isinstance(sources, (list, tuple)):
+        items = []
+        for element in sources:
+            if isinstance(element, (list, tuple)) and len(element) == 2 and isinstance(element[0], str):
+                items.append((element[0], element[1]))
+            else:
+                items.append((None, element))
+    else:
+        items = [(None, sources)]
+    fleet: list[tuple[str, ReasoningLog, Any]] = []
+    for name, src in items:
+        log, strategy, derived = _resolve(src)
+        fleet.append((name or derived, log, strategy))
+    return fleet
+
+
+def _runtime_body(log: ReasoningLog, strategy: Any, name: str) -> str:
+    """One runtime's dashboard body -- header tiles and every panel, minus
+    the page wrapper -- so a single board and a fleet drill-down share the
+    exact same view."""
+    records = log.records
+    cycles = sorted({record.cycle for record in records})
+    rows = [_cycle_row(log, strategy, cycle) for cycle in cycles]
+    totals = _totals(rows)
+    integrity = _integrity(log)
+    return "\n".join(
+        [
+            _header(name, totals, integrity, len(cycles)),
+            _scalars_section(rows),
+            _distribution_section(records),
+            _governance_section(records),
+            _tools_section(records),
+            _cycles_section(log, cycles),
+        ]
+    )
+
+
+def _fleet_summary(name: str, log: ReasoningLog, strategy: Any) -> dict:
+    """One runtime's health and progress, distilled for the fleet overview."""
+    records = log.records
+    cycles = sorted({record.cycle for record in records})
+    rows = [_cycle_row(log, strategy, cycle) for cycle in cycles]
+    totals = _totals(rows)
+    integrity = _integrity(log)
+    blocked = sum(1 for row in rows if row["blocked"])
+    pending = sum(
+        1
+        for record in records
+        if record.stage in ("approval", "escalation")
+        and ("pending" in record.output.lower() or "escalated" in record.output.lower())
+    )
+    failed = sum(1 for record in records if "failed" in record.output.lower() and record.stage != "tool")
+    export_errors = list(getattr(log, "export_errors", []) or [])
+    last = max((record.timestamp for record in records), default=None)
+    status, reason = _classify(integrity, export_errors, failed, pending, blocked)
+    return {
+        "name": name,
+        "status": status,
+        "reason": reason,
+        "cycles": len(cycles),
+        "calls": totals["calls"],
+        "tokens": totals["tokens"],
+        "latency": totals["latency"],
+        "dollars": totals["dollars"],
+        "blocked": blocked,
+        "pending": pending,
+        "failed": failed,
+        "integrity": integrity,
+        "last": last,
+        "spark": [row["tokens"] for row in rows] or [0],
+        "body": _runtime_body(log, strategy, name),
+    }
+
+
+def _classify(
+    integrity: Optional[tuple[bool, str]], export_errors: list, failed: int, pending: int, blocked: int
+) -> tuple[str, str]:
+    """A runtime's health in one word. A broken chain is the only hard
+    fault; failures and exporter errors need attention; a pending approval
+    is waiting on a human; policy blocks are governance working and stay
+    healthy (surfaced as a count, not a fault)."""
+    if integrity is not None and not integrity[0]:
+        return "broken", "audit trail chain is broken"
+    if failed:
+        return "attention", f"{failed} failed cycle(s)"
+    if export_errors:
+        return "attention", f"{len(export_errors)} exporter error(s)"
+    if pending:
+        return "attention", f"{pending} awaiting approval / escalated"
+    if blocked:
+        return "healthy", f"{blocked} policy block(s) — governance working"
+    return "healthy", "all clear"
+
+
+_HEALTH_CAT = {"healthy": "hgood", "attention": "hwarn", "broken": "hbad"}
+_STATUS_RANK = {"healthy": 0, "attention": 1, "broken": 2}
 
 
 def _cycle_row(log: ReasoningLog, strategy: Any, cycle: int) -> dict:
@@ -221,6 +347,123 @@ def _verdict(record: ReasoningRecord) -> str:
 
 
 # -- HTML pieces -------------------------------------------------------------
+
+
+def _fleet_header(summaries: list[dict]) -> str:
+    counts = {"healthy": 0, "attention": 0, "broken": 0}
+    for summary in summaries:
+        counts[summary["status"]] += 1
+    priced = [s["dollars"] for s in summaries if s["dollars"] is not None]
+    dollars = f"${sum(priced):.4f}" if priced else "—"
+    worst = max(summaries, key=lambda s: _STATUS_RANK[s["status"]])["status"]
+    tiles = [
+        ("Runtimes", str(len(summaries)), "neutral"),
+        ("Healthy", str(counts["healthy"]), "hgood"),
+        ("Attention", str(counts["attention"]), "hwarn"),
+        ("Broken", str(counts["broken"]), "hbad"),
+        ("Cycles", f"{sum(s['cycles'] for s in summaries):,}", "neutral"),
+        ("Tokens", f"{sum(s['tokens'] for s in summaries):,}", "neutral"),
+        ("Cost", dollars, "neutral"),
+    ]
+    tile_html = "".join(
+        f'<div class="tile"><div class="tile-v cat-{cat}">{html.escape(value)}</div>'
+        f'<div class="tile-k">{html.escape(label)}</div></div>'
+        for label, value, cat in tiles
+    )
+    badge_class = {"healthy": "badge-good", "attention": "badge-warn", "broken": "badge-bad"}[worst]
+    badge_text = {"healthy": "all runtimes healthy", "attention": "needs attention", "broken": "trail integrity broken"}[worst]
+    badge = f'<span class="badge {badge_class}">{html.escape(badge_text)}</span>'
+    return (
+        f'<header><div class="hrow"><h1>Fleet</h1>{badge}</div>'
+        f'<div class="tiles">{tile_html}</div></header>'
+    )
+
+
+def _fleet_comparison(summaries: list[dict]) -> str:
+    if len(summaries) < 2:
+        return ""
+    labels = [s["name"] for s in summaries]
+    cats = [_HEALTH_CAT[s["status"]] for s in summaries]
+    charts = [
+        _bar_chart("Cycles per runtime", labels, [s["cycles"] for s in summaries], "", None, per_bar_cat=cats, horizontal=True),
+        _bar_chart("Tokens per runtime", labels, [s["tokens"] for s in summaries], "tok", None, per_bar_cat=cats, horizontal=True),
+    ]
+    if any(s["dollars"] is not None for s in summaries):
+        charts.append(
+            _bar_chart(
+                "Cost per runtime",
+                labels,
+                [round((s["dollars"] or 0) * 1_000_000) for s in summaries],
+                "µ$",
+                None,
+                per_bar_cat=cats,
+                horizontal=True,
+            )
+        )
+    return _panel("Compare runtimes", '<div class="charts">' + "".join(charts) + "</div>")
+
+
+def _fleet_runs(fleet: list, summaries: list[dict]) -> str:
+    cards = []
+    for summary in summaries:
+        cards.append(
+            f'<details class="run"><summary>{_run_card(summary)}</summary>'
+            f'<div class="run-body">{summary["body"]}</div></details>'
+        )
+    return _panel("Runtimes", "".join(cards))
+
+
+def _run_card(summary: dict) -> str:
+    status = summary["status"]
+    dollars = f"${summary['dollars']:.4f}" if summary["dollars"] is not None else "—"
+    last = summary["last"].strftime("%Y-%m-%d %H:%M UTC") if summary["last"] else "no activity"
+    stats = (
+        f'<span><b>{summary["cycles"]}</b> cycles</span>'
+        f'<span><b>{summary["calls"]}</b> calls</span>'
+        f'<span><b>{summary["tokens"]:,}</b> tok</span>'
+        f'<span><b>{dollars}</b></span>'
+        f'<span><b>{summary["latency"]:,}</b> ms</span>'
+    )
+    flags = []
+    if summary["failed"]:
+        flags.append(f'<span class="flag bad">{summary["failed"]} failed</span>')
+    if summary["pending"]:
+        flags.append(f'<span class="flag warn">{summary["pending"]} pending</span>')
+    if summary["blocked"]:
+        flags.append(f'<span class="flag info">{summary["blocked"]} blocked</span>')
+    if summary["integrity"] is not None:
+        ok = summary["integrity"][0]
+        flags.append(
+            f'<span class="flag {"info" if ok else "bad"}">{"✓ chain" if ok else "✗ chain"}</span>'
+        )
+    return (
+        f'<div class="run-name"><span class="dot {status}" title="{html.escape(summary["reason"])}"></span>'
+        f'{html.escape(summary["name"])}</div>'
+        f'<div class="run-mid"><div class="run-stats">{stats}</div>'
+        f'<div class="flags">{"".join(flags)}</div>'
+        f'<div class="run-reason">{html.escape(summary["reason"])} · last {html.escape(last)}</div></div>'
+        f'<div class="run-spark">{_sparkline(summary["spark"], _HEALTH_CAT[status])}</div>'
+    )
+
+
+def _sparkline(values: list[float], cat: str) -> str:
+    values = values or [0]
+    peak = max(values) if max(values) > 0 else 1
+    width, height = 170, 30
+    if len(values) == 1:
+        y = height - 3 - (values[0] / peak) * (height - 6)
+        points = f"0,{y:.1f} {width},{y:.1f}"
+    else:
+        step = width / (len(values) - 1)
+        points = " ".join(
+            f"{index * step:.1f},{height - 3 - (value / peak) * (height - 6):.1f}"
+            for index, value in enumerate(values)
+        )
+    return (
+        f'<svg viewBox="0 0 {width} {height}" class="spark cat-{cat}" preserveAspectRatio="none">'
+        f'<polyline points="{points}" fill="none" stroke="currentColor" stroke-width="2" '
+        f'stroke-linejoin="round" stroke-linecap="round"/></svg>'
+    )
 
 
 def _header(name: str, totals: dict, integrity: Optional[tuple[bool, str]], cycles: int) -> str:
@@ -465,6 +708,7 @@ h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute
   margin:30px 0 12px;font-weight:650}
 .badge{font-size:12px;padding:4px 10px;border-radius:999px;font-weight:600}
 .badge-good{background:rgba(47,158,68,.14);color:var(--good)}
+.badge-warn{background:rgba(240,140,0,.14);color:var(--warn)}
 .badge-bad{background:rgba(224,49,49,.14);color:var(--bad)}
 .badge-mute{background:var(--line);color:var(--muted)}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-top:18px}
@@ -483,6 +727,29 @@ h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute
 .cat-tool{fill:var(--tool);color:var(--tool)} .cat-reflect{fill:var(--reflect);color:var(--reflect)}
 .cat-learn{fill:var(--learn);color:var(--learn)} .cat-meter{fill:var(--meter);color:var(--meter)}
 .cat-neutral{fill:var(--neutral);color:var(--neutral)}
+.cat-hgood{fill:var(--good);color:var(--good)} .cat-hwarn{fill:var(--warn);color:var(--warn)}
+.cat-hbad{fill:var(--bad);color:var(--bad)}
+.run{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:10px}
+.run>summary{list-style:none;cursor:pointer;padding:14px 16px;display:grid;
+  grid-template-columns:minmax(150px,1.1fr) 2fr auto;gap:16px;align-items:center}
+.run>summary::-webkit-details-marker{display:none}
+.run-name{font-weight:650;display:flex;align-items:center;gap:9px}
+.dot{width:11px;height:11px;border-radius:50%;flex:none}
+.dot.healthy{background:var(--good)} .dot.attention{background:var(--warn)} .dot.broken{background:var(--bad)}
+.run-mid{min-width:0}
+.run-stats{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:12.5px}
+.run-stats b{color:var(--ink);font-weight:650}
+.flags{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
+.flag{font-size:11px;padding:2px 8px;border-radius:6px;font-weight:600}
+.flag.warn{background:rgba(240,140,0,.14);color:var(--warn)}
+.flag.bad{background:rgba(224,49,49,.14);color:var(--bad)}
+.flag.info{background:var(--line);color:var(--muted)}
+.run-reason{font-size:11.5px;color:var(--muted);margin-top:5px}
+.run-spark{width:170px}
+.spark{width:170px;height:30px;display:block}
+.run-body{padding:2px 16px 14px;border-top:1px solid var(--line)}
+.run-body header{padding-top:14px}
+@media(max-width:640px){.run>summary{grid-template-columns:1fr}.run-spark{width:100%}.spark{width:100%}}
 .grid{width:100%;border-collapse:collapse;font-size:13.5px;background:var(--card);
   border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .grid th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;

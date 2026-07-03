@@ -496,6 +496,24 @@ path (rebuilt losslessly via `ReasoningLog.from_trail`); `serve(source,
 port)` runs a live, self-refreshing view over the standard-library HTTP
 server — the closest thing to `tensorboard --logdir` the stdlib allows.
 
+Run more than one runtime and the board goes fleet-wide:
+
+```python
+Dashboard().write_fleet({"lending": rt_a, "mortgage": rt_b}, "fleet.html")
+Dashboard().render_fleet("trails/")   # or a directory of JSONL trails, one run each
+```
+
+The fleet page leads with health tiles (**healthy / attention / broken**)
+and a worst-status badge, then cross-run comparison charts (cycles, tokens
+and cost per runtime). Below, one card per runtime shows a health dot, a
+tokens-per-cycle **progress sparkline**, flags (blocked / pending / chain),
+and last activity — and expands into that runtime's full single board.
+Health is honest: a *broken* audit-trail chain is the only hard fault;
+failed cycles, exporter errors and pending approvals raise *attention*;
+policy blocks are governance working and stay *healthy*, surfaced as a
+count. `render_fleet` accepts a `{name: runtime}` dict, a list of runtimes,
+or a directory of trails; `serve` renders a fleet the same way, live.
+
 Every cycle also closes with a `usage` record — model calls, tokens,
 approximate cost and wall-clock latency, read from the bound LM's own call
 history — written for blocked cycles too: a refusal costs whatever it
@@ -830,7 +848,7 @@ ear/
   strategy.py      Strategy      — the memory.md operating strategy, read from plain English
   exchange.py      Exchange      — the markdown boundary: intents/*.md in, decisions/*.md out
   reasoning_log.py ReasoningLog  — the reasoning audit trail (markdown/JSONL); hash-chained + verify(), retention rotation, usage ledger
-  dashboard.py     Dashboard     — a self-contained HTML runtime board rendered from the trail (the TensorBoard-equivalent), zero deps
+  dashboard.py     Dashboard     — a self-contained HTML runtime board rendered from the trail (TensorBoard-equivalent); render_fleet for many runtimes, zero deps
   session_store.py SessionStore  — cross-session data (markdown by default, JSON optional)
   spawner.py       Spawner       — spawn subagent runtimes, bounded by the strategy
   tool.py          Tool          — a tool declared in plain English, surfaced to reasoning

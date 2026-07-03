@@ -3185,3 +3185,77 @@ def test_dashboard_rebuilds_from_a_persisted_jsonl_trail(tmp_path):
     assert rebuilt.records[0].stage == "intent"
     html = Dashboard().render(str(trail))
     assert html.startswith("<!doctype html>") and 'class="cycle"' in html
+
+
+def test_fleet_dashboard_shows_every_runtime_with_health_and_progress(tmp_path):
+    from ear import Dashboard
+
+    # alpha: healthy, two clean cycles.
+    alpha = load_runtime(write_stack(tmp_path / "alpha", **MINIMAL_STACK))
+    alpha.reason(Intent(text="Underwrite one", context={"loan_amount": 5000}))
+    alpha.reason(Intent(text="Underwrite two", context={"loan_amount": 6000}))
+
+    # beta: an approval gate parks a cycle -> needs attention (pending).
+    beta_stack = dict(MINIMAL_STACK)
+    beta_stack["policy"] = (
+        "# Policies\n\n## Loan Amount Cap\nUnder 75k.\n\n"
+        "Fallback: loan_amount <= 75000\nApplies to: Underwriting Workflow\n\n"
+        "## Big Loan\nOver 50k needs a human.\n\n"
+        "Fallback: loan_amount <= 50000\nApplies to: Underwriting Workflow\nApproval: required\n"
+    )
+    beta = load_runtime(write_stack(tmp_path / "beta", **beta_stack))
+    with pytest.raises(PermissionError):
+        beta.reason(Intent(text="Underwrite big", context={"loan_amount": 60000}))
+
+    # gamma: a persisted trail, hand-edited -> broken chain.
+    gamma = load_runtime(write_stack(tmp_path / "gamma", **MINIMAL_STACK))
+    gamma.reasoning_log.path = str(tmp_path / "gamma.jsonl")
+    gamma.reason(Intent(text="Underwrite", context={"loan_amount": 5000}))
+    trail = tmp_path / "gamma.jsonl"
+    trail.write_text(trail.read_text(encoding="utf-8").replace("Underwrite", "Tampered", 1), encoding="utf-8")
+
+    html = Dashboard().render_fleet({"alpha": alpha, "beta": beta, "gamma": gamma})
+
+    # Self-contained, one page, one card per runtime.
+    assert html.startswith("<!doctype html>")
+    assert "http://" not in html and "https://" not in html
+    assert html.count('class="run"') == 3
+    assert "alpha" in html and "beta" in html and "gamma" in html
+    # The fleet overview counts health, and the worst status wins the badge.
+    assert "Healthy" in html and "Attention" in html and "Broken" in html
+    assert "badge-bad" in html  # gamma's broken chain drives the fleet badge
+    # Progress is visible per runtime: sparklines and cross-run charts.
+    assert html.count('class="spark') == 3
+    assert "Compare runtimes" in html
+    # Each runtime drills down into its full board (its cycles are embedded).
+    assert 'class="run-body"' in html and html.count('class="cycle"') >= 3
+
+
+def test_fleet_classifies_health_broken_beats_attention_beats_healthy(tmp_path):
+    from ear.dashboard import _classify
+
+    assert _classify((False, "broken chain"), [], 0, 0, 0)[0] == "broken"
+    assert _classify((True, "ok"), ["exporter down"], 0, 0, 0)[0] == "attention"
+    assert _classify((True, "ok"), [], 1, 0, 0)[0] == "attention"  # a failed cycle
+    assert _classify((True, "ok"), [], 0, 1, 0)[0] == "attention"  # awaiting approval
+    healthy, reason = _classify((True, "ok"), [], 0, 0, 2)  # policy blocks are governance working
+    assert healthy == "healthy" and "governance working" in reason
+    assert _classify(None, [], 0, 0, 0) == ("healthy", "all clear")
+
+
+def test_fleet_dashboard_from_a_directory_of_trails(tmp_path):
+    from ear import Dashboard
+    from ear.reasoning_log import ReasoningLog
+
+    trails = tmp_path / "trails"
+    trails.mkdir()
+    for name in ("payments", "lending"):
+        runtime = load_runtime(write_stack(tmp_path / name, **MINIMAL_STACK))
+        runtime.reasoning_log.path = str(trails / f"{name}.jsonl")
+        runtime.reason(Intent(text=f"a {name} cycle", context={"loan_amount": 5000}))
+
+    html = Dashboard().render_fleet(str(trails))  # one run per JSONL file, rebuilt from disk
+    assert html.count('class="run"') == 2
+    assert "payments" in html and "lending" in html
+    # A chain badge per rebuilt run, verified from the file.
+    assert "✓ chain" in html
