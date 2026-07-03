@@ -496,6 +496,29 @@ path (rebuilt losslessly via `ReasoningLog.from_trail`); `serve(source,
 port)` runs a live, self-refreshing view over the standard-library HTTP
 server — the closest thing to `tensorboard --logdir` the stdlib allows.
 
+**Live Gantt.** For progression over time there's a Gantt view — every
+process on a wall-clock axis, coloured by health, with a "now" marker:
+
+```python
+Dashboard().write_gantt(runtime, "gantt.html")            # one lane per cycle
+Dashboard().render_gantt({"a": rt_a, "b": rt_b})          # one lane per runtime
+serve(runtime, gantt=True, refresh=3)                      # live, auto-ticking
+```
+
+A cycle is a bar from its first record's timestamp to its last; the lane
+dot and each bar carry the runtime's **health** and the cycle's **status**
+(green decided/healthy · amber pending/awaiting · red policy-blocked or
+retry-exhausted). Status is read only from the governance stages (policy,
+approval, retry, evaluation) — a loan *declined on the merits* is a sound
+decision and stays green; only a governance stop reads red. The page can
+**tick itself**: pass `refresh` (seconds) and it emits a meta-refresh, so
+`serve(..., refresh=3)` re-reads the trail from disk and re-renders every
+few seconds — a separate process writing the trail is watched live, the
+bars extending and appearing on their own. A per-runtime **heartbeat**
+(`active` / `idle` / `stale`, from the age of the last activity) tells a
+live runtime from a quiet or hung one. No daemon, no websocket — an
+auto-refreshing static page over `http.server`.
+
 Run more than one runtime and the board goes fleet-wide:
 
 ```python
@@ -848,7 +871,7 @@ ear/
   strategy.py      Strategy      — the memory.md operating strategy, read from plain English
   exchange.py      Exchange      — the markdown boundary: intents/*.md in, decisions/*.md out
   reasoning_log.py ReasoningLog  — the reasoning audit trail (markdown/JSONL); hash-chained + verify(), retention rotation, usage ledger
-  dashboard.py     Dashboard     — a self-contained HTML runtime board rendered from the trail (TensorBoard-equivalent); render_fleet for many runtimes, zero deps
+  dashboard.py     Dashboard     — self-contained HTML runtime board from the trail (TensorBoard-equivalent): render_fleet, live auto-ticking render_gantt, zero deps
   session_store.py SessionStore  — cross-session data (markdown by default, JSON optional)
   spawner.py       Spawner       — spawn subagent runtimes, bounded by the strategy
   tool.py          Tool          — a tool declared in plain English, surfaced to reasoning

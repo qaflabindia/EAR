@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -87,32 +88,71 @@ class Dashboard:
         destination.write_text(html_text, encoding="utf-8")
         return html_text
 
-    def render(self, source: Any, title: Optional[str] = None) -> str:
+    def render(self, source: Any, title: Optional[str] = None, refresh: int = 0) -> str:
         log, strategy, name = _resolve(source)
         title = title or f"{name} — Runtime Dashboard"
         body = _runtime_body(log, strategy, name) + _footer()
-        return _PAGE.replace("{{TITLE}}", html.escape(title)).replace("{{BODY}}", body)
+        return _page(title, body, refresh)
+
+    def render_gantt(
+        self, source: Any, title: Optional[str] = None, refresh: int = 0, now: Optional[Any] = None
+    ) -> str:
+        """A Gantt view: every process laid out on a wall-clock time axis,
+        coloured by status, with a live 'now' marker — the timeline of what
+        ran when, and how each run ended. `source` is a Runtime/ReasoningLog
+        (one lane per cycle) or a fleet (one lane per runtime, cycles as
+        bars). Pass `refresh` (seconds) to make the page tick itself when
+        served — the autonomous loop that keeps it live."""
+        moment = _now(now)
+        if _is_fleet(source):
+            fleet = _fleet_sources(source)
+            tracks = _gantt_tracks_fleet(fleet, moment)
+            title = title or "Fleet — Live Gantt"
+            head = _fleet_header([_fleet_summary(n, lg, st, moment) for n, lg, st in fleet])
+        else:
+            log, strategy, name = _resolve(source)
+            tracks = _gantt_tracks_single(log, moment)
+            title = title or f"{name} — Live Gantt"
+            head = _header(name, _totals([_cycle_row(log, strategy, c) for c in sorted({r.cycle for r in log.records})]),
+                           _integrity(log), len({r.cycle for r in log.records}))
+        body = head + _gantt_section(tracks, moment) + _gantt_legend() + _footer()
+        return _page(title, body, refresh)
+
+    def write_gantt(
+        self, source: Any, path: Union[str, Path], title: Optional[str] = None, refresh: int = 0
+    ) -> str:
+        html_text = self.render_gantt(source, title=title, refresh=refresh)
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(html_text, encoding="utf-8")
+        return html_text
 
     # -- fleet: many runtimes at once -----------------------------------------
 
-    def render_fleet(self, sources: Any, title: str = "Fleet — Runtime Dashboard") -> str:
-        """Render a whole fleet on one page: an overview of every runtime's
-        health and progress, cross-run comparison charts, and each runtime's
-        full board a click away. `sources` is a dict {name: runtime}, a list
-        of runtimes (or (name, runtime) pairs), or a directory of JSONL
-        trails (one run per file, discovered and rebuilt from disk)."""
+    def render_fleet(
+        self, sources: Any, title: str = "Fleet — Runtime Dashboard", refresh: int = 0, now: Optional[Any] = None
+    ) -> str:
+        """Render a whole fleet on one page: a live Gantt across every
+        runtime, an overview of each one's health and progress, cross-run
+        comparison charts, and each runtime's full board a click away.
+        `sources` is a dict {name: runtime}, a list of runtimes (or
+        (name, runtime) pairs), or a directory of JSONL trails (one run per
+        file, discovered and rebuilt from disk). Pass `refresh` to make it
+        tick itself when served."""
+        moment = _now(now)
         fleet = _fleet_sources(sources)
         if not fleet:
             body = _panel("Fleet", '<p class="muted">No runtimes to show yet.</p>') + _footer()
-            return _PAGE.replace("{{TITLE}}", html.escape(title)).replace("{{BODY}}", body)
-        summaries = [_fleet_summary(name, log, strategy) for name, log, strategy in fleet]
+            return _page(title, body, refresh)
+        summaries = [_fleet_summary(name, log, strategy, moment) for name, log, strategy in fleet]
         parts = [
             _fleet_header(summaries),
+            _gantt_section(_gantt_tracks_fleet(fleet, moment), moment),
             _fleet_comparison(summaries),
             _fleet_runs(fleet, summaries),
             _footer(),
         ]
-        return _PAGE.replace("{{TITLE}}", html.escape(title)).replace("{{BODY}}", "\n".join(parts))
+        return _page(title, "\n".join(parts), refresh)
 
     def write_fleet(self, sources: Any, path: Union[str, Path], title: Optional[str] = None) -> str:
         html_text = self.render_fleet(sources, title=title or "Fleet — Runtime Dashboard")
@@ -125,24 +165,31 @@ class Dashboard:
 # -- serving -----------------------------------------------------------------
 
 
-def serve(source: Any, port: int = 8000, host: str = "127.0.0.1") -> None:  # pragma: no cover - blocking loop
+def serve(
+    source: Any, port: int = 8000, host: str = "127.0.0.1", refresh: int = 3, gantt: bool = False
+) -> None:  # pragma: no cover - blocking loop
     """Serve a live dashboard over the standard-library HTTP server,
-    re-rendering on every request so a running stack's board refreshes.
-    `source` may be a Runtime, a ReasoningLog, or a path to a JSONL trail
-    (reloaded each request). Ctrl-C to stop. Zero dependencies -- this is
-    `http.server`, nothing more."""
+    re-rendering on every request and telling the browser to tick itself
+    every `refresh` seconds -- the autonomous loop that keeps the view
+    live. `source` may be a Runtime, a ReasoningLog, a JSONL trail path, a
+    directory of trails, or a {name: runtime} fleet; a path is reloaded
+    from disk each tick, so a separate process writing the trail is watched
+    live. `gantt=True` serves the Gantt timeline. Ctrl-C to stop. Zero
+    dependencies -- this is `http.server`, nothing more."""
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     dashboard = Dashboard()
-    is_fleet = isinstance(source, (dict, list, tuple)) or (
-        isinstance(source, (str, Path)) and Path(str(source)).is_dir()
-    )
+    is_fleet = _is_fleet(source)
 
     def current_html() -> str:
+        origin = source
+        if not is_fleet and _is_trail_path(source):
+            origin = ReasoningLog.from_trail(str(source))
+        if gantt:
+            return dashboard.render_gantt(origin, refresh=refresh)
         if is_fleet:
-            return dashboard.render_fleet(source)
-        origin = ReasoningLog.from_trail(str(source)) if _is_trail_path(source) else source
-        return dashboard.render(origin)
+            return dashboard.render_fleet(source, refresh=refresh)
+        return dashboard.render(origin, refresh=refresh)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -222,6 +269,7 @@ def _runtime_body(log: ReasoningLog, strategy: Any, name: str) -> str:
     return "\n".join(
         [
             _header(name, totals, integrity, len(cycles)),
+            _gantt_section(_gantt_tracks_single(log, _now(None)), _now(None)),
             _scalars_section(rows),
             _distribution_section(records),
             _governance_section(records),
@@ -231,7 +279,7 @@ def _runtime_body(log: ReasoningLog, strategy: Any, name: str) -> str:
     )
 
 
-def _fleet_summary(name: str, log: ReasoningLog, strategy: Any) -> dict:
+def _fleet_summary(name: str, log: ReasoningLog, strategy: Any, now: Optional[Any] = None) -> dict:
     """One runtime's health and progress, distilled for the fleet overview."""
     records = log.records
     cycles = sorted({record.cycle for record in records})
@@ -245,7 +293,10 @@ def _fleet_summary(name: str, log: ReasoningLog, strategy: Any) -> dict:
         if record.stage in ("approval", "escalation")
         and ("pending" in record.output.lower() or "escalated" in record.output.lower())
     )
-    failed = sum(1 for record in records if "failed" in record.output.lower() and record.stage != "tool")
+    # A cycle "fails" only through a governance stop -- a journey leg
+    # exhausting its retry budget -- not because deliberation prose used
+    # the word; the retry stage's output is a controlled vocabulary.
+    failed = sum(1 for record in records if record.stage == "retry" and "exhausted" in record.output.lower())
     export_errors = list(getattr(log, "export_errors", []) or [])
     last = max((record.timestamp for record in records), default=None)
     status, reason = _classify(integrity, export_errors, failed, pending, blocked)
@@ -263,9 +314,190 @@ def _fleet_summary(name: str, log: ReasoningLog, strategy: Any) -> dict:
         "failed": failed,
         "integrity": integrity,
         "last": last,
+        "freshness": _freshness(last, _now(now)),
         "spark": [row["tokens"] for row in rows] or [0],
         "body": _runtime_body(log, strategy, name),
     }
+
+
+# How recently a runtime must have acted to read as live. A tick or two of
+# the served refresh; beyond the stale mark, a quiet runtime is flagged as
+# possibly dead/hung rather than merely idle. Wall-clock heuristics, not
+# judgment.
+FRESH_ACTIVE_SECONDS = 15
+FRESH_STALE_SECONDS = 3600
+
+
+def _now(now: Optional[Any]) -> Any:
+    return now if now is not None else datetime.now(timezone.utc)
+
+
+def _freshness(last: Optional[Any], now: Any) -> str:
+    """active / idle / stale from the age of the last recorded activity --
+    the heartbeat that tells a live runtime from a quiet or dead one."""
+    if last is None:
+        return "idle"
+    try:
+        age = (now - last).total_seconds()
+    except TypeError:
+        return "idle"
+    if age <= FRESH_ACTIVE_SECONDS:
+        return "active"
+    if age >= FRESH_STALE_SECONDS:
+        return "stale"
+    return "idle"
+
+
+# -- the Gantt: processes on a wall-clock timeline ---------------------------
+
+
+def _cycle_span(log: ReasoningLog, cycle: int) -> dict:
+    """One cycle as a Gantt bar: when it started and ended (record
+    timestamps), how it ended (status), and what it was."""
+    records = log.for_cycle(cycle)
+    stamps = [record.timestamp for record in records]
+    start, end = (min(stamps), max(stamps)) if stamps else (None, None)
+    status = _cycle_status(records)
+    intent = next((record.output for record in records if record.stage == "intent"), None)
+    # A cycle with no intent (load-time work like gist indexing) is labelled
+    # by what it did, not "cycle 0".
+    what = intent if intent else (f"{records[0].stage} (setup)" if records else f"cycle {cycle}")
+    latency = sum(record.latency_ms for record in records)
+    return {
+        "start": start,
+        "end": end,
+        "status": status,
+        "label": f"#{cycle}",
+        "tip": f"#{cycle}: {_clip(what, 70)} · {latency} ms",
+    }
+
+
+def _gantt_tracks_single(log: ReasoningLog, now: Any) -> list[dict]:
+    """One lane per cycle -- a staircase of runs down the page, time across
+    it -- for a single runtime."""
+    tracks = []
+    for cycle in sorted({record.cycle for record in log.records}):
+        bar = _cycle_span(log, cycle)
+        tracks.append(
+            {
+                "label": _clip(bar["tip"].split(" · ")[0], 42),
+                "health": bar["status"],
+                "fresh": _freshness(bar["end"], now),
+                "bars": [bar],
+            }
+        )
+    return tracks
+
+
+def _gantt_tracks_fleet(fleet: list, now: Any) -> list[dict]:
+    """One lane per runtime, its cycles as bars along the shared axis -- the
+    fleet's whole timeline at a glance."""
+    tracks = []
+    for name, log, _strategy in fleet:
+        bars = [_cycle_span(log, cycle) for cycle in sorted({record.cycle for record in log.records})]
+        bars = [bar for bar in bars if bar["start"] is not None]
+        summary_status, _reason = _classify(
+            _integrity(log),
+            list(getattr(log, "export_errors", []) or []),
+            sum(1 for b in bars if b["status"] == "bad"),
+            sum(1 for b in bars if b["status"] == "warn"),
+            0,
+        )
+        last = max((bar["end"] for bar in bars), default=None)
+        tracks.append(
+            {
+                "label": name,
+                "health": {"healthy": "good", "attention": "warn", "broken": "bad"}[summary_status],
+                "fresh": _freshness(last, now),
+                "bars": bars,
+            }
+        )
+    return tracks
+
+
+def _gantt_section(tracks: list[dict], now: Any, title: str = "Live Gantt — progression & status") -> str:
+    bars = [bar for track in tracks for bar in track["bars"] if bar["start"] is not None]
+    if not bars:
+        return _panel(title, '<p class="muted">No activity on the timeline yet.</p>')
+    t0 = min(bar["start"] for bar in bars)
+    t1 = max([bar["end"] for bar in bars] + [now])
+    span = max((t1 - t0).total_seconds(), 1.0)
+    label_w, right_pad, row_h, gap, axis_h = 190, 24, 24, 7, 34
+    plot_w = 1000 - label_w - right_pad
+    height = len(tracks) * (row_h + gap) + axis_h
+
+    def x_of(moment: Any) -> float:
+        return label_w + (moment - t0).total_seconds() / span * plot_w
+
+    grid, rows = [], []
+    for fraction in (0, 0.25, 0.5, 0.75, 1.0):
+        gx = label_w + fraction * plot_w
+        tick_time = t0 + (t1 - t0) * fraction
+        grid.append(f'<line x1="{gx:.1f}" y1="0" x2="{gx:.1f}" y2="{height - axis_h}" class="gline"/>')
+        grid.append(
+            f'<text x="{gx:.1f}" y="{height - 12}" class="axis" text-anchor="middle">'
+            f'{tick_time.strftime("%H:%M:%S")}</text>'
+        )
+    health_dot = {"good": "hgood", "warn": "hwarn", "bad": "hbad"}
+    for index, track in enumerate(tracks):
+        y = index * (row_h + gap)
+        dot = health_dot[track["health"]]
+        rows.append(
+            f'<circle cx="9" cy="{y + row_h / 2:.1f}" r="5" class="cat-{dot}"/>'
+            f'<text x="22" y="{y + row_h - 7:.1f}" class="glabel">{html.escape(_clip(track["label"], 26))}</text>'
+        )
+        if track.get("fresh") == "active":
+            rows.append(f'<circle cx="{label_w - 12}" cy="{y + row_h / 2:.1f}" r="4" class="pulse"/>')
+        for bar in track["bars"]:
+            if bar["start"] is None:
+                continue
+            x0 = x_of(bar["start"])
+            x1_ = x_of(bar["end"])
+            width = max(x1_ - x0, 3)
+            rows.append(
+                f'<rect x="{x0:.1f}" y="{y + 3:.1f}" width="{width:.1f}" height="{row_h - 6}" rx="3" '
+                f'class="gbar {bar["status"]}"><title>{html.escape(bar["tip"])}</title></rect>'
+            )
+    now_x = x_of(now)
+    now_line = (
+        f'<line x1="{now_x:.1f}" y1="0" x2="{now_x:.1f}" y2="{height - axis_h}" class="nowline"/>'
+        f'<text x="{now_x:.1f}" y="10" class="nowlabel" text-anchor="end">now</text>'
+        if t0 <= now <= t1
+        else ""
+    )
+    svg = (
+        f'<svg viewBox="0 0 1000 {height}" class="gantt" preserveAspectRatio="xMinYMin meet">'
+        f'{"".join(grid)}{"".join(rows)}{now_line}</svg>'
+    )
+    return _panel(title, f'<div class="gantt-wrap">{svg}</div>')
+
+
+def _gantt_legend() -> str:
+    items = [
+        ("gbar good", "decided / healthy"),
+        ("gbar warn", "pending / awaiting"),
+        ("gbar bad", "blocked / failed"),
+    ]
+    swatches = "".join(
+        f'<span class="leg"><span class="sw {cls}"></span>{html.escape(text)}</span>' for cls, text in items
+    )
+    swatches += '<span class="leg"><span class="sw pulse-sw"></span>active now</span>'
+    return _panel("Legend", f'<div class="legend">{swatches}</div>')
+
+
+def _is_fleet(source: Any) -> bool:
+    return isinstance(source, (dict, list, tuple)) or (
+        isinstance(source, (str, Path)) and Path(str(source)).is_dir()
+    )
+
+
+def _page(title: str, body: str, refresh: int = 0) -> str:
+    meta = f'<meta http-equiv="refresh" content="{int(refresh)}">' if refresh and refresh > 0 else ""
+    return (
+        _PAGE.replace("{{TITLE}}", html.escape(title))
+        .replace("{{REFRESH}}", meta)
+        .replace("{{BODY}}", body)
+    )
 
 
 def _classify(
@@ -301,7 +533,7 @@ def _cycle_row(log: ReasoningLog, strategy: Any, cycle: int) -> dict:
     tools = sum(1 for record in records if record.stage == "tool")
     dollars = strategy.dollars(in_tokens, out_tokens) if strategy is not None else None
     intent = next((record.output for record in records if record.stage == "intent"), "")
-    blocked = any(_verdict(record) == "bad" for record in records)
+    blocked = _cycle_status(records) == "bad"
     return {
         "cycle": cycle,
         "intent": intent,
@@ -344,6 +576,28 @@ def _verdict(record: ReasoningRecord) -> str:
     if any(word in text for word in _GOOD):
         return "good"
     return "neutral"
+
+
+# Stages whose outputs are a controlled vocabulary (complies / VIOLATED /
+# PENDING / approved / FAILED / passed …). A cycle's health is read only
+# from these -- never from free-text deliberation, explanation or audit
+# prose, where words like "error" or "failed" appear innocently and would
+# paint a healthy cycle red.
+_STATUS_STAGES = ("policy", "approval", "escalation", "retry", "evaluation")
+
+
+def _cycle_status(records: list) -> str:
+    """A cycle's health from its governance stages alone: bad when a policy
+    blocked, a leg exhausted its retries, or an evaluation failed; warn when
+    an approval is pending or a journey escalated; good otherwise. A loan
+    *declined* on the merits is a sound decision, not ill health -- so a
+    decline reads good, only a governance stop reads bad."""
+    relevant = [record for record in records if record.stage in _STATUS_STAGES]
+    if any(_verdict(record) == "bad" for record in relevant):
+        return "bad"
+    if any(_verdict(record) == "warn" for record in relevant):
+        return "warn"
+    return "good"
 
 
 # -- HTML pieces -------------------------------------------------------------
@@ -425,6 +679,9 @@ def _run_card(summary: dict) -> str:
         f'<span><b>{summary["latency"]:,}</b> ms</span>'
     )
     flags = []
+    fresh = summary.get("freshness", "idle")
+    fresh_class = {"active": "info fresh-active", "idle": "info", "stale": "warn"}[fresh]
+    flags.append(f'<span class="flag {fresh_class}">{html.escape(fresh)}</span>')
     if summary["failed"]:
         flags.append(f'<span class="flag bad">{summary["failed"]} failed</span>')
     if summary["pending"]:
@@ -683,7 +940,7 @@ def _head(title: str) -> str:
 
 _PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1">{{REFRESH}}
 <title>{{TITLE}}</title>
 <style>
 :root{
@@ -729,6 +986,23 @@ h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute
 .cat-neutral{fill:var(--neutral);color:var(--neutral)}
 .cat-hgood{fill:var(--good);color:var(--good)} .cat-hwarn{fill:var(--warn);color:var(--warn)}
 .cat-hbad{fill:var(--bad);color:var(--bad)}
+.gantt-wrap{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;overflow-x:auto}
+.gantt{width:100%;min-width:640px;height:auto}
+.gline{stroke:var(--line);stroke-width:1}
+.glabel{fill:var(--ink);font-size:12px}
+.gbar{opacity:.95}
+.gbar.good{fill:var(--good)} .gbar.warn{fill:var(--warn)} .gbar.bad{fill:var(--bad)} .gbar.neutral{fill:var(--neutral)}
+.nowline{stroke:var(--reason);stroke-width:1.5;stroke-dasharray:3 3}
+.nowlabel{fill:var(--reason);font-size:11px;font-weight:600}
+.pulse{fill:var(--good)}
+.pulse{animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.3}50%{opacity:1}}
+.legend{display:flex;flex-wrap:wrap;gap:16px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px}
+.leg{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted)}
+.sw{width:14px;height:14px;border-radius:4px;display:inline-block}
+.sw.good{background:var(--good)} .sw.warn{background:var(--warn)} .sw.bad{background:var(--bad)}
+.sw.pulse-sw{background:var(--good);animation:pulse 1.6s ease-in-out infinite}
+.flag.fresh-active{background:rgba(47,158,68,.16);color:var(--good)}
 .run{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:10px}
 .run>summary{list-style:none;cursor:pointer;padding:14px 16px;display:grid;
   grid-template-columns:minmax(150px,1.1fr) 2fr auto;gap:16px;align-items:center}

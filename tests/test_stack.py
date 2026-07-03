@@ -3259,3 +3259,79 @@ def test_fleet_dashboard_from_a_directory_of_trails(tmp_path):
     assert "payments" in html and "lending" in html
     # A chain badge per rebuilt run, verified from the file.
     assert "✓ chain" in html
+
+
+def test_gantt_lays_cycles_on_a_time_axis_with_status_and_a_now_marker(tmp_path):
+    from ear import Dashboard
+
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    runtime.reason(Intent(text="Underwrite one", context={"loan_amount": 5000}))
+    runtime.reason(Intent(text="Underwrite two", context={"loan_amount": 6000}))
+    with pytest.raises(PermissionError):
+        runtime.reason(Intent(text="oversized", context={"loan_amount": 90000}))
+
+    html = Dashboard().render_gantt(runtime)
+    assert html.startswith("<!doctype html>")
+    assert "http://" not in html and "https://" not in html.replace("http-equiv", "")
+    # A bar per cycle, on a wall-clock axis, with a "now" marker.
+    assert 'class="gantt"' in html
+    assert html.count('class="gbar') == 3
+    assert 'class="gbar bad"' in html  # the blocked cycle is red
+    assert "nowline" in html and ">now<" in html
+    # Time ticks on the axis (HH:MM:SS labels).
+    import re
+
+    assert re.search(r">\d{2}:\d{2}:\d{2}<", html)
+
+
+def test_gantt_tickle_injects_an_auto_refresh_and_off_by_default(tmp_path):
+    from ear import Dashboard
+
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    runtime.reason(Intent(text="Underwrite", context={"loan_amount": 5000}))
+
+    ticking = Dashboard().render_gantt(runtime, refresh=3)
+    assert '<meta http-equiv="refresh" content="3">' in ticking  # the tickle
+    still = Dashboard().render_gantt(runtime)  # no refresh by default
+    assert "http-equiv" not in still
+
+
+def test_fleet_gantt_has_one_lane_per_runtime(tmp_path):
+    from ear import Dashboard
+
+    alpha = load_runtime(write_stack(tmp_path / "alpha", **MINIMAL_STACK))
+    alpha.reason(Intent(text="a1", context={"loan_amount": 5000}))
+    alpha.reason(Intent(text="a2", context={"loan_amount": 6000}))
+    beta = load_runtime(write_stack(tmp_path / "beta", **MINIMAL_STACK))
+    beta.reason(Intent(text="b1", context={"loan_amount": 7000}))
+
+    html = Dashboard().render_gantt({"alpha": alpha, "beta": beta}, refresh=5)
+    assert '<meta http-equiv="refresh" content="5">' in html
+    assert 'class="gantt"' in html
+    assert "alpha" in html and "beta" in html
+    # alpha ran two cycles, beta one -> three bars across two lanes.
+    assert html.count('class="gbar') == 3
+
+
+def test_freshness_heartbeat_distinguishes_active_idle_stale():
+    from datetime import datetime, timedelta, timezone
+
+    from ear.dashboard import _freshness
+
+    now = datetime.now(timezone.utc)
+    assert _freshness(now - timedelta(seconds=3), now) == "active"
+    assert _freshness(now - timedelta(minutes=10), now) == "idle"
+    assert _freshness(now - timedelta(hours=3), now) == "stale"
+    assert _freshness(None, now) == "idle"
+
+
+def test_fleet_card_shows_a_freshness_heartbeat(tmp_path):
+    from datetime import datetime, timezone
+
+    from ear import Dashboard
+
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    runtime.reason(Intent(text="Underwrite", context={"loan_amount": 5000}))
+    # Render "as of now" -> the just-run cycle reads active.
+    html = Dashboard().render_fleet({"only": runtime}, now=datetime.now(timezone.utc))
+    assert "fresh-active" in html and ">active<" in html
