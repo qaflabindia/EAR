@@ -3621,3 +3621,71 @@ def test_goal_pursued_live_reaches_a_terminal_outcome(tmp_path):
     assert all(blocker in {
         "goal_not_met_yet", "needs_user_input", "external_wait", "missing_evidence", "run_failed", "satisfied"
     } for blocker in [e.blocker for e in outcome.history])
+
+
+# ---------------------------------------------------------------------------
+# Strict tool-call recovery: the native loop corrects a hallucinated or
+# empty turn instead of silently abandoning it, bounded and on the record.
+# ---------------------------------------------------------------------------
+
+
+def _tool_action(tool="", args="", decision=""):
+    return f"## tool\n\n{tool}\n\n## arguments\n\n{args}\n\n## decision\n\n{decision}\n"
+
+
+def test_tool_loop_recovers_from_a_hallucinated_tool_name():
+    from ear.reasoner import Reasoner
+    from ear.tool_binder import BoundTool
+
+    tool = BoundTool(name="calc", description="add one to x", handler=lambda x: f"result {int(x) + 1}")
+    runtime = Runtime(name="Recover")
+    lm = ScriptedLM(
+        [
+            _tool_action(tool="nonexistent_tool"),  # a tool that does not exist -> recover
+            _tool_action(tool="calc", args="- x: 5"),  # the real call
+            _tool_action(decision="Final answer is 6"),  # decide
+        ]
+    )
+    decision = Reasoner._reason_with_tools(
+        Intent(text="go"), runtime, lm, context={}, capabilities="none", tools=[tool], max_iterations=6
+    )
+    assert decision == "Final answer is 6"
+
+    records = runtime.reasoning_log.for_stage("tool")
+    # The hallucinated call is recorded as a recovery, then the real call runs.
+    assert records[0].inputs["recovery"] is True and records[0].output.startswith("RECOVERED")
+    assert "no tool named 'nonexistent_tool'" in records[0].output and "calc" in records[0].output
+    assert records[1].inputs["tool"] == "calc" and "result 6" in records[1].output
+
+
+def test_tool_loop_recovers_from_an_empty_turn():
+    from ear.reasoner import Reasoner
+    from ear.tool_binder import BoundTool
+
+    tool = BoundTool(name="calc", description="x", handler=lambda x: str(x))
+    runtime = Runtime(name="Recover2")
+    lm = ScriptedLM([_tool_action(), _tool_action(decision="Decided after the nudge")])
+    decision = Reasoner._reason_with_tools(
+        Intent(text="go"), runtime, lm, context={}, capabilities="none", tools=[tool], max_iterations=6
+    )
+    assert decision == "Decided after the nudge"
+    recovery = runtime.reasoning_log.for_stage("tool")[0]
+    assert recovery.inputs["recovery"] is True and "no tool call and no decision" in recovery.output
+
+
+def test_tool_loop_recovery_budget_is_bounded_then_concludes():
+    from ear.reasoner import Reasoner
+    from ear.reasoner import _MAX_TOOL_RECOVERIES
+    from ear.tool_binder import BoundTool
+
+    tool = BoundTool(name="calc", description="x", handler=lambda x: str(x))
+    runtime = Runtime(name="Recover3")
+    # Two recoveries, then a third bad turn trips the break; the last reply
+    # concludes via the plain ReasonAboutIntent fallback.
+    lm = ScriptedLM([_tool_action(tool="bad")] * 3 + ["## decision\n\nConcluded with what I have\n"])
+    decision = Reasoner._reason_with_tools(
+        Intent(text="go"), runtime, lm, context={}, capabilities="none", tools=[tool], max_iterations=8
+    )
+    assert decision == "Concluded with what I have"
+    recoveries = [r for r in runtime.reasoning_log.for_stage("tool") if r.inputs.get("recovery")]
+    assert len(recoveries) == _MAX_TOOL_RECOVERIES  # never unbounded

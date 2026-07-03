@@ -21,6 +21,11 @@ from typing import Any
 from .intent import Intent
 from .reasoning_log import calls_so_far, usage_since
 
+# How many times the native tool loop will correct a malformed turn (a
+# hallucinated tool name, or neither a call nor a decision) before it stops
+# retrying and concludes with what it has. Recovery mechanics, not judgment.
+_MAX_TOOL_RECOVERIES = 2
+
 
 @dataclass
 class Reasoner:
@@ -115,14 +120,25 @@ class Reasoner:
         decide, execute the chosen tool through the binder (so the call
         lands on the trail), feed the result back, and repeat until the
         model decides or the iteration budget is spent. No framework -- the
-        model's choices are markdown, parsed by the shared codec."""
+        model's choices are markdown, parsed by the shared codec.
+
+        Strict tool-call recovery: EAR has no provider `tool_call_id`
+        sequence to leave dangling, but the equivalent failure in this loop
+        is the model naming a tool that does not exist, or returning neither
+        a call nor a decision. Rather than silently abandon the loop, EAR
+        feeds the mistake back as a correction ("no tool named X; here are
+        the real ones") and lets the model try again -- bounded by a small
+        recovery budget and on the record -- so a hallucinated call becomes
+        a self-corrected one instead of a lost turn."""
         from .signatures import ChooseToolAction, ReasonAboutIntent
         from .tool_binder import ToolBinder
 
         binder = getattr(runtime, "tool_binder", None)
         by_key = {ToolBinder.tool_key(tool.name): tool for tool in tools}
         catalogue = "\n".join(f"{tool.name}({', '.join(tool.parameters)}): {tool.description}" for tool in tools)
+        available = ", ".join(tool.name for tool in tools) or "none"
         gathered: list[str] = []
+        recoveries = 0
         for _ in range(max_iterations):
             action = ChooseToolAction.run(
                 lm,
@@ -132,11 +148,25 @@ class Reasoner:
                 tools=catalogue,
                 gathered="\n".join(gathered) or "none yet",
             )
-            chosen = by_key.get(ToolBinder.tool_key(str(action.tool)))
+            tool_name = str(action.tool).strip()
+            decision = str(action.decision).strip()
+            chosen = by_key.get(ToolBinder.tool_key(tool_name)) if tool_name else None
             if chosen is None:
-                if str(action.decision).strip():
-                    return str(action.decision).strip()
-                break  # no tool and no decision -- fall through to a plain decision
+                if decision:
+                    return decision
+                # No usable turn -- a nonexistent tool, or neither a call nor
+                # a decision. Correct it and retry within the recovery budget.
+                if recoveries < _MAX_TOOL_RECOVERIES:
+                    recoveries += 1
+                    note = (
+                        f"no tool named '{tool_name}' -- available tools: {available}"
+                        if tool_name
+                        else "no tool call and no decision were given"
+                    )
+                    gathered.append(f"(recovered: {note}; call a listed tool or give your final decision)")
+                    Reasoner._record_tool_recovery(runtime, tool_name, note)
+                    continue
+                break  # recoveries spent -- conclude with the gathered facts
             arguments = ToolBinder.parse_arguments(action.arguments)
             invoke = binder.logged_handler(runtime, chosen) if binder is not None else chosen.handler
             result = invoke(**arguments)
@@ -148,6 +178,19 @@ class Reasoner:
             enriched["_tool_results"] = "\n".join(gathered)
         result = ReasonAboutIntent.run(lm, intent=intent.text, context=enriched, capabilities=capabilities)
         return result.decision
+
+    @staticmethod
+    def _record_tool_recovery(runtime: Any, tool_name: str, note: str) -> None:
+        """Put a recovered tool-call mistake on the trail -- a hallucinated
+        or empty call is a fact an auditor wants to see, not a silent
+        swallow. Recorded under the `tool` stage, flagged as a recovery."""
+        log = getattr(runtime, "reasoning_log", None)
+        if log is not None:
+            log.record(
+                stage="tool",
+                inputs={"tool": tool_name or "(none)", "recovery": True},
+                output=f"RECOVERED -- {note}",
+            )
 
     @staticmethod
     def _default_reasoning(intent: Intent, runtime: Any, capabilities: str = "") -> str:

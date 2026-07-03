@@ -304,6 +304,15 @@ back to the model as text. Declared-but-unbound tools stay context the
 model knows about, as before. Any callable binds — including one that
 wraps a tool from another ecosystem, if you bring it.
 
+The loop also **recovers from a malformed turn**. EAR has no provider
+`tool_call_id` sequence to leave dangling, but the equivalent mistake — the
+model naming a tool that doesn't exist, or returning neither a call nor a
+decision — is caught and corrected rather than silently ending the loop:
+EAR feeds the mistake back ("no tool named X; here are the real ones") and
+lets the model try again, bounded by a small recovery budget and recorded
+as a `RECOVERED` tool-trail note, so a hallucinated call becomes a
+self-corrected one instead of a lost turn.
+
 The deliberation engine itself is also a seam: attach a `backend` to the
 `Deliberator` (anything with `deliberate(runtime, intent, plan, research)`
 — e.g. a typed-agent adapter) and it replaces the Reasoner for that step
