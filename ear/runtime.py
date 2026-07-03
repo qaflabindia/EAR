@@ -91,6 +91,10 @@ class Runtime:
     spawner: Spawner = field(default_factory=Spawner)
     tool_binder: ToolBinder = field(default_factory=ToolBinder)
     panel: Panel = field(default_factory=Panel)
+    # The instance's isolated workspace and governed command runner, when a
+    # Sandbox section is declared in memory.md (see ear/sandbox.py). None
+    # means the runtime shares the host filesystem, as before.
+    sandbox: Optional[Any] = None
 
     # The audit trail of every reasoning step -- policy judgments with
     # their rationale, discovery, the deliberation with the full stacked

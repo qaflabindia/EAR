@@ -334,6 +334,42 @@ malformed JSON fails loudly as an `McpError`, and — wrapped by the binder
 the author; connecting one is the runtime reaching out to what memory.md
 already names, never a capability from nowhere.
 
+### Sandbox — each runtime instance in its own workspace
+
+Declare a `## Sandbox` section in memory.md and every runtime instance gets
+its own **filesystem-confined, resource-limited workspace** — what a
+heavyweight harness gives you with Docker, EAR gives you from the standard
+library (`pathlib` + `subprocess` + POSIX `resource`), no dependency:
+
+```markdown
+## Sandbox
+
+Isolate each runtime under `.ear/box`. Shell commands time out after 30
+seconds; limit memory to 512 MB. Expose file and shell tools.
+```
+
+The sandbox confines the runtime's file tools to its root (an absolute
+path or a `..` that escapes raises `SandboxViolation` — a `PermissionError`
+that returns to the model as text), and its `run()` executes commands with
+a **wall-clock timeout**, optional **CPU/memory rlimits**, and an
+environment **stripped of the ambient process's secrets** — so a spawned
+command never inherits your `ANTHROPIC_API_KEY`. When the section asks for
+tools ("expose a shell", "read and write files"), the sandbox binds
+`read_file` / `write_file` / `list_files` / `run_shell` into the cycle's
+tool loop, each on the trail through the same logged handler and governed
+by the same tool-scoped policies. The opening is a `sandbox` trail record.
+**Isolation nests:** a spawned subagent gets its own `child()` box under
+the parent's root.
+
+Stated honestly, the way a serious system must: a pure-stdlib sandbox is a
+*containment convention* for EAR's own file tools plus a *resource and time
+boundary* for spawned commands — **not a security jail against hostile
+code** (`cwd` confinement is not `chroot`). For a true isolation boundary,
+plug an OS-container provider into the same seam: anything exposing
+`resolve` / `read_text` / `write_text` / `run` / `as_tools` can stand in
+for `Sandbox` on `runtime.sandbox`, and the rest of the runtime never
+changes.
+
 ### Approval gates — human-in-the-loop governance, in markdown
 
 A policy authored with `Approval: required` converts its hard block into a
@@ -826,6 +862,7 @@ ear/
   workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies
   approval.py      Approval      — a human's verdict on a parked cycle; ApprovalRequired parks it
   tool_binder.py   ToolBinder    — declared tools meet executables; every invocation on the trail, tool-scoped policies enforced
+  sandbox.py       Sandbox       — each runtime instance's confined workspace + governed command runner (stdlib, no Docker); nests per subagent
   mcp_client.py    McpClient     — the native MCP client: JSON-RPC over stdio from the stdlib, tools bound into cycles
   panel.py         Panel         — multi-persona deliberation in authored prose patterns; judged speakers, early consensus, tools in turns
   journey.py       Journey       — durable, resumable, prose-routed execution; the state a markdown record; Journeys is the runner

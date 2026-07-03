@@ -59,5 +59,13 @@ class Spawner:
         # Nested spawns count against the same budget: a subagent spawning
         # its own subagents cannot exceed the strategy's limit either.
         subagent.spawner = self
+        # Isolation nests: a sandboxed runtime hands each subagent its own
+        # child box under the parent's root, so a spawned instance runs in
+        # its own workspace rather than the parent's.
+        parent_sandbox = getattr(runtime, "sandbox", None)
+        if parent_sandbox is not None:
+            subagent.sandbox = parent_sandbox.child(persona.name)
+            if getattr(runtime.tool_binder, "sandbox_tools", None):
+                subagent.tool_binder.sandbox_tools = subagent.sandbox.as_tools()
         self.spawned.append(subagent)
         return subagent.reason(intent)

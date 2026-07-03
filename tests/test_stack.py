@@ -3335,3 +3335,129 @@ def test_fleet_card_shows_a_freshness_heartbeat(tmp_path):
     # Render "as of now" -> the just-run cycle reads active.
     html = Dashboard().render_fleet({"only": runtime}, now=datetime.now(timezone.utc))
     assert "fresh-active" in html and ">active<" in html
+
+
+# ---------------------------------------------------------------------------
+# Sandbox: each runtime instance in its own filesystem-confined, resource-
+# limited workspace -- native, stdlib-only, on the record.
+# ---------------------------------------------------------------------------
+
+
+def test_sandbox_confines_the_filesystem_and_refuses_escapes(tmp_path):
+    from ear import Sandbox, SandboxViolation
+
+    box = Sandbox.create(root=str(tmp_path / "box"), name="t")
+    assert box.list() == ["outputs/", "uploads/", "workspace/"]  # scaffold
+    box.write_text("workspace/notes.md", "hello")
+    assert box.read_text("workspace/notes.md") == "hello"
+
+    for escape in ("../escape.txt", "/etc/passwd", "workspace/../../x"):
+        with pytest.raises(SandboxViolation):
+            box.resolve(escape)
+    with pytest.raises(SandboxViolation):
+        box.write_text("../outside.txt", "nope")
+
+
+def test_sandbox_run_strips_secrets_caps_time_and_captures_output(tmp_path, monkeypatch):
+    import sys
+
+    from ear import Sandbox
+
+    box = Sandbox.create(root=str(tmp_path / "box"), name="t", timeout=2.0)
+
+    # A command runs, its output and exit code captured.
+    ran = box.run([sys.executable, "-c", "print('hi from the box')"])
+    assert ran.ok and "hi from the box" in ran.stdout and ran.returncode == 0
+
+    # The ambient environment's secrets never reach the child.
+    monkeypatch.setenv("EAR_SECRET_TEST", "topsecret")
+    leaked = box.run([sys.executable, "-c", "import os; print(os.environ.get('EAR_SECRET_TEST', 'STRIPPED'))"])
+    assert "STRIPPED" in leaked.stdout and "topsecret" not in leaked.stdout
+    # But an explicitly passed variable is available.
+    passed = box.run([sys.executable, "-c", "import os; print(os.environ.get('FOO', 'none'))"], env={"FOO": "bar"})
+    assert passed.stdout.strip() == "bar"
+
+    # A command over the wall-clock limit is killed and marked.
+    slow = box.run([sys.executable, "-c", "import time; time.sleep(5)"], timeout=1)
+    assert slow.timed_out is True
+
+
+def test_sandbox_tools_run_through_the_logged_handler_and_escapes_return_as_text(tmp_path):
+    from ear import Runtime, Sandbox
+
+    box = Sandbox.create(root=str(tmp_path / "box"), name="t")
+    runtime = Runtime(name="Boxed")
+    runtime.tool_binder.sandbox_tools = box.as_tools()
+    tools = {tool.name: tool for tool in runtime.tool_binder.bound_tools(runtime)}
+    assert set(tools) == {"read_file", "write_file", "list_files", "run_shell"}
+
+    write = runtime.tool_binder.logged_handler(runtime, tools["write_file"])
+    assert "wrote 4 characters" in write(path="outputs/o.txt", content="data")
+    assert box.read_text("outputs/o.txt") == "data"
+
+    # A path escape is a tool failure returned to the model, on the record.
+    escaped = runtime.tool_binder.logged_handler(runtime, tools["read_file"])(path="../../secret")
+    assert "escapes the sandbox" in escaped
+    record = runtime.reasoning_log.for_stage("tool")[-1]
+    assert record.inputs["tool"] == "read_file"
+
+
+def test_strategy_reads_the_sandbox_section():
+    strategy = Strategy.from_markdown(
+        "## Sandbox\n\nIsolate each runtime under `.ear/box`. Shell commands time out after 20 seconds; "
+        "limit memory to 256 MB. Expose file and shell tools.\n"
+    )
+    assert strategy.sandbox_enabled is True
+    assert strategy.sandbox_root == ".ear/box"
+    assert strategy.sandbox_timeout == 20.0
+    assert strategy.sandbox_memory_mb == 256
+    assert strategy.sandbox_tools is True
+
+    off = Strategy.from_markdown("## Sandbox\n\nNo sandbox; run directly on the host.\n")
+    assert off.sandbox_enabled is False
+
+
+def test_loader_opens_a_sandbox_per_instance_and_records_it(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = (
+        "## Sandbox\n\nEach runtime runs in an isolated workspace under `.ear/box`; "
+        "commands time out after 15 seconds. Expose a shell.\n"
+    )
+    directory = write_stack(tmp_path / "stack", **stack)
+    runtime = load_runtime(directory)
+
+    assert runtime.sandbox is not None
+    assert Path(runtime.sandbox.root).exists()
+    assert runtime.sandbox.timeout == 15.0
+    assert [tool.name for tool in runtime.tool_binder.sandbox_tools] == [
+        "read_file",
+        "write_file",
+        "list_files",
+        "run_shell",
+    ]
+    opened = runtime.reasoning_log.for_stage("sandbox")[0]
+    assert "opened at" in opened.output and str(runtime.sandbox.root) in opened.output
+
+    # No Sandbox section -> no sandbox, host filesystem as before.
+    plain = load_runtime(write_stack(tmp_path / "plain", **MINIMAL_STACK))
+    assert plain.sandbox is None
+
+
+def test_spawned_subagents_nest_their_own_child_sandbox(tmp_path):
+    from ear import Persona
+
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = (
+        "## Sandbox\n\nIsolate each runtime under `.ear/box`. Expose a shell.\n\n"
+        "## Subagents\n\nSubagents may be spawned, up to 3.\n"
+    )
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    runtime.spawner.spawn(runtime, Persona(name="Analyst"), Intent(text="do a thing"))
+
+    child = runtime.spawner.spawned[-1]
+    assert child.sandbox is not None
+    assert child.sandbox.root != runtime.sandbox.root
+    assert "subagents" in str(child.sandbox.root)
+    # The child's box is nested under the parent's root.
+    assert str(runtime.sandbox.root) in str(child.sandbox.root)
+    assert [tool.name for tool in child.tool_binder.sandbox_tools]  # tools nested too

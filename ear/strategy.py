@@ -132,6 +132,16 @@ class Strategy:
     execution: str = ""
     leg_retry_budget: Optional[int] = None
 
+    # Sandbox -> each runtime instance's isolated workspace and governed
+    # command execution. Off unless a Sandbox section is declared.
+    sandbox: str = ""
+    sandbox_enabled: bool = False
+    sandbox_root: str = ""
+    sandbox_timeout: Optional[float] = None
+    sandbox_memory_mb: Optional[int] = None
+    sandbox_ephemeral: bool = False
+    sandbox_tools: bool = False
+
     # Ontological settings -> the reasoning vocabulary.
     ontology: Ontology = field(default_factory=Ontology)
 
@@ -152,6 +162,8 @@ class Strategy:
                 strategy._read_pricing(prose)
             elif "retry" in heading or "retries" in heading or "resilien" in heading or "execution" in heading:
                 strategy._read_execution(prose)
+            elif "sandbox" in heading or "isolat" in heading or "workspace" in heading:
+                strategy._read_sandbox(prose)
             elif "mcp" in heading:
                 strategy._read_mcp(body)
             elif "discover" in heading:
@@ -256,6 +268,29 @@ class Strategy:
         if self.output_rate_per_million is not None:
             cost += output_tokens * self.output_rate_per_million / 1_000_000
         return cost
+
+    def _read_sandbox(self, prose: str) -> None:
+        """Read the sandbox declaration: whether it is on, where its root
+        is (a backticked path), the wall-clock timeout, a memory cap, and
+        whether it exposes confined file/shell tools to the model."""
+        self.sandbox = prose
+        lowered = prose.lower()
+        self.sandbox_enabled = not (
+            _DISABLED.search(prose)
+            or "no sandbox" in lowered
+            or "without a sandbox" in lowered
+            or "without sandbox" in lowered
+        )
+        self.sandbox_root = _declared_path(prose)
+        self.sandbox_timeout = duration_seconds_in_prose(prose)
+        self.sandbox_memory_mb = megabytes_in_prose(prose)
+        self.sandbox_ephemeral = any(
+            word in lowered for word in ("ephemeral", "temporary", "throwaway", "discard", "cleaned up")
+        )
+        self.sandbox_tools = any(
+            word in lowered
+            for word in ("shell", "bash", "command", "file tool", "read and write", "read/write", "expose")
+        )
 
     def _read_execution(self, prose: str) -> None:
         """Read the leg retry budget from prose: 'Retry a failed leg twice
@@ -447,6 +482,55 @@ def count_in_prose(text: str) -> Optional[int]:
             return int(word)
         if word in _COUNT_WORDS:
             return _COUNT_WORDS[word]
+    return None
+
+
+_TIME_UNITS = {
+    "second": 1,
+    "seconds": 1,
+    "sec": 1,
+    "secs": 1,
+    "minute": 60,
+    "minutes": 60,
+    "min": 60,
+    "mins": 60,
+    "hour": 3600,
+    "hours": 3600,
+}
+
+
+def duration_seconds_in_prose(text: str) -> Optional[float]:
+    """A wall-clock duration in seconds from prose -- "time out after 30
+    seconds", "2 minutes", or a bare number (read as seconds). None when
+    no number is present."""
+    words = [word.strip(".,;:()").lower() for word in text.split()]
+    for position, word in enumerate(words[:-1]):
+        try:
+            count = float(word)
+        except ValueError:
+            continue
+        if words[position + 1] in _TIME_UNITS:
+            return count * _TIME_UNITS[words[position + 1]]
+    for word in words:
+        if word.replace(".", "", 1).isdigit():
+            return float(word)
+    return None
+
+
+def megabytes_in_prose(text: str) -> Optional[int]:
+    """A memory cap in megabytes from prose -- "limit memory to 512 MB",
+    "1 GB", or glued forms like "512mb". None when none is declared."""
+    tokens = text.lower().replace("mb", " mb ").replace("gb", " gb ").split()
+    for position, token in enumerate(tokens):
+        try:
+            amount = float(token.strip(".,;:()"))
+        except ValueError:
+            continue
+        unit = tokens[position + 1] if position + 1 < len(tokens) else ""
+        if unit == "gb":
+            return int(amount * 1024)
+        if unit == "mb":
+            return int(amount)
     return None
 
 

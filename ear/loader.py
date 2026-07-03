@@ -364,6 +364,9 @@ class Loader:
             runtime.reasoning_log.path = str(path)
             runtime.reasoning_log.resume()
 
+        if strategy.sandbox_enabled:
+            self._open_sandbox(runtime, strategy)
+
         if strategy.knowledge_sources:
             runtime.librarian.knowledge = self._load_knowledge(runtime, strategy)
 
@@ -373,6 +376,43 @@ class Loader:
             # (see Optimizer.load_instructions for scope).
             runtime.optimizer.load_instructions(instructions)
 
+
+    def _open_sandbox(self, runtime: Runtime, strategy: Strategy) -> None:
+        """Give this runtime instance its own isolated workspace, declared
+        in memory.md's Sandbox section. The root defaults under the stack's
+        `.ear/`; when the author asks for confined tools ('with a shell',
+        'read and write files'), the sandbox's file/shell tools are bound
+        into the cycle's toolset. The opening is on the trail."""
+        from .sandbox import Sandbox
+
+        raw = Path(strategy.sandbox_root or ".ear/sandbox")
+        root = raw if raw.is_absolute() else self.directory / raw
+        sandbox = Sandbox.create(
+            root=str(root),
+            name=runtime.name,
+            timeout=strategy.sandbox_timeout if strategy.sandbox_timeout is not None else 30.0,
+            memory_mb=strategy.sandbox_memory_mb,
+            ephemeral=strategy.sandbox_ephemeral,
+        )
+        runtime.sandbox = sandbox
+        if strategy.sandbox_tools:
+            runtime.tool_binder.sandbox_tools = sandbox.as_tools()
+        runtime.reasoning_log.record(
+            stage="sandbox",
+            inputs={
+                "root": str(sandbox.root),
+                "timeout_s": sandbox.timeout,
+                "memory_mb": sandbox.memory_mb,
+                "ephemeral": sandbox.ephemeral,
+                "tools": strategy.sandbox_tools,
+            },
+            output=f"sandbox '{runtime.name}' opened at {sandbox.root}",
+            rationale=(
+                "each runtime instance runs inside its own filesystem-confined, "
+                "resource-limited workspace; spawned subagents nest their own"
+            ),
+        )
+        runtime.reasoning_log.flush()
 
     def _load_knowledge(self, runtime: Runtime, strategy: Strategy) -> Knowledge:
         """Build the Librarian's corpus from the declared sources -- files

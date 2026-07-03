@@ -79,6 +79,9 @@ class ToolBinder:
     # already-executable BoundTools that join every cycle's toolset with the
     # same logging, budgets and tool-scoped policies as native tools.
     mcp_tools: list[BoundTool] = field(default_factory=list)
+    # Confined file/shell tools from the runtime's Sandbox (see
+    # Sandbox.as_tools), joined to the toolset the same way.
+    sandbox_tools: list[BoundTool] = field(default_factory=list)
     # How many tool-loop steps a deliberation may take; execution mechanics,
     # not judgment -- the model decides what to call within the budget.
     max_iterations: int = 6
@@ -137,6 +140,8 @@ class ToolBinder:
             if skill.handler is not None and key not in bound:
                 bound[key] = BoundTool(name=skill.name, description=skill.instruction(), handler=skill.handler)
         for tool in self.mcp_tools:
+            bound.setdefault(normalize(tool.name), tool)
+        for tool in self.sandbox_tools:
             bound.setdefault(normalize(tool.name), tool)
         return list(bound.values())
 

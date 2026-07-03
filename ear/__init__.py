@@ -103,6 +103,7 @@ from .reasoner import Reasoner
 from .reasoning_log import ReasoningLog, ReasoningRecord
 from .recaller import Recaller
 from .runtime import Runtime
+from .sandbox import Sandbox, SandboxResult, SandboxViolation
 from .scheduler import Scheduler
 from .selector import Selector
 from .session_store import SessionStore
@@ -187,6 +188,9 @@ __all__ = [
     "Strategy",
     "SessionStore",
     "Spawner",
+    "Sandbox",
+    "SandboxResult",
+    "SandboxViolation",
     "Tool",
     "ToolBinder",
     "BoundTool",
