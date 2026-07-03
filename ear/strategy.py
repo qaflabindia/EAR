@@ -113,6 +113,9 @@ class Strategy:
     audit_trail: str = ""
     audit_enabled: bool = False
     audit_path: str = ""
+    # Retention declared in the same audit prose ("keep 90 days"): the
+    # runner rotates cycles older than this out of the trail, on the record.
+    retention_days: Optional[float] = None
 
     # Knowledge -> the Librarian's reference corpus.
     knowledge: str = ""
@@ -182,6 +185,17 @@ class Strategy:
         self.audit_trail = prose
         self.audit_enabled = not _DISABLED.search(prose)
         self.audit_path = _declared_path(prose)
+        # A retention window declared in the same prose ("keep 90 days",
+        # "retain for 6 months"); the phrase must name a period, and only a
+        # retention/keep/retain sentence is read so an unrelated number in
+        # the audit prose is never mistaken for a window.
+        for sentence in prose.replace(";", ".").split("."):
+            lowered = sentence.lower()
+            if any(word in lowered for word in ("keep", "retain", "retention", "purge", "rotate")):
+                days = days_in_prose(sentence)
+                if days is not None:
+                    self.retention_days = days
+                    break
 
     def _read_knowledge(self, body: Body) -> None:
         self.knowledge = body.prose

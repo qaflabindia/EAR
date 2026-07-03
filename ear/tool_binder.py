@@ -37,6 +37,10 @@ class BoundTool:
     name: str
     description: str
     handler: Callable[..., Any]
+    # Parameter names supplied from outside the handler -- an MCP tool's
+    # JSON input schema, say, where the handler is a generic forwarder and
+    # introspecting it would tell the model nothing.
+    parameter_names: Optional[list[str]] = None
 
     @property
     def identifier(self) -> str:
@@ -45,9 +49,12 @@ class BoundTool:
 
     @property
     def parameters(self) -> list[str]:
-        """The handler's parameter names, introspected so the model is told
-        exactly what arguments a tool takes -- what a schema framework
-        would supply, from the standard library alone."""
+        """The tool's parameter names -- supplied explicitly (an MCP
+        schema) or introspected from the handler, so the model is always
+        told exactly what arguments a tool takes, from the standard library
+        alone."""
+        if self.parameter_names is not None:
+            return list(self.parameter_names)
         import inspect
 
         try:
@@ -68,6 +75,10 @@ class ToolBinder:
     into the executable, logged toolset a cycle deliberates with."""
 
     bindings: dict[str, Callable[..., Any]] = field(default_factory=dict)
+    # Tools bound from connected MCP servers (see Runtime.connect_mcp):
+    # already-executable BoundTools that join every cycle's toolset with the
+    # same logging, budgets and tool-scoped policies as native tools.
+    mcp_tools: list[BoundTool] = field(default_factory=list)
     # How many tool-loop steps a deliberation may take; execution mechanics,
     # not judgment -- the model decides what to call within the budget.
     max_iterations: int = 6
@@ -125,6 +136,8 @@ class ToolBinder:
         for key, skill in plan_skills.items():
             if skill.handler is not None and key not in bound:
                 bound[key] = BoundTool(name=skill.name, description=skill.instruction(), handler=skill.handler)
+        for tool in self.mcp_tools:
+            bound.setdefault(normalize(tool.name), tool)
         return list(bound.values())
 
     def logged_handler(self, runtime: Any, tool: BoundTool) -> Callable[..., Any]:
@@ -139,6 +152,24 @@ class ToolBinder:
         @functools.wraps(tool.handler)
         def invoke(*args: Any, **kwargs: Any) -> Any:
             log = getattr(runtime, "reasoning_log", None)
+            # Tool-scoped policies are judged against this call's name and
+            # arguments before it runs: a violation blocks *this* call, the
+            # refusal returns to the model as text, and the record shows it.
+            blocked, reason = ToolBinder._policy_block(runtime, tool, args, kwargs)
+            if blocked is not None:
+                refusal = f"Tool '{tool.name}' blocked by policy '{blocked.name}': {reason}"
+                if log is not None:
+                    log.record(
+                        stage="tool",
+                        inputs={
+                            "tool": tool.name,
+                            "arguments": {"args": list(args), "kwargs": dict(kwargs)},
+                            "policy": blocked.name,
+                        },
+                        output=f"BLOCKED by policy '{blocked.name}'",
+                        rationale=reason,
+                    )
+                return refusal
             started = time.monotonic()
             try:
                 result = tool.handler(*args, **kwargs)
@@ -159,6 +190,26 @@ class ToolBinder:
             return result
 
         return invoke
+
+    @staticmethod
+    def _policy_block(runtime: Any, tool: BoundTool, args: tuple, kwargs: dict) -> tuple[Optional[Any], str]:
+        """The first tool-scoped policy this call violates, and why -- or
+        (None, "") when every policy passes or none is declared. The call's
+        name and arguments are the context judged, so a policy statement
+        ('the wire transfer tool must not send over $10,000') or a fallback
+        expression ('amount <= 10000') can both bite."""
+        policies = getattr(runtime, "tool_policies", None) or []
+        if not policies:
+            return None, ""
+        model_binding = getattr(runtime, "model_binding", None)
+        context: dict[str, Any] = {"tool": tool.name, **kwargs}
+        for index, value in enumerate(args):
+            context[f"arg{index}"] = value
+        for policy in policies:
+            complies, rationale = policy.judge(model_binding=model_binding, **context)
+            if not complies:
+                return policy, rationale
+        return None, ""
 
     @staticmethod
     def _skills_from_plan(plan: list) -> dict[str, Any]:

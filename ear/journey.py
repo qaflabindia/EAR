@@ -524,7 +524,24 @@ class Journeys:
                 outcomes[path.name] = self._release_or_escalate(runtime, journey, directory, now)
             else:
                 outcomes[path.name] = Journey(path).run(runtime)
+        self._apply_retention(runtime, now)
         return outcomes
+
+    @staticmethod
+    def _apply_retention(runtime: Any, now: Optional[float]) -> None:
+        """Rotate the reasoning trail down to the declared retention window
+        -- the runner is where retention is applied (no daemon), on the
+        record, never a silent purge."""
+        import datetime as _datetime
+
+        strategy = getattr(runtime, "strategy", None)
+        retention_days = getattr(strategy, "retention_days", None) if strategy is not None else None
+        log = getattr(runtime, "reasoning_log", None)
+        if retention_days and log is not None:
+            moment = (
+                _datetime.datetime.fromtimestamp(now, _datetime.timezone.utc) if now is not None else None
+            )
+            log.rotate(retention_days, now=moment)
 
     def _release_or_escalate(
         self, runtime: Any, journey: Journey, directory: Path, now: Optional[float]

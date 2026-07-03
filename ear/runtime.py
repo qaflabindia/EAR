@@ -72,6 +72,10 @@ class Runtime:
     name: str
     processes: list[Process] = field(default_factory=list)
     policies: list[Policy] = field(default_factory=list)
+    # Policies scoped to tool invocations (`Applies to: tools` in
+    # policy.md): judged against a tool's name and arguments before the
+    # call runs, so a violation blocks that one call rather than the cycle.
+    tool_policies: list[Policy] = field(default_factory=list)
     reasoner: Reasoner = field(default_factory=Reasoner)
     model_binding: Optional[ModelBinding] = None
     memory: Memory = field(default_factory=Memory)
@@ -114,11 +118,75 @@ class Runtime:
     # Standalone, dev-time operation -- not part of the per-cycle pipeline.
     optimizer: Any = None
 
+    # Live MCP connections opened by connect_mcp, closed by disconnect_mcp.
+    _mcp_clients: list = field(default_factory=list)
+
     def __post_init__(self) -> None:
         if self.optimizer is None:
             from .optimizer import Optimizer
 
             self.optimizer = Optimizer()
+
+    def connect_mcp(self, name: Optional[str] = None, client: Any = None) -> list:
+        """Connect a declared MCP server and bind its tools into the cycle's
+        toolset. The server stays declared in memory.md; this reaches out to
+        what the author named. `name` selects one declared server (all of
+        them when omitted); pass `client` to supply an already-connected
+        McpClient (a test double, say) instead of launching the command.
+        Returns the BoundTools now available. Every MCP call then rides the
+        same logged handler, budgets and tool-scoped policies as any tool."""
+        from .mcp_client import McpClient, command_words
+        from .tool_binder import BoundTool
+
+        servers = list(getattr(self.strategy, "mcp_servers", None) or [])
+        if name is not None:
+            servers = [server for server in servers if server.name.lower() == name.lower()]
+            if not servers:
+                raise ValueError(f"No MCP server named '{name}' is declared in memory.md")
+
+        bound: list = []
+        for server in servers:
+            if client is not None:
+                connection = client
+            elif server.command:
+                connection = McpClient(command_words(server.command)).connect()
+            else:
+                raise ValueError(
+                    f"MCP server '{server.name}' declares no launch command -- write it backticked in memory.md"
+                )
+            self._mcp_clients.append(connection)
+            for tool in connection.list_tools():
+                handler = _mcp_handler(connection, tool.name)
+                bound_tool = BoundTool(
+                    name=f"{server.name}: {tool.name}",
+                    description=tool.description,
+                    handler=handler,
+                    parameter_names=tool.parameters,
+                )
+                self.tool_binder.mcp_tools.append(bound_tool)
+                bound.append(bound_tool)
+        return bound
+
+    def disconnect_mcp(self) -> None:
+        """Shut down every connected MCP server and drop its bound tools."""
+        for connection in self._mcp_clients:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+        self._mcp_clients = []
+        self.tool_binder.mcp_tools = []
+
+    def write_usage_report(self, path: Any) -> str:
+        """Render the operational ledger from the trail -- cycles, model
+        calls, tokens, dollars (when Pricing is declared), latency and tool
+        calls -- and write it to `path`. Returns the markdown."""
+        from pathlib import Path
+
+        report = self.reasoning_log.usage_report(strategy=self.strategy)
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(report, encoding="utf-8")
+        return report
 
     def add_process(self, process: Process) -> "Runtime":
         self.processes.append(process)
@@ -346,3 +414,15 @@ class Runtime:
                 "recalled_memory": recalled,
             },
         )
+
+
+def _mcp_handler(client: Any, tool_name: str):
+    """A forwarding handler for one MCP tool: it takes the arguments the
+    model chose and calls the server, returning the tool's text. Wrapped by
+    the binder's logged_handler like any tool, so the call is on the trail
+    and a server failure returns to the model as text."""
+
+    def handler(**arguments: Any) -> str:
+        return client.call_tool(tool_name, arguments)
+
+    return handler

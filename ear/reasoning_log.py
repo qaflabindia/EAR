@@ -28,6 +28,7 @@ extension appends JSONL for machine pipelines.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -38,6 +39,18 @@ from typing import Any, Optional
 from .section import quote
 
 _CYCLE_HEADING = re.compile(r"^## Cycle (\d+)", re.MULTILINE)
+_CHAIN_MD = re.compile(r"<!-- chain: ([0-9a-f]+) -->")
+
+# The chain's seed: the previous-hash the first record links against, so a
+# trail with even one record has a fixed, verifiable starting point.
+GENESIS = "ear-genesis"
+
+
+def _link(previous: str, payload: str) -> str:
+    """One link of the tamper-evident chain: the SHA-256 (stdlib) of the
+    previous link and this record's persisted payload. Editing any byte of
+    any record breaks its own link and every link after it."""
+    return hashlib.sha256((previous + "\n" + payload).encode("utf-8")).hexdigest()
 
 
 def model_name(model_binding: Any) -> str:
@@ -165,6 +178,10 @@ class ReasoningLog:
     flushed_cycle: Optional[int] = None
     exporters: list[Any] = field(default_factory=list)
     export_errors: list[str] = field(default_factory=list)
+    # The tip of the tamper-evident hash chain -- the hash of the last
+    # record flushed to `path`, which the next record links against. Seeded
+    # at GENESIS and continued across sessions by `resume`.
+    chain_tip: str = GENESIS
 
     def resume(self) -> int:
         """Continue cycle numbering from an existing trail file, so a new
@@ -178,15 +195,28 @@ class ReasoningLog:
         except OSError:
             return self.cycle
         numbers: list[int] = []
+        markers: list[str] = []
         if self.path.endswith(".md"):
             numbers = [int(number) for number in _CYCLE_HEADING.findall(text)]
+            markers = _CHAIN_MD.findall(text)
         else:
             for line in text.splitlines():
-                try:
-                    numbers.append(int(json.loads(line).get("cycle", 0)))
-                except (ValueError, AttributeError):
+                if not line.strip():
                     continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                numbers.append(int(record.get("cycle", 0)))
+                if record.get("chain"):
+                    markers.append(str(record["chain"]))
         self.cycle = max(numbers, default=self.cycle)
+        # Continue the chain from where the file ends, so a resumed session
+        # links its first new record to the last persisted one.
+        if markers:
+            self.chain_tip = markers[-1]
         return self.cycle
 
     def begin_cycle(self, intent: Any) -> int:
@@ -264,9 +294,17 @@ class ReasoningLog:
                             handle.write(
                                 f"\n## Cycle {record.cycle} -- {record.timestamp:%Y-%m-%d %H:%M:%S} UTC\n\n"
                             )
-                        handle.write(record.to_markdown() + "\n")
+                        payload = record.to_markdown()
+                        self.chain_tip = _link(self.chain_tip, payload)
+                        # The chain hash rides an HTML comment: invisible in
+                        # a rendered view, and never colliding with content.
+                        handle.write(payload + f"\n<!-- chain: {self.chain_tip} -->\n")
                     else:
-                        handle.write(record.to_json() + "\n")
+                        payload = record.to_json()
+                        self.chain_tip = _link(self.chain_tip, payload)
+                        obj = json.loads(payload)
+                        obj["chain"] = self.chain_tip
+                        handle.write(json.dumps(obj, default=str) + "\n")
         for exporter in self.exporters:
             try:
                 for record in pending:
@@ -280,8 +318,155 @@ class ReasoningLog:
         self.flushed = len(self.records)
         return self.path or None
 
+    @staticmethod
+    def verify(path: str) -> tuple[bool, str]:
+        """Prove a persisted trail unbroken, or name the first broken link.
+        Recomputes the hash chain over the file's own bytes -- so any
+        edit, insertion or deletion of a record surfaces as the exact
+        record where the chain first fails to reproduce."""
+        if not path or not os.path.exists(path):
+            return False, f"no trail file at {path!r}"
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        links = _read_chain_md(text) if path.endswith(".md") else _read_chain_jsonl(text)
+        if not links:
+            return False, "no chain records found -- this trail carries no integrity hashes"
+        previous = GENESIS
+        for index, (label, payload, stored) in enumerate(links, start=1):
+            expected = _link(previous, payload)
+            if stored != expected:
+                return False, f"broken chain at record {index} ({label}) -- the trail was altered here or earlier"
+            previous = stored
+        return True, f"chain intact over {len(links)} records"
+
+    def usage_report(self, strategy: Any = None) -> str:
+        """The operational ledger, rendered from the trail: one row per
+        cycle -- model calls, tokens, dollars (when Pricing is declared),
+        latency and tool calls -- with totals. A markdown document, the
+        same as every other artifact."""
+        cycles = sorted({record.cycle for record in self.records})
+        header = [
+            "# Usage Report",
+            "",
+            "| Cycle | Model calls | In+Out tokens | Cost | Latency (ms) | Tool calls |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+        totals = {"calls": 0, "in": 0, "out": 0, "latency": 0, "tools": 0, "cost": 0.0}
+        priced = False
+        for cycle in cycles:
+            records = self.for_cycle(cycle)
+            billed = [r for r in records if r.input_tokens or r.output_tokens]
+            in_tokens = sum(r.input_tokens for r in records)
+            out_tokens = sum(r.output_tokens for r in records)
+            latency = sum(r.latency_ms for r in records)
+            tools = sum(1 for r in records if r.stage == "tool")
+            dollars = strategy.dollars(in_tokens, out_tokens) if strategy is not None else None
+            totals["calls"] += len(billed)
+            totals["in"] += in_tokens
+            totals["out"] += out_tokens
+            totals["latency"] += latency
+            totals["tools"] += tools
+            if dollars is not None:
+                totals["cost"] += dollars
+                priced = True
+            cost_cell = f"${dollars:.6f}" if dollars is not None else "—"
+            header.append(
+                f"| {cycle} | {len(billed)} | {in_tokens}+{out_tokens} | {cost_cell} | {latency} | {tools} |"
+            )
+        total_cost = f"${totals['cost']:.6f}" if priced else "—"
+        header.append(
+            f"| **total** | **{totals['calls']}** | **{totals['in']}+{totals['out']}** | "
+            f"**{total_cost}** | **{totals['latency']}** | **{totals['tools']}** |"
+        )
+        return "\n".join(header) + "\n"
+
+    def rotate(self, retention_days: float, now: Optional[datetime] = None) -> int:
+        """Retention as rotation, never silent deletion: cycles whose
+        records are all older than the window are replaced by a single
+        `retention` note recording how many were rotated out, and the
+        trail file is rewritten (re-chained from GENESIS over the
+        survivors). Returns how many records were rotated. A window that
+        covers everything rotates nothing."""
+        if not retention_days or not self.records:
+            return 0
+        moment = now or datetime.now(timezone.utc)
+        cutoff = moment.timestamp() - retention_days * 86400
+        expired_cycles = sorted(
+            cycle
+            for cycle in {record.cycle for record in self.records}
+            if all(record.timestamp.timestamp() < cutoff for record in self.for_cycle(cycle))
+        )
+        if not expired_cycles:
+            return 0
+        rotated = [record for record in self.records if record.cycle in set(expired_cycles)]
+        survivors = [record for record in self.records if record.cycle not in set(expired_cycles)]
+        note = ReasoningRecord(
+            cycle=survivors[0].cycle if survivors else self.cycle,
+            stage="retention",
+            inputs={
+                "retention_days": retention_days,
+                "rotated_cycles": expired_cycles,
+                "rotated_records": len(rotated),
+            },
+            output=f"rotated {len(rotated)} records across {len(expired_cycles)} cycles older than {retention_days} days",
+            rationale="retention is rotation, not deletion -- this note stands in for what was rotated out",
+        )
+        self.records = [note] + survivors
+        self._rewrite()
+        return len(rotated)
+
+    def _rewrite(self) -> None:
+        """Rewrite the whole trail file from the current records, re-chained
+        from GENESIS. Used by rotation, the one operation that is not
+        append-only -- and it stays honest by leaving the chain verifiable."""
+        self.chain_tip = GENESIS
+        self.flushed = 0
+        self.flushed_cycle = None
+        if self.path and os.path.exists(self.path):
+            os.remove(self.path)
+        self.flush()
+
     def __len__(self) -> int:
         return len(self.records)
+
+
+def _read_chain_md(text: str) -> list[tuple[str, str, str]]:
+    """Split a markdown trail into (label, payload, stored-hash) triples --
+    each record's block text exactly as persisted, and the chain hash from
+    its trailing comment. The payload is the bytes the hash was taken over,
+    so verification reproduces it without reparsing the record."""
+    links: list[tuple[str, str, str]] = []
+    block: Optional[list[str]] = None
+    for line in text.split("\n"):
+        marker = _CHAIN_MD.search(line)
+        if line.startswith("### "):
+            block = [line]
+        elif marker is not None and block is not None:
+            label = block[0][4:].split(" -- ", 1)[0].strip() if block else "?"
+            links.append((label, "\n".join(block), marker.group(1)))
+            block = None
+        elif block is not None:
+            block.append(line)
+    return links
+
+
+def _read_chain_jsonl(text: str) -> list[tuple[str, str, str]]:
+    """The same triples from a JSONL trail: the record re-serialized as the
+    canonical payload that was hashed (the object minus its `chain` field),
+    and the stored hash."""
+    links: list[tuple[str, str, str]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or "chain" not in record:
+            continue
+        stored = str(record.pop("chain"))
+        links.append((str(record.get("stage", "?")), json.dumps(record, default=str), stored))
+    return links
 
 
 def _clip(text: str, width: int) -> str:

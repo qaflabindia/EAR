@@ -13,10 +13,11 @@ just because a provider wasn't wired up.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .safe_evaluator import MissingVariableError, safe_eval
+from .section import normalize
 
 
 @dataclass
@@ -31,11 +32,25 @@ class Policy:
     statement: str = ""
     fallback_expression: str = ""
     approval_required: bool = False
+    # An approval gate may declare who may waive it (`Approvers:` in
+    # policy.md, names or addresses). An empty list means anyone may; a
+    # non-empty list is an allow-list -- an off-list verdict is refused on
+    # the record and the gate stays parked.
+    approvers: list[str] = field(default_factory=list)
     # An approval gate may declare when a parked journey escalates
     # (`Escalate: after 3 days` in policy.md); the Journeys runner marks a
     # journey ESCALATED once the declared period passes unapproved.
     escalation: str = ""
     escalation_days: Optional[float] = None
+
+    def approver_allowed(self, approver: str) -> bool:
+        """Whether `approver` may waive this gate. With no declared
+        allow-list anyone may; otherwise only a listed name/address,
+        matched case- and punctuation-insensitively like every other
+        cross-reference in the stack."""
+        if not self.approvers:
+            return True
+        return normalize(approver) in {normalize(allowed) for allowed in self.approvers}
 
     def evaluate(self, model_binding: Optional[Any] = None, **context: Any) -> bool:
         """Return True when the policy is satisfied (or not applicable)."""

@@ -56,6 +56,7 @@ _FILE_CANDIDATES = {
 }
 
 _RUNTIME_SCOPES = {"runtime", "the runtime", "all", "everything", "global", "the whole runtime"}
+_TOOL_SCOPES = {"tools", "tool", "tool calls", "tool call", "tool invocations", "tool invocation", "any tool"}
 
 _DELEGATION_PATTERNS = (
     re.compile(r"\((?P<who>[^()]+)\)\s*$"),
@@ -161,6 +162,8 @@ class Loader:
                     "applies",
                     "scope",
                     "approval",
+                    "approvers",
+                    "approver",
                     "escalate",
                     "escalation",
                 )
@@ -181,6 +184,7 @@ class Loader:
                 statement=statement,
                 fallback_expression=body.field("fallback", "fallback expression"),
                 approval_required=self._read_approval_field(section.name, body.field("approval")),
+                approvers=_split_references(body.field("approvers", "approver")),
                 escalation=escalation,
                 escalation_days=escalation_days,
             )
@@ -319,7 +323,10 @@ class Loader:
             targets = _split_references(scope) or ["runtime"]
             for target in targets:
                 lowered = target.lower().strip()
-                if lowered in _RUNTIME_SCOPES or "runtime" in lowered:
+                if normalize(target) in _TOOL_SCOPES:
+                    if policy not in runtime.tool_policies:
+                        runtime.tool_policies.append(policy)
+                elif lowered in _RUNTIME_SCOPES or "runtime" in lowered:
                     runtime.add_policy(policy)
                 else:
                     workflow = _resolve(workflows, target, "workflow")

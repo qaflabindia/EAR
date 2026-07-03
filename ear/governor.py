@@ -57,7 +57,11 @@ class Governor:
 
             gated = not complies and policy.approval_required
             verdict = approval.verdict if (gated and approval is not None) else None
-            waived = verdict is True
+            # An approved verdict from someone not on the policy's
+            # allow-list waives nothing: the gate stays parked, and the
+            # record says who was refused and why.
+            off_list = verdict is True and not policy.approver_allowed(approval.approver)
+            waived = verdict is True and not off_list
 
             stage = "approval" if (gated and verdict is not None) else "policy"
             if complies:
@@ -66,6 +70,10 @@ class Governor:
                 output = "VIOLATED"
             elif verdict is None:
                 output = "PENDING APPROVAL"
+            elif off_list:
+                approver = approval.approver or "an unnamed approver"
+                allowed = ", ".join(policy.approvers)
+                output = f"REFUSED -- {approver} is not an approved approver for {policy.name} (allowed: {allowed})"
             else:
                 approver = approval.approver or "an unnamed approver"
                 output = f"approved by {approver}" if waived else f"REJECTED by {approver}"

@@ -86,6 +86,7 @@ from .knowledge import Knowledge, KnowledgeSource, Passage
 from .learner import Learner
 from .librarian import Librarian, Research
 from .loader import Loader, load_runtime
+from .mcp_client import McpClient, McpError, McpTool
 from .mcp_server import McpServer
 from .memory import Memory, MemoryEntry
 from .model_binding import ModelBinding
@@ -188,6 +189,9 @@ __all__ = [
     "ToolBinder",
     "BoundTool",
     "McpServer",
+    "McpClient",
+    "McpError",
+    "McpTool",
     "Ontology",
     "__version__",
 ]

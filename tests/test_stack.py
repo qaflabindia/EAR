@@ -2860,3 +2860,243 @@ def test_panel_concludes_early_on_consensus_live(tmp_path):
     turns = runtime.reasoning_log.for_stage("conversation")
     assert 2 <= len(turns) < 6  # concluded before the budget
     assert decision and "no model bound" not in decision
+
+
+# ---------------------------------------------------------------------------
+# N4: governance & connectivity depth -- approver allow-lists, tool-scoped
+# policies, the hash-chained tamper-evident trail, retention + the usage
+# ledger, and the native MCP client.
+# ---------------------------------------------------------------------------
+
+
+def test_policy_reads_approvers_and_gates_by_the_allow_list(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = "# Workflows\n\n## Underwriting Workflow\n\n1. Decide. (Credit Risk Guru)\n"
+    stack["policy"] = (
+        "# Policies\n\n## Loan Amount Cap\nThe loan must not exceed $75,000.\n\n"
+        "Fallback: loan_amount <= 75000\nApplies to: runtime\n\n"
+        "## Large Loan Approval\nLoans over $50,000 need a senior underwriter.\n\n"
+        "Fallback: loan_amount <= 50000\nApplies to: runtime\n"
+        "Approval: required\nApprovers: senior@bank.com, Chief Risk Officer\n"
+    )
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    policy = {p.name: p for p in runtime.policies}["Large Loan Approval"]
+    assert policy.approvers == ["senior@bank.com", "Chief Risk Officer"]
+    assert policy.approver_allowed("SENIOR@bank.com") is True
+    assert policy.approver_allowed("chief-risk-officer") is True
+    assert policy.approver_allowed("intern@bank.com") is False
+
+
+def test_off_list_approver_is_refused_and_the_gate_stays_parked(tmp_path):
+    from ear import Approval, Journey, Journeys
+
+    stack = dict(MINIMAL_STACK)
+    stack["workflow"] = "# Workflows\n\n## Underwriting Workflow\n\n1. Decide. (Credit Risk Guru)\n"
+    stack["policy"] = (
+        "# Policies\n\n## Loan Amount Cap\nThe loan must not exceed $75,000.\n\n"
+        "Fallback: loan_amount <= 75000\nApplies to: Underwriting Workflow\n\n"
+        "## Large Loan Approval\nLoans over $50,000 need a senior underwriter.\n\n"
+        "Fallback: loan_amount <= 50000\nApplies to: Underwriting Workflow\n"
+        "Approval: required\nApprovers: senior@bank.com\n"
+    )
+    directory = write_stack(tmp_path / "stack", **stack)
+    runtime = load_runtime(directory)
+    journeys = directory / "journeys"
+
+    parked = Journey(journeys / "big.md")
+    assert parked.run(runtime, Intent(text="Underwrite big", context={"loan_amount": 60000})) == "PENDING APPROVAL"
+
+    # An off-list approver waives nothing: the gate stays parked, refused
+    # on the record.
+    off_list = Approval(verdict=True, approver="intern@bank.com")
+    assert Journey(journeys / "big.md").run(runtime, approval=off_list) == "PENDING APPROVAL"
+    refusal = [r for r in runtime.reasoning_log.for_stage("approval") if r.output.startswith("REFUSED")]
+    assert refusal and "intern@bank.com" in refusal[-1].output
+
+    # The listed approver releases it.
+    on_list = Approval(verdict=True, approver="senior@bank.com")
+    assert Journey(journeys / "big.md").run(runtime, approval=on_list) == "completed"
+
+
+def test_tool_scoped_policy_blocks_one_call_and_returns_it_to_the_model(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = "## Tools\n\n- wire transfer: move money out of the ledger\n"
+    stack["policy"] = MINIMAL_STACK["policy"] + (
+        "\n## Transfer Cap\nThe wire transfer tool must never move more than $10,000.\n\n"
+        "Fallback: amount <= 10000\nApplies to: tools\n"
+    )
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    assert [p.name for p in runtime.tool_policies] == ["Transfer Cap"]
+    runtime.tool_binder.bind("wire transfer", lambda amount: f"moved {amount}")
+
+    from ear.tool_binder import BoundTool
+
+    tool = BoundTool(name="wire transfer", description="move money", handler=lambda amount: f"moved {amount}")
+    invoke = runtime.tool_binder.logged_handler(runtime, tool)
+
+    # Over the cap: blocked, and the refusal comes back as text (not a raise).
+    blocked = invoke(amount=50000)
+    assert "blocked by policy 'Transfer Cap'" in blocked
+    record = runtime.reasoning_log.for_stage("tool")[-1]
+    assert record.output.startswith("BLOCKED") and record.inputs["policy"] == "Transfer Cap"
+
+    # Within the cap: it runs.
+    assert invoke(amount=5000) == "moved 5000"
+
+
+def test_the_trail_is_hash_chained_and_verify_catches_a_hand_edit(tmp_path):
+    from ear.reasoning_log import ReasoningLog
+
+    for extension in (".md", ".jsonl"):
+        path = tmp_path / f"trail{extension}"
+        runtime = Runtime(name="Chained-Runtime")
+        runtime.reasoning_log.path = str(path)
+        runtime.reason(Intent(text="first cycle", context={"amount": 1}))
+        runtime.reason(Intent(text="second cycle", context={"amount": 2}))
+
+        ok, message = ReasoningLog.verify(str(path))
+        assert ok is True and "intact" in message
+
+        # Hand-edit one record's content; the chain breaks at that record.
+        text = path.read_text(encoding="utf-8")
+        tampered = text.replace("second cycle", "smuggled cycle", 1)
+        assert tampered != text
+        path.write_text(tampered, encoding="utf-8")
+        broken, why = ReasoningLog.verify(str(path))
+        assert broken is False and "broken chain" in why
+
+
+def test_the_chain_continues_across_a_resumed_session(tmp_path):
+    from ear.reasoning_log import ReasoningLog
+
+    path = tmp_path / "trail.md"
+    first = Runtime(name="Session-One")
+    first.reasoning_log.path = str(path)
+    first.reasoning_log.resume()
+    first.reason(Intent(text="cycle in session one"))
+
+    second = Runtime(name="Session-Two")
+    second.reasoning_log.path = str(path)
+    second.reasoning_log.resume()  # picks up the chain tip and cycle number
+    second.reason(Intent(text="cycle in session two"))
+
+    ok, message = ReasoningLog.verify(str(path))
+    assert ok is True, message
+    assert "## Cycle 2" in path.read_text(encoding="utf-8")  # numbering continued
+
+
+def test_retention_rotates_old_cycles_with_a_note_and_stays_verifiable(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from ear.reasoning_log import ReasoningLog
+
+    path = tmp_path / "trail.md"
+    runtime = Runtime(name="Retained-Runtime")
+    runtime.reasoning_log.path = str(path)
+    runtime.reason(Intent(text="ancient cycle"))
+    for record in runtime.reasoning_log.records:
+        record.timestamp = datetime.now(timezone.utc) - timedelta(days=100)
+    runtime.reason(Intent(text="fresh cycle"))
+
+    rotated = runtime.reasoning_log.rotate(90.0)
+    assert rotated > 0
+    stages = [r.stage for r in runtime.reasoning_log.records]
+    assert stages[0] == "retention"  # the note stands in for what was rotated
+    assert not runtime.reasoning_log.for_cycle(1)  # the ancient cycle is gone
+    note = runtime.reasoning_log.records[0]
+    assert "rotated" in note.output and note.inputs["rotated_records"] == rotated
+
+    ok, message = ReasoningLog.verify(str(path))  # the rewrite re-chained cleanly
+    assert ok is True, message
+
+
+def test_usage_ledger_renders_from_the_trail_with_dollars_when_priced():
+    from ear import ModelBinding
+
+    binding = ModelBinding(provider="anthropic", model="test")
+    binding.lm = ScriptedLM(["## complies\n\nyes\n\n## rationale\n\nfine\n"])
+    runtime = Runtime(name="Ledger-Runtime", model_binding=binding)
+    runtime.strategy = Strategy.from_markdown(
+        "## Pricing\n\nInput tokens cost $3 per million; output tokens cost $15 per million.\n"
+    )
+    from ear import Policy
+
+    runtime.add_policy(Policy(name="Cap", statement="Stay under the cap."))
+    runtime.reason(Intent(text="a priced cycle", context={"amount": 1}))
+
+    report = runtime.reasoning_log.usage_report(strategy=runtime.strategy)
+    assert "# Usage Report" in report
+    assert "| Cycle |" in report and "**total**" in report
+    assert "$0." in report  # a dollar figure, because Pricing was declared
+
+    offline = Runtime(name="Unpriced").reasoning_log.usage_report()
+    assert "—" in offline or "total" in offline  # no pricing -> no invented dollars
+
+
+# -- the native MCP client ---------------------------------------------------
+
+FAKE_MCP_SERVER = str(Path(__file__).resolve().parent / "fixtures" / "fake_mcp_server.py")
+
+
+def mcp_command() -> str:
+    import sys
+
+    return f"{sys.executable} {FAKE_MCP_SERVER}"
+
+
+def test_native_mcp_client_handshakes_lists_and_calls_over_stdio():
+    from ear.mcp_client import McpClient, McpError, command_words
+
+    with McpClient(command_words(mcp_command())) as client:
+        tools = client.list_tools()
+        assert [(tool.name, tool.parameters) for tool in tools] == [("add", ["a", "b"])]
+        assert client.call_tool("add", {"a": 3, "b": 4}) == "sum is 7"
+        with pytest.raises(McpError, match="error"):
+            client.call_tool("nonexistent", {})
+
+
+def test_mcp_client_fails_loudly_on_a_bad_command():
+    from ear.mcp_client import McpClient, McpError
+
+    with pytest.raises(McpError, match="could not launch"):
+        McpClient(["definitely-not-a-real-binary-xyz"]).connect()
+
+
+def test_declared_mcp_server_binds_tools_into_a_cycle_on_the_record(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = f"## MCP\n\n- calc: arithmetic over stdio `{mcp_command()}`\n"
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    assert [server.name for server in runtime.strategy.mcp_servers] == ["calc"]
+
+    bound = runtime.connect_mcp()
+    try:
+        assert [(tool.name, tool.parameters) for tool in bound] == [("calc: add", ["a", "b"])]
+        # The bound MCP tool joins the cycle's toolset and runs through the
+        # same logged handler as any native tool.
+        tool = runtime.tool_binder.bound_tools(runtime)[0]
+        assert tool.name == "calc: add"
+        result = runtime.tool_binder.logged_handler(runtime, tool)(a=8, b=9)
+        assert result == "sum is 17"
+        record = runtime.reasoning_log.for_stage("tool")[-1]
+        assert record.inputs["tool"] == "calc: add" and record.output == "sum is 17"
+    finally:
+        runtime.disconnect_mcp()
+    assert runtime.tool_binder.mcp_tools == []
+
+
+def test_tool_scoped_policy_governs_an_mcp_call(tmp_path):
+    from ear import Policy
+
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = f"## MCP\n\n- calc: arithmetic over stdio `{mcp_command()}`\n"
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    # A tool-scoped policy that forbids the MCP tool by name.
+    runtime.tool_policies.append(
+        Policy(name="No Adding", statement="never", fallback_expression="tool != 'calc: add'")
+    )
+    bound = runtime.connect_mcp()
+    try:
+        blocked = runtime.tool_binder.logged_handler(runtime, bound[0])(a=1, b=2)
+        assert "blocked by policy 'No Adding'" in blocked
+    finally:
+        runtime.disconnect_mcp()

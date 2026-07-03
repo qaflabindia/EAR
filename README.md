@@ -310,6 +310,30 @@ The deliberation engine itself is also a seam: attach a `backend` to the
 only, with the Governor, Decider/Validator, Contracts and the trail all
 still applying — a backend never reasons off the record.
 
+### MCP — connect a server, natively
+
+MCP servers stay *declared* in memory.md (`- name: what it provides
+`command``). MCP is an open JSON-RPC protocol, and EAR speaks it from the
+standard library — no SDK: `Runtime.connect_mcp(name)` launches the
+declared server as a subprocess, handshakes over stdio (`initialize` /
+`tools/list` / `tools/call`), and binds its tools into the ToolBinder as
+ordinary BoundTools:
+
+```python
+runtime.connect_mcp("calc")     # launches the server declared as `calc`
+# ... its tools now join every cycle's toolset ...
+runtime.disconnect_mcp()        # shuts the subprocess down
+```
+
+A connected server's tools run through the **same logged handler** as any
+native tool — every MCP call is a `tool` trail record with arguments,
+result and duration, obeys the same tool-loop budget, and is judged by the
+same tool-scoped policies. A server that hangs, dies, or answers with
+malformed JSON fails loudly as an `McpError`, and — wrapped by the binder
+— that failure returns to the model as text. The server was declared by
+the author; connecting one is the runtime reaching out to what memory.md
+already names, never a capability from nowhere.
+
 ### Approval gates — human-in-the-loop governance, in markdown
 
 A policy authored with `Approval: required` converts its hard block into a
@@ -350,6 +374,33 @@ hard (ungated) violation always wins over a pending gate, an unreadable
 verdict fails loudly rather than leaving the cycle silently parked, and a
 parked cycle is fully accounted (usage, trail) but writes no memory —
 nothing was decided yet.
+
+A gate may also declare **who** may waive it with `Approvers:` (names or
+addresses) — an allow-list, matched case- and punctuation-insensitively.
+An approved verdict from someone off the list waives nothing: the gate
+stays parked and the record says who was refused and why. Who may waive is
+authored governance, enforced in code.
+
+### Tool-scoped policies — deny a tool by policy
+
+A policy scoped `Applies to: tools` is judged against a tool's name and
+arguments *before the call runs*:
+
+```markdown
+## Transfer Cap
+
+The wire transfer tool must never move more than $10,000 in one call.
+
+Fallback: amount <= 10000
+Applies to: tools
+```
+
+A violation blocks that one call — the refusal returns to the model as
+text (exactly like a tool failure, so the model reasons on) and the block
+is a `tool` trail record naming the policy. The statement is judged by the
+model against the call's context; the fallback expression (`amount <=
+10000`) keeps it enforced offline. This governs native tools and connected
+MCP tools alike.
 
 ### Knowledge — RAG with citations, declared in natural language
 
@@ -405,6 +456,20 @@ transient failures with backoff — retry counts on the record, auth errors
 failing fast. Declare a `Pricing` section in memory.md ("Input tokens cost
 $3 per million; output tokens cost $15 per million.") and usage records
 carry real dollars; a figure nobody declared is never invented.
+
+The trail is **tamper-evident**: every flushed record carries a hash
+chained over the previous record's (stdlib `hashlib`), in both codecs —
+an HTML comment in markdown, a `chain` field in JSONL. `ReasoningLog.verify(path)`
+recomputes the chain over the file's own bytes and either proves it
+unbroken or names the exact record where an edit, insertion or deletion
+first breaks it. Retention is declared in the audit prose ("keep 90 days")
+and applied by the journey runner as *rotation, not deletion*: cycles past
+the window are replaced by a single `retention` note and the file is
+rewritten, re-chained and still verifiable — what was rotated out is
+accounted for, never silently gone. `runtime.write_usage_report(path)`
+renders the operational ledger from the trail: one row per cycle — model
+calls, tokens, dollars (when Pricing is declared), latency, tool calls —
+with totals, as a markdown document.
 
 Every cycle also closes with a `usage` record — model calls, tokens,
 approximate cost and wall-clock latency, read from the bound LM's own call
@@ -694,7 +759,8 @@ ear/
   step.py          Step          — one narrated instruction in a Workflow, delegated to a Persona
   workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies
   approval.py      Approval      — a human's verdict on a parked cycle; ApprovalRequired parks it
-  tool_binder.py   ToolBinder    — declared tools meet executables; every invocation on the trail
+  tool_binder.py   ToolBinder    — declared tools meet executables; every invocation on the trail, tool-scoped policies enforced
+  mcp_client.py    McpClient     — the native MCP client: JSON-RPC over stdio from the stdlib, tools bound into cycles
   panel.py         Panel         — multi-persona deliberation in authored prose patterns; judged speakers, early consensus, tools in turns
   journey.py       Journey       — durable, resumable, prose-routed execution; the state a markdown record; Journeys is the runner
   contract.py      Contract      — a workflow's Deliverable: fields with plain-English meanings, extracted and judged at runtime
@@ -738,7 +804,7 @@ ear/
                                    process.md/policy.md/memory.md into a Runtime
   strategy.py      Strategy      — the memory.md operating strategy, read from plain English
   exchange.py      Exchange      — the markdown boundary: intents/*.md in, decisions/*.md out
-  reasoning_log.py ReasoningLog  — the reasoning audit trail (markdown by default, JSONL optional)
+  reasoning_log.py ReasoningLog  — the reasoning audit trail (markdown/JSONL); hash-chained + verify(), retention rotation, usage ledger
   session_store.py SessionStore  — cross-session data (markdown by default, JSON optional)
   spawner.py       Spawner       — spawn subagent runtimes, bounded by the strategy
   tool.py          Tool          — a tool declared in plain English, surfaced to reasoning
