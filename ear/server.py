@@ -472,7 +472,9 @@ def _call_bridge(url: str, token: Optional[str], payload: dict) -> str:
     except ValueError as error:
         raise RuntimeError(f"bridge call to {url} returned malformed JSON: {error}") from error
     if isinstance(body, dict) and not body.get("ok", True):
-        raise RuntimeError(str(body.get("error") or "bridge call reported failure"))
+        error = body.get("error")
+        message = error.get("message") if isinstance(error, dict) else error
+        raise RuntimeError(str(message or "bridge call reported failure"))
     return json.dumps(body.get("output", body)) if isinstance(body, dict) else str(body)
 
 
