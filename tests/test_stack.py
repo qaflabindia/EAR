@@ -4085,6 +4085,25 @@ def test_server_creates_an_instance_from_inline_files(tmp_path):
     assert server.handle("POST", "/instances", {"name": "z", "files": {}})[0] == 201
 
 
+def test_server_trail_reads_limit_from_the_query_string(tmp_path):
+    """GET requests carry no body over most HTTP clients (Node's fetch
+    refuses one outright), so a caller must be able to pass `limit` as
+    `?limit=N` -- not only as a JSON body, which only a from-scratch client
+    like EAR's own test harness would ever send on a GET."""
+    from ear import Server
+
+    stacks = tmp_path / "stacks"
+    stacks.mkdir()
+    write_stack(stacks / "lending", **MINIMAL_STACK)
+    server = Server(stacks_root=stacks)
+    server.handle("POST", "/instances", {"name": "lending", "stack": "lending"})
+    server.handle("POST", "/instances/lending/submit", {"intent": "Underwrite", "context": {"loan_amount": 5000}})
+    server.kernel.drain()
+
+    status, trail = server.handle("GET", "/instances/lending/trail?limit=2")
+    assert status == 200 and len(trail["records"]) == 2
+
+
 def test_server_approve_resubmits_a_parked_intent_over_the_wire(tmp_path):
     """`Exchange`'s approval.md file-drop assumes a shared filesystem --
     not true when the caller is a separate process over the network. The

@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional, Union
+from urllib.parse import parse_qsl
 
 from .approval import Approval
 from .intent import Intent
@@ -98,8 +99,13 @@ class Server:
         synchronous -- the socket layer only translates HTTP to and from
         this. A client mistake is its own status; anything unexpected is a
         500 with the reason, never an unhandled crash."""
-        body = body or {}
-        parts = [segment for segment in path.split("?")[0].strip("/").split("/") if segment]
+        path, _, query = path.partition("?")
+        parts = [segment for segment in path.strip("/").split("/") if segment]
+        # GET requests carry no body over most HTTP clients (Node's fetch
+        # refuses one outright) -- merge the query string in so a caller can
+        # pass e.g. ?limit=50 without the server-side handlers needing to
+        # know or care which side of the request a parameter arrived on.
+        body = {**parse_qs_flat(query), **(body or {})}
         try:
             if method == "GET" and parts == ["health"]:
                 return 200, self._health()
@@ -375,6 +381,13 @@ class Server:
 
     def __exit__(self, *exc: Any) -> None:
         self.stop()
+
+
+def parse_qs_flat(query: str) -> dict:
+    """A URL query string as a flat dict (last value wins for a repeated
+    key) -- every EAR control-plane parameter is scalar, so there is no
+    need for `parse_qs`'s list-per-key shape."""
+    return dict(parse_qsl(query))
 
 
 def _require(body: dict, key: str) -> Any:
