@@ -31,6 +31,13 @@ class Skill:
     handler: Optional[Callable[..., Any]] = None
     source: Optional[str] = None
 
+    # Provenance -- who authored this capability and at what version. Carried
+    # into reasoning so a decision's Evidence can be traced back to the exact
+    # skill (and version) that shaped it; an auditability win, not just
+    # metadata.
+    version: str = ""
+    author: str = ""
+
     def instruction(self) -> str:
         """The prompt the runtime stacks into reasoning. Falls back to the
         description, then the name, so a skill always contributes some

@@ -39,6 +39,16 @@ class DiscoverRelevantProcesses(dspy.Signature):
     relevant_process_names: list[str] = dspy.OutputField(desc="Names of the relevant processes, most relevant first")
 
 
+class RankRelevantSkills(dspy.Signature):
+    """Identify which of a persona's skills are relevant to handling the
+    given intent, most relevant first, so only those need be stacked into
+    reasoning."""
+
+    intent_text: str = dspy.InputField()
+    available_skills: str = dspy.InputField(desc="One 'name: instruction' pair per line")
+    relevant_skill_names: list[str] = dspy.OutputField(desc="Names of the relevant skills, most relevant first")
+
+
 class ReasonAboutIntent(dspy.Signature):
     """Resolve an intent into a final, concrete decision given its context.
 

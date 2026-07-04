@@ -75,6 +75,7 @@ from .runtime import Runtime
 from .scheduler import Scheduler
 from .selector import Selector
 from .skill import Skill
+from .skill_selector import SkillSelector
 from .step import Step
 from .validator import Validator
 from .workflow import Workflow
@@ -107,6 +108,7 @@ __all__ = [
     "Initializer",
     "Discoverer",
     "Selector",
+    "SkillSelector",
     "Composer",
     "Scheduler",
     "Orchestrator",

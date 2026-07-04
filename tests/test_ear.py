@@ -55,6 +55,7 @@ from ear import (
     Scheduler,
     Selector,
     Skill,
+    SkillSelector,
     Step,
     Validator,
     Workflow,
@@ -687,6 +688,72 @@ def test_runtime_reason_stops_when_the_assessor_reports_a_blocker():
 
 
 # ---------------------------------------------------------------------------
+# Offline: progressive skill selection -- only the skills relevant to the
+# intent are stacked, ranked by keyword overlap when no LLM is active.
+# ---------------------------------------------------------------------------
+
+
+def _persona_with_skills(*specs) -> Persona:
+    persona = Persona(name="Underwriter")
+    for name, prompt in specs:
+        persona.add_skill(Skill(name=name, prompt=prompt))
+    return persona
+
+
+def test_skill_carries_provenance_metadata():
+    skill = Skill(name="risk_grade", prompt="Grade A-E", version="1.2", author="risk-team")
+    assert skill.version == "1.2" and skill.author == "risk-team"
+
+
+def test_skill_selector_returns_all_when_within_top_k():
+    persona = _persona_with_skills(("a", "x"), ("b", "y"), ("c", "z"))
+    picked = SkillSelector(top_k=5).select(persona, Intent(text="anything"))
+    assert [s.name for s in picked] == ["a", "b", "c"]
+
+
+def test_skill_selector_keyword_ranks_relevant_skills_first():
+    persona = _persona_with_skills(
+        ("lunch", "Cancel a lunch reservation"),
+        ("credit", "Assess a credit application's risk"),
+        ("weather", "Report today's weather"),
+    )
+    picked = SkillSelector(top_k=1).select(persona, Intent(text="Assess the applicant's credit risk"))
+    assert [s.name for s in picked] == ["credit"]
+
+
+def test_skill_selector_caps_at_top_k():
+    persona = _persona_with_skills(*[(f"s{i}", "generic task") for i in range(10)])
+    picked = SkillSelector(top_k=4).select(persona, Intent(text="something"))
+    assert len(picked) == 4
+
+
+def test_reasoner_stacks_only_selected_skills():
+    persona = Persona(name="Underwriter", instructions="Be conservative")
+    persona.add_skill(Skill(name="relevant-credit", prompt="assess credit risk"))
+    for i in range(9):
+        persona.add_skill(Skill(name=f"filler{i}", prompt="unrelated clerical task"))
+    workflow = Workflow(name="Credit Review Workflow")
+    workflow.add_persona(persona)
+
+    reasoner = Reasoner(skill_selector=SkillSelector(top_k=2))
+    decision = reasoner.reason(Intent(text="assess credit risk"), plan=[workflow])
+    # The relevant skill is stacked; a clearly-irrelevant filler is dropped.
+    assert "relevant-credit" in decision
+    assert "filler8" not in decision
+
+
+def test_reasoner_without_selector_stacks_every_skill():
+    persona = Persona(name="Underwriter")
+    for i in range(10):
+        persona.add_skill(Skill(name=f"s{i}", prompt="generic"))
+    workflow = Workflow(name="WF")
+    workflow.add_persona(persona)
+
+    decision = Reasoner(skill_selector=None).reason(Intent(text="anything"), plan=[workflow])
+    assert "s9" in decision
+
+
+# ---------------------------------------------------------------------------
 # Live: natural-language reasoning against a real Claude model.
 # ---------------------------------------------------------------------------
 
@@ -854,3 +921,18 @@ def test_runtime_reason_iterates_toward_an_llm_judged_goal():
     assert isinstance(decision, str) and decision.strip()
     # It reached a decision within the cap.
     assert 1 <= len(runtime.memory.working) <= 3
+
+
+@requires_anthropic_key
+def test_skill_selector_ranks_by_relevance_with_llm():
+    binding = claude_binding()
+    binding.activate()
+    persona = Persona(name="Underwriter")
+    persona.add_skill(Skill(name="cancel_lunch", prompt="Cancel a cafeteria lunch reservation."))
+    persona.add_skill(Skill(name="assess_dti", prompt="Assess a loan applicant's debt-to-income ratio."))
+    persona.add_skill(Skill(name="book_travel", prompt="Book flights and hotels for a business trip."))
+
+    picked = SkillSelector(top_k=1).select(
+        persona, Intent(text="Review the applicant's debt and income for a loan"), lm=binding.lm
+    )
+    assert [s.name for s in picked] == ["assess_dti"]

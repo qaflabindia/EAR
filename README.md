@@ -260,6 +260,32 @@ because every cycle already writes an `Evidence`-backed `Memory` entry, the
 whole loop is **audited by construction** — you get the decision trail
 across cycles, not an opaque "it thought for a while".
 
+## Progressive skill selection
+
+A `Persona` can carry a large library of `Skill`s without every prompt
+being stacked into every reasoning call. The `SkillSelector` stacks only
+the skills relevant to the current intent — the same relevance ranking
+`Discoverer` already does for whole processes, applied one level down to a
+persona's skills:
+
+```text
+Discoverer     → ranks Processes relevant to an Intent   (LLM-ranked, keyword fallback)
+SkillSelector  → ranks a Persona's Skills the same way   (LLM-ranked, keyword fallback)
+```
+
+It is on by default (`Reasoner(skill_selector=SkillSelector(top_k=8))`) and
+**short-circuits** — returning every skill, in order — whenever a persona
+has `top_k` or fewer skills, so the common case costs nothing and small
+personas behave exactly as before. Only when a persona exceeds `top_k` does
+it rank (by LLM when a model is active, by keyword overlap offline) and keep
+the most relevant. Pass `skill_selector=None` to always stack every skill.
+
+`Skill` also carries **provenance** — `version` and `author` — so a
+decision's `Evidence` can be traced back to the exact skill (and version)
+that shaped it. That's an auditability win, not just metadata: in an
+enterprise runtime you can answer *which version of which capability
+produced this decision*.
+
 ## Memory: Evidence, Memory, Experience and Adaptation
 
 AI systems routinely conflate four distinct concerns: *why* a decision was
@@ -312,7 +338,8 @@ each influence the next decision without blurring together.
 ```text
 ear/
   intent.py        Intent        — prompt / resolved request that starts a reasoning cycle
-  skill.py         Skill         — a stacked prompt (a capability), reasoned over by the runtime; no handler code required
+  skill.py         Skill         — a stacked prompt (a capability), reasoned over by the runtime; no handler code required; carries version/author provenance
+  skill_selector.py SkillSelector — select: stack only the Skills relevant to an Intent (LLM-ranked, keyword fallback)
   persona.py       Persona       — a stack of Skills plus standing instructions
   step.py          Step          — one narrated instruction in a Workflow, delegated to a Persona
   workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies
