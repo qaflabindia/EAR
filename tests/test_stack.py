@@ -4044,6 +4044,47 @@ def test_server_submits_work_and_reports_status(tmp_path):
     assert server.handle("GET", "/kernel")[1]["dispatched"] == 1
 
 
+def test_server_approve_resubmits_a_parked_intent_over_the_wire(tmp_path):
+    """`Exchange`'s approval.md file-drop assumes a shared filesystem --
+    not true when the caller is a separate process over the network. The
+    server's `/approve` endpoint is the same release without one: it
+    remembers the last submitted intent and resubmits it with a verdict."""
+    from ear import Server
+
+    stack = dict(
+        MINIMAL_STACK,
+        policy=(
+            "# Policies\n\n## Loan Amount Cap\nThe loan must not exceed $50,000.\n\n"
+            "Fallback: loan_amount <= 50000\nApproval: required\nApplies to: runtime\n"
+        ),
+    )
+    stacks = tmp_path / "stacks"
+    stacks.mkdir()
+    write_stack(stacks / "lending", **stack)
+    server = Server(stacks_root=stacks)
+    server.handle("POST", "/instances", {"name": "lending", "stack": "lending"})
+
+    # No pending intent yet -- approving before ever submitting is a client error.
+    assert server.handle("POST", "/instances/lending/approve", {"verdict": "approved"})[0] == 409
+
+    server.handle(
+        "POST", "/instances/lending/submit", {"intent": "Underwrite", "context": {"loan_amount": 60000}}
+    )
+    server.kernel.drain()
+    assert server.kernel.history[-1].status == "blocked"
+    trail = server.handle("GET", "/instances/lending/trail", {"limit": 20})[1]["records"]
+    assert any(r["stage"] == "approval" and "PENDING" in r["output"] for r in trail)
+
+    status, approved = server.handle(
+        "POST", "/instances/lending/approve",
+        {"verdict": "approved", "approver": "senior@bank.com", "note": "exception reviewed"},
+    )
+    assert status == 202 and approved["verdict"] is True
+
+    server.kernel.drain()
+    assert server.kernel.history[-1].status == "ran"
+
+
 def test_server_unknown_route_is_a_404():
     from ear import Server
 

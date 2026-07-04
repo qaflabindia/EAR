@@ -23,6 +23,12 @@ Solid by construction, not by afterthought:
   server down. The routing itself is a pure function -- `handle(method,
   path, body) -> (status, payload)` -- so the whole API is testable without
   opening a socket.
+- **Approval without a shared filesystem.** `Exchange`'s `approval.md`
+  file-drop convention assumes the human and the runtime share a disk --
+  not true across a network boundary. `POST /instances/{name}/approve`
+  is the same release, spoken over the wire: it resubmits the instance's
+  last intent with a `Verdict`/`Approver`/note attached, exactly as a
+  second `Exchange.run()` would once the file appears.
 
     from ear import Server
     server = Server(stacks_root="./stacks", port=8080)
@@ -43,6 +49,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional, Union
 
+from .approval import Approval
 from .intent import Intent
 from .kernel import Kernel
 
@@ -71,6 +78,12 @@ class Server:
     started_at: float = field(default_factory=time.monotonic)
     _httpd: Any = None
     _thread: Any = None
+    # The most recent intent submitted per instance -- kept so `/approve` can
+    # resubmit the same intent with a human's verdict attached. There is no
+    # shared filesystem across the network boundary for the `approval.md`
+    # file-drop convention `Exchange` uses, so the server is the one that
+    # remembers what a parked cycle was actually asked to do.
+    _last_intents: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.token is None:
@@ -103,6 +116,8 @@ class Server:
                     return self._delete(name)
                 if len(parts) == 3 and method == "POST" and parts[2] == "submit":
                     return self._submit(name, body)
+                if len(parts) == 3 and method == "POST" and parts[2] == "approve":
+                    return self._approve(name, body)
                 if len(parts) == 3 and method == "GET" and parts[2] == "status":
                     return 200, self._status(name)
                 if len(parts) == 3 and method == "GET" and parts[2] == "decision":
@@ -150,9 +165,10 @@ class Server:
         return 200, {"instance": name, "removed": True}
 
     def _submit(self, name: str, body: dict) -> tuple:
-        self._instance(name)
+        runtime = self._instance(name)
         text = _require(body, "intent")
         intent = Intent(text=str(text), context=dict(body.get("context") or {}))
+        self._apply_credentials(runtime, body.get("credentials"))
         every = body.get("every")
         task = self.kernel.submit(
             name,
@@ -161,7 +177,41 @@ class Server:
             every=float(every) if every is not None else None,
             delay=float(body.get("delay") or 0.0),
         )
+        # Remembered so `/approve` can resubmit this same intent with a
+        # verdict attached if it parks on an approval gate.
+        self._last_intents[name] = intent
         return 202, {"task_id": task.id, "instance": name, "recurring": task.recurring}
+
+    def _approve(self, name: str, body: dict) -> tuple:
+        self._instance(name)
+        intent = self._last_intents.get(name)
+        if intent is None:
+            raise _ClientError(409, f"instance '{name}' has no pending intent to approve")
+        verdict = _require(body, "verdict")
+        if isinstance(verdict, str):
+            verdict = verdict.strip().lower() in ("approved", "approve", "true", "yes")
+        approval = Approval(verdict=bool(verdict), approver=str(body.get("approver") or ""), note=str(body.get("note") or ""))
+        task = self.kernel.submit(name, intent, approval=approval)
+        return 202, {"task_id": task.id, "instance": name, "verdict": approval.verdict}
+
+    @staticmethod
+    def _apply_credentials(runtime: Any, credentials: Optional[dict]) -> None:
+        """Override a stack's declared model binding with a per-request
+        credential -- one EAR server process serves many tenants' personas
+        concurrently, so a key resolved once from `os.environ` (the
+        single-tenant default, see `ModelBinding.resolve_api_key`) does not
+        scale here. Resetting the cached `lm` makes a rotated key take
+        effect on the next `activate()` rather than sticking to the first
+        one seen."""
+        if not credentials:
+            return
+        binding = getattr(runtime, "model_binding", None)
+        if binding is None:
+            return
+        api_key = credentials.get("api_key")
+        if api_key:
+            binding.api_key = str(api_key)
+            binding.lm = None
 
     def _status(self, name: str) -> dict:
         runtime = self._instance(name)
@@ -181,7 +231,18 @@ class Server:
         return {
             "instance": name,
             "records": [
-                {"cycle": r.cycle, "stage": r.stage, "output": r.output[:200], "model": r.model}
+                {
+                    "cycle": r.cycle,
+                    "stage": r.stage,
+                    # Tool calls carry their name/arguments/duration in `inputs`
+                    # (see ToolBinder._logged) -- surfaced here so a remote
+                    # caller can render tool_requested/tool_completed without
+                    # parsing the truncated free-text `output`.
+                    "tool": r.inputs.get("tool") if r.stage == "tool" else None,
+                    "ok": not r.output.startswith(("FAILED", "BLOCKED")) if r.stage == "tool" else None,
+                    "output": r.output[:200],
+                    "model": r.model,
+                }
                 for r in records
             ],
         }
