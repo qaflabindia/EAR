@@ -60,7 +60,7 @@ from typing import Any, Optional, Union
 
 from .approval import Approval, ApprovalRequired
 from .intent import Intent
-from .reasoning_log import calls_so_far, model_name, usage_since
+from .reasoning_log import apply_retention, calls_so_far, model_name, usage_since
 from .section import Section, coerce, labelled_blocks, normalize, parse_document, quote, unquote
 
 COMPLETED = "completed"
@@ -529,19 +529,14 @@ class Journeys:
 
     @staticmethod
     def _apply_retention(runtime: Any, now: Optional[float]) -> None:
-        """Rotate the reasoning trail down to the declared retention window
-        -- the runner is where retention is applied (no daemon), on the
-        record, never a silent purge."""
+        """Rotate the reasoning trail down to the declared retention window,
+        checked once per batch pass -- a backstop for a pass where no
+        journey ran a fresh cycle (`Runtime.reason` applies the same
+        rotation on its own after every cycle; see `apply_retention`)."""
         import datetime as _datetime
 
-        strategy = getattr(runtime, "strategy", None)
-        retention_days = getattr(strategy, "retention_days", None) if strategy is not None else None
-        log = getattr(runtime, "reasoning_log", None)
-        if retention_days and log is not None:
-            moment = (
-                _datetime.datetime.fromtimestamp(now, _datetime.timezone.utc) if now is not None else None
-            )
-            log.rotate(retention_days, now=moment)
+        moment = _datetime.datetime.fromtimestamp(now, _datetime.timezone.utc) if now is not None else None
+        apply_retention(runtime, now=moment)
 
     def _release_or_escalate(
         self, runtime: Any, journey: Journey, directory: Path, now: Optional[float]

@@ -1,11 +1,13 @@
 """A minimal MCP server over stdio for tests -- stdlib only, no EAR import.
 
 Speaks just enough JSON-RPC to exercise EAR's native McpClient: it answers
-`initialize`, `tools/list` (one tool, `add`, with an integer schema) and
-`tools/call` (adds two numbers, or reports an error for a bad tool).
+`initialize`, `tools/list` (two tools -- `add`, and `sleep` for forcing a
+client-side timeout in tests) and `tools/call` (adds two numbers, sleeps
+for the given seconds, or reports an error for a bad tool).
 """
 import json
 import sys
+import time
 
 
 def main() -> None:
@@ -35,12 +37,16 @@ def main() -> None:
             }
         elif method == "tools/call":
             params = message.get("params") or {}
-            if params.get("name") != "add":
-                result = {"content": [{"type": "text", "text": "unknown tool"}], "isError": True}
-            else:
-                args = params.get("arguments") or {}
+            name = params.get("name")
+            args = params.get("arguments") or {}
+            if name == "add":
                 total = int(args.get("a", 0)) + int(args.get("b", 0))
                 result = {"content": [{"type": "text", "text": f"sum is {total}"}]}
+            elif name == "sleep":
+                time.sleep(float(args.get("seconds", 0)))
+                result = {"content": [{"type": "text", "text": "slept"}]}
+            else:
+                result = {"content": [{"type": "text", "text": "unknown tool"}], "isError": True}
         else:
             sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "no"}}) + "\n")
             sys.stdout.flush()

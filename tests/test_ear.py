@@ -73,6 +73,18 @@ def claude_binding() -> ModelBinding:
     return ModelBinding(provider="anthropic", model=ANTHROPIC_TEST_MODEL)
 
 
+def test_model_binding_and_lm_never_show_the_api_key_in_repr():
+    from ear.llm import LM
+
+    binding = ModelBinding(provider="anthropic", model="claude", api_key="sk-should-not-appear")
+    assert "sk-should-not-appear" not in repr(binding)
+    assert binding.api_key == "sk-should-not-appear"  # suppressed from repr, not from use
+
+    lm = LM(model="claude", api_key="sk-also-hidden")
+    assert "sk-also-hidden" not in repr(lm)
+    assert lm.api_key == "sk-also-hidden"
+
+
 # ---------------------------------------------------------------------------
 # Offline: deterministic-fallback paths, no ModelBinding active.
 # ---------------------------------------------------------------------------

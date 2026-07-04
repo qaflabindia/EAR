@@ -68,6 +68,28 @@ def calls_so_far(lm: Any) -> int:
     return len(history) if history is not None else 0
 
 
+def apply_retention(runtime: Any, now: Optional[datetime] = None) -> int:
+    """Rotate a runtime's reasoning trail down to its declared retention
+    window (`memory.md`'s "keep N days"), if one exists.
+
+    This is the one place retention actually takes effect. `Runtime.reason`
+    calls it after every cycle, so a declared window applies whether or not
+    Journeys are ever used -- not only when the Journey runner's batch pass
+    happens to cross it. `Journeys.run_all` also calls it once per pass, as
+    a backstop for a pass where no journey ran a fresh cycle (released,
+    escalated or already-terminal journeys never call `Runtime.reason`, so
+    without this, retention would silently wait for the next cycle that
+    does). `rotate` is itself a no-op once nothing has expired, so calling
+    this from both places is harmless repetition, never double-counting.
+    Returns how many records were rotated."""
+    strategy = getattr(runtime, "strategy", None)
+    retention_days = getattr(strategy, "retention_days", None) if strategy is not None else None
+    log = getattr(runtime, "reasoning_log", None)
+    if not retention_days or log is None:
+        return 0
+    return log.rotate(retention_days, now=now)
+
+
 def usage_since(lm: Any, start: int) -> Optional[dict[str, int]]:
     """The tokens, latency and retries the LM spent since `start`, summed
     -- or None when no call actually happened, so a fallback judgment is

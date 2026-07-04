@@ -59,7 +59,7 @@ class LM:
 
     model: str
     provider: str = "anthropic"
-    api_key: Optional[str] = None
+    api_key: Optional[str] = field(default=None, repr=False)  # a credential -- never shown by repr/str
     api_base: Optional[str] = None
     params: dict[str, Any] = field(default_factory=dict)
     history: list[dict[str, Any]] = field(default_factory=list)

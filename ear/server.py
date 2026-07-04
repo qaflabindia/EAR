@@ -12,9 +12,9 @@ Kernel running the work behind it.
 Solid by construction, not by afterthought:
 
 - **Auth.** A bearer token, read from `EAR_SERVER_TOKEN` (never hardcoded)
-  and compared in constant time; every request but a health check is
-  refused without it. Unset means open, and the server says so loudly on
-  start -- a development convenience you opt into, not a silent default.
+  and compared in constant time; every request, including a health check,
+  is refused without it. Unset means open, and the server says so loudly
+  on start -- a development convenience you opt into, not a silent default.
 - **Confinement.** Loading a stack is confined under a configured
   `stacks_root`; a path that escapes it is refused, the same discipline as
   the sandbox. No `stacks_root`, no loading arbitrary paths from the wire.

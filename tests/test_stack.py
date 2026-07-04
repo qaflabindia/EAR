@@ -3010,6 +3010,32 @@ def test_retention_rotates_old_cycles_with_a_note_and_stays_verifiable(tmp_path)
     assert ok is True, message
 
 
+def test_retention_applies_from_a_plain_cycle_with_no_journey_involved(tmp_path):
+    """A declared retention window used to take effect only when the
+    Journey runner happened to pass over it -- a plain Runtime.reason()
+    cycle silently ignored it. Runtime.reason now applies the same
+    rotation itself after every cycle, so retention holds whether or not
+    Journeys are ever used."""
+    from datetime import datetime, timedelta, timezone
+
+    from ear.strategy import Strategy
+
+    path = tmp_path / "trail.md"
+    runtime = Runtime(name="Retained-Runtime", strategy=Strategy(retention_days=90.0))
+    runtime.reasoning_log.path = str(path)
+    runtime.reason(Intent(text="ancient cycle"))
+    for record in runtime.reasoning_log.records:
+        record.timestamp = datetime.now(timezone.utc) - timedelta(days=100)
+
+    # No Journeys.run_all(), no manual .rotate() call -- just an ordinary
+    # cycle. Retention must apply on its own.
+    runtime.reason(Intent(text="fresh cycle"))
+
+    stages = [r.stage for r in runtime.reasoning_log.records]
+    assert "retention" in stages
+    assert not runtime.reasoning_log.for_cycle(1)  # the ancient cycle is gone
+
+
 def test_usage_ledger_renders_from_the_trail_with_dollars_when_priced():
     from ear import ModelBinding
 
@@ -3060,6 +3086,37 @@ def test_mcp_client_fails_loudly_on_a_bad_command():
 
     with pytest.raises(McpError, match="could not launch"):
         McpClient(["definitely-not-a-real-binary-xyz"]).connect()
+
+
+def test_mcp_client_timeout_does_not_spawn_a_stray_reader():
+    """A client-side timeout used to spawn a new reader thread per call and
+    leave the timed-out call's thread alive, still blocked on stdout,
+    racing every later call's own newly-spawned reader for the same bytes
+    -- occasionally stealing and discarding a later call's genuine
+    response. The fix is structural: one persistent reader for the whole
+    connection, so there is never a second thread to race. Proving the
+    invariant (thread count never grows) is more reliable than trying to
+    reproduce the race's nondeterministic symptom directly."""
+    import threading
+
+    from ear.mcp_client import McpClient, McpError, command_words
+
+    client = McpClient(command_words(mcp_command()), timeout=0.05)
+    client.connect()
+    try:
+        baseline = threading.active_count()
+        with pytest.raises(McpError, match="did not answer"):
+            client.call_tool("sleep", {"seconds": 1.0})
+        assert threading.active_count() == baseline
+
+        # The fake server is single-threaded and still busy sleeping from
+        # the call above; raise the timeout back up so the next call can
+        # wait that out, then confirm it gets its own, correct response --
+        # not a stray thread's leftovers.
+        client.timeout = 5.0
+        assert client.call_tool("add", {"a": 10, "b": 5}) == "sum is 15"
+    finally:
+        client.close()
 
 
 def test_declared_mcp_server_binds_tools_into_a_cycle_on_the_record(tmp_path):
@@ -4097,6 +4154,30 @@ def test_every_to_cron_maps_periods_and_refuses_sub_minute():
     assert every_to_cron(86400) == "0 0 * * *"
     with pytest.raises(KubeError, match="sub-minute"):
         every_to_cron(30)
+
+
+def test_kube_config_never_shows_the_token_in_repr():
+    from ear import KubeConfig
+
+    config = KubeConfig(api_server="https://k8s:443", token="super-secret-token")
+    assert "super-secret-token" not in repr(config)
+    assert config.token == "super-secret-token"  # suppressed from repr, not from use
+
+
+def test_kube_client_lists_jobs_with_an_encoded_label_selector():
+    from ear import KubeClient, KubeConfig
+
+    fake = _FakeKube()
+    client = KubeClient(KubeConfig(api_server="https://k8s:443", token="t", namespace="tenants"), transport=fake)
+
+    client.list_jobs(label_selector="app=lending,tier=prod")
+    method, url, _body = fake.calls[-1]
+    assert method == "GET"
+    assert url.endswith("/apis/batch/v1/namespaces/tenants/jobs?labelSelector=app%3Dlending%2Ctier%3Dprod")
+
+    client.list_jobs()  # no selector -> no query string at all
+    _method, bare_url, _body = fake.calls[-1]
+    assert bare_url.endswith("/jobs")
 
 
 def test_kube_client_and_provider_speak_the_api(tmp_path):

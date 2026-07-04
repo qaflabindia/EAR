@@ -25,7 +25,7 @@ class ModelBinding:
 
     provider: str
     model: str
-    api_key: Optional[str] = None
+    api_key: Optional[str] = field(default=None, repr=False)  # a credential -- never shown by repr/str
     api_key_env_var: Optional[str] = None
     api_base: Optional[str] = None
     params: dict[str, Any] = field(default_factory=dict)

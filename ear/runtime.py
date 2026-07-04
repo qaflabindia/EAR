@@ -26,20 +26,17 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .adaptation import Adaptation, AdaptationBank
+from .adaptation import AdaptationBank
 from .adapter import Adapter
 from .approval import ApprovalRequired
 from .auditor import Auditor
 from .composer import Composer
-from .decider import Decider
 from .delegator import Delegator
-from .deliberator import Deliberator
 from .discoverer import Discoverer
 from .evidence import Evidence
-from .executor import Executor
 from .experience import Experience
 from .explainer import Explainer
-from .goal import Goal, GoalKeeper, GoalOutcome
+from .goal import GoalKeeper, GoalOutcome
 from .governor import Governor
 from .initializer import Initializer
 from .intent import Intent
@@ -49,11 +46,10 @@ from .memory import Memory
 from .model_binding import ModelBinding
 from .orchestrator import Orchestrator
 from .panel import Panel
-from .performer import Performer
 from .policy import Policy
 from .process import Process
 from .reasoner import Reasoner
-from .reasoning_log import ReasoningLog, calls_so_far, model_name, usage_since
+from .reasoning_log import ReasoningLog, apply_retention, calls_so_far, model_name, usage_since
 from .recaller import Recaller
 from .scheduler import Scheduler
 from .selector import Selector
@@ -275,6 +271,7 @@ class Runtime:
         if self.session_store is not None:
             self.session_store.save(self)
         self._record_usage(started, calls_before)
+        apply_retention(self)
         self.reasoning_log.flush()
         return decision
 

@@ -34,6 +34,7 @@ import json
 import os
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
@@ -55,7 +56,7 @@ class KubeConfig:
     """How to reach the API server, and as whom."""
 
     api_server: str
-    token: str = ""
+    token: str = field(default="", repr=False)  # a bearer credential -- never shown by repr/str
     ca_cert: Optional[str] = None
     namespace: str = "default"
     verify: bool = True
@@ -148,7 +149,7 @@ class KubeClient:
     def list_jobs(self, label_selector: Optional[str] = None) -> dict:
         path = self._batch("jobs")
         if label_selector:
-            path += "?labelSelector=" + urllib.request.quote(label_selector)
+            path += "?labelSelector=" + urllib.parse.quote(label_selector)
         return self.request("GET", path)
 
     def create_cronjob(self, manifest: dict) -> dict:

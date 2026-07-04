@@ -370,8 +370,8 @@ python -m ear.server --stacks ./stacks --port 8080
 
 Solid by construction, not afterthought: a **bearer token** read from
 `EAR_SERVER_TOKEN` (never hardcoded, compared in constant time) guards
-every request but health — unset means open, and the server says so loudly
-on start. Loading a stack is **confined** under `stacks_root`; a path that
+every request, including a health check — unset means open, and the server
+says so loudly on start. Loading a stack is **confined** under `stacks_root`; a path that
 escapes it is refused, the same discipline as the sandbox. Request bodies
 are capped, malformed JSON is a 400 not a crash, and every handler is
 wrapped so one bad request can never take the server down. The routing is a
@@ -646,8 +646,11 @@ an HTML comment in markdown, a `chain` field in JSONL. `ReasoningLog.verify(path
 recomputes the chain over the file's own bytes and either proves it
 unbroken or names the exact record where an edit, insertion or deletion
 first breaks it. Retention is declared in the audit prose ("keep 90 days")
-and applied by the journey runner as *rotation, not deletion*: cycles past
-the window are replaced by a single `retention` note and the file is
+and applied automatically after every cycle — `Runtime.reason` rotates the
+trail on its own, whether or not Journeys are ever used, and the Journey
+runner rotates once more per batch pass as a backstop for a pass where no
+journey ran a fresh cycle — as *rotation, not deletion*: cycles past the
+window are replaced by a single `retention` note and the file is
 rewritten, re-chained and still verifiable — what was rotated out is
 accounted for, never silently gone. `runtime.write_usage_report(path)`
 renders the operational ledger from the trail: one row per cycle — model

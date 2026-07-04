@@ -37,7 +37,7 @@ deliberated, and says so.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from .intent import Intent
 from .persona import Persona
