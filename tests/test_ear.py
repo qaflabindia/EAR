@@ -39,6 +39,7 @@ from ear import (
     Governor,
     Initializer,
     Intent,
+    Invoker,
     Learner,
     Memory,
     ModelBinding,
@@ -57,6 +58,8 @@ from ear import (
     Skill,
     SkillSelector,
     Step,
+    Tool,
+    ToolPolicy,
     Validator,
     Workflow,
 )
@@ -754,6 +757,101 @@ def test_reasoner_without_selector_stacks_every_skill():
 
 
 # ---------------------------------------------------------------------------
+# Offline: governed tools -- every tool call is gated by a ToolPolicy and
+# recorded, judged deterministically by the safe-eval fallback (no LLM).
+# ---------------------------------------------------------------------------
+
+
+def test_tool_runs_its_handler():
+    tool = Tool(name="add", handler=lambda a, b: a + b)
+    assert tool.run(a=2, b=3) == 5
+
+
+def test_tool_without_handler_returns_a_simulated_result():
+    tool = Tool(name="wire_transfer", contract="Send money")
+    result = tool.run(amount=100)
+    assert "simulated wire_transfer" in result
+
+
+def test_tool_policy_permits_and_blocks_by_fallback():
+    policy = ToolPolicy(name="Cap", fallback_expression="amount <= 1000", tool="wire_transfer")
+    assert policy.permits(amount=500) is True
+    assert policy.permits(amount=5000) is False
+    assert policy.applies_to("wire_transfer") is True
+    assert policy.applies_to("something_else") is False
+
+
+def test_tool_policy_star_applies_to_every_tool():
+    policy = ToolPolicy(name="global", fallback_expression="True")
+    assert policy.applies_to("anything") is True
+
+
+def test_tool_policy_rejects_unsafe_expression():
+    policy = ToolPolicy(name="bad", fallback_expression="__import__('os').system('echo hi')")
+    with pytest.raises(ValueError):
+        policy.permits(amount=1)
+
+
+def test_governor_govern_tool_returns_violated_policies():
+    runtime = Runtime(name="R")
+    policy = ToolPolicy(name="Cap", fallback_expression="amount <= 1000", tool="wire_transfer")
+    runtime.add_tool_policy(policy)
+    tool = Tool(name="wire_transfer")
+    assert Governor().govern_tool(runtime, tool, amount=5000) == [policy]
+    assert Governor().govern_tool(runtime, tool, amount=100) == []
+
+
+def test_governor_can_gate_on_a_tools_permissions():
+    runtime = Runtime(name="R")
+    runtime.add_tool_policy(ToolPolicy(name="ReadOnly", fallback_expression="'write:ledger' not in permissions"))
+    reader = Tool(name="pull_bureau", permissions=["read:bureau"])
+    writer = Tool(name="post_entry", permissions=["write:ledger"])
+    assert Governor().govern_tool(runtime, reader) == []
+    assert [p.name for p in Governor().govern_tool(runtime, writer)] == ["ReadOnly"]
+
+
+def test_invoker_blocks_a_call_that_violates_a_tool_policy():
+    runtime = Runtime(name="R")
+    runtime.add_tool_policy(ToolPolicy(name="Cap", fallback_expression="amount <= 1000", tool="wire_transfer"))
+    tool = Tool(name="wire_transfer", handler=lambda amount: f"sent {amount}")
+    with pytest.raises(PermissionError, match="Cap"):
+        runtime.invoke(tool, amount=5000)
+    # The blocked call is still recorded -- audited, not silent.
+    assert runtime._cycle_tool_calls[-1]["allowed"] is False
+    assert runtime._cycle_tool_calls[-1]["blocked_by"] == "Cap"
+
+
+def test_invoker_runs_and_records_an_allowed_call():
+    runtime = Runtime(name="R")
+    runtime.add_tool_policy(ToolPolicy(name="Cap", fallback_expression="amount <= 1000", tool="wire_transfer"))
+    tool = Tool(name="wire_transfer", handler=lambda amount: f"sent {amount}")
+    assert runtime.invoke(tool, amount=100) == "sent 100"
+    assert runtime._cycle_tool_calls[-1] == {
+        "tool": "wire_transfer",
+        "args": {"amount": 100},
+        "allowed": True,
+        "result": "sent 100",
+    }
+
+
+def test_runtime_reason_records_tool_calls_key_in_evidence():
+    runtime = Runtime(name="Credit-Risk-Runtime")
+    runtime.add_process(Process(name="Evaluate Credit Application"))
+    runtime.reason(Intent(text="Evaluate a credit application"))
+    assert runtime.memory.working[-1].evidence.sources["tool_calls"] == []
+
+
+def test_persona_holds_tools_and_reasoner_stacks_them():
+    persona = Persona(name="Underwriter")
+    persona.add_tool(Tool(name="pull_bureau", contract="Fetch the applicant's bureau score."))
+    assert persona.get_tool("pull_bureau") is not None
+    workflow = Workflow(name="Credit Review Workflow")
+    workflow.add_persona(persona)
+    decision = Reasoner().reason(Intent(text="Evaluate application"), plan=[workflow])
+    assert "pull_bureau" in decision
+
+
+# ---------------------------------------------------------------------------
 # Live: natural-language reasoning against a real Claude model.
 # ---------------------------------------------------------------------------
 
@@ -936,3 +1034,40 @@ def test_skill_selector_ranks_by_relevance_with_llm():
         persona, Intent(text="Review the applicant's debt and income for a loan"), lm=binding.lm
     )
     assert [s.name for s in picked] == ["assess_dti"]
+
+
+@requires_anthropic_key
+def test_governor_judges_a_tool_call_with_llm():
+    binding = claude_binding()
+    binding.activate()
+    runtime = Runtime(name="Credit-Risk-Runtime", model_binding=binding)
+    runtime.add_tool_policy(
+        ToolPolicy(
+            name="Bureau Consent",
+            statement="A credit-bureau pull is only permitted when the applicant's consent is on file.",
+            tool="pull_bureau",
+        )
+    )
+    tool = Tool(name="pull_bureau", contract="Pull the applicant's credit-bureau score.")
+
+    assert Governor().govern_tool(runtime, tool, consent=True) == []
+    blocked = Governor().govern_tool(runtime, tool, consent=False)
+    assert [p.name for p in blocked] == ["Bureau Consent"]
+
+
+@requires_anthropic_key
+def test_runtime_invoke_blocks_on_llm_judged_tool_policy():
+    binding = claude_binding()
+    runtime = Runtime(name="Credit-Risk-Runtime", model_binding=binding)
+    runtime.add_tool_policy(
+        ToolPolicy(
+            name="Bureau Consent",
+            statement="A credit-bureau pull is only permitted when consent is True.",
+            tool="pull_bureau",
+        )
+    )
+    tool = Tool(name="pull_bureau", contract="Pull the bureau score.", handler=lambda **_: "score=720")
+
+    assert runtime.invoke(tool, consent=True) == "score=720"
+    with pytest.raises(PermissionError, match="Bureau Consent"):
+        runtime.invoke(tool, consent=False)

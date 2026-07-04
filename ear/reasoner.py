@@ -171,6 +171,9 @@ class Reasoner:
         for skill in self._select_skills(persona, intent, lm):
             instruction = skill.instruction() if hasattr(skill, "instruction") else getattr(skill, "name", "")
             lines.append(f"{indent}  - Skill {skill.name}: {instruction}")
+        for tool in getattr(persona, "tools", []):
+            description = tool.describe() if hasattr(tool, "describe") else getattr(tool, "name", "")
+            lines.append(f"{indent}  - Tool {tool.name}: {description}")
 
     def _select_skills(self, persona: Any, intent: Optional[Intent], lm: Any) -> list[Any]:
         """The skills to stack for this persona: progressively selected by

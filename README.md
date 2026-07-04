@@ -286,6 +286,66 @@ that shaped it. That's an auditability win, not just metadata: in an
 enterprise runtime you can answer *which version of which capability
 produced this decision*.
 
+## Governed tools: govern the action, not just the decision
+
+EAR governs *decisions* through `Policy`. A `Tool` lets it also *act* — and
+every action is governed the same way. A `Tool` is declared prompt-first,
+exactly like a `Skill`: a name and a plain-English `contract` are required
+(an LLM reads the contract to know what the tool does); a Python `handler`
+is the optional advanced layer, so a tool can be declared and governed
+before it is implemented.
+
+```python
+from ear import Tool, ToolPolicy
+
+guru.add_tool(Tool(
+    name="pull_bureau",
+    contract="Fetch the applicant's credit-bureau score.",
+    permissions=["read:bureau"],
+    handler=bureau_client.fetch,
+))
+
+runtime.add_tool_policy(ToolPolicy(
+    name="Bureau Consent",
+    statement="A bureau pull is only permitted when the applicant's consent is on file.",
+    fallback_expression="consent == True",     # deterministic offline
+    tool="pull_bureau",
+))
+
+runtime.invoke(guru.get_tool("pull_bureau"), consent=True)   # runs -> "score=720"
+runtime.invoke(guru.get_tool("pull_bureau"), consent=False)  # raises PermissionError: blocked by Bureau Consent
+```
+
+Every call goes through the `Invoker`, which does two things before and
+after the action:
+
+1. **Gates** it — `Governor.govern_tool` checks the runtime's
+   `ToolPolicy`s (judged in natural language by the active model, with a
+   safe-eval `fallback_expression` over the call's arguments plus the
+   special `tool` and `permissions` values). A violated policy raises
+   `PermissionError` and the action never runs. `ToolPolicy` is `Policy`
+   for actions — same LLM-judged / safe-eval-fallback / reject-unsafe
+   engine, no divergent second rule system.
+2. **Records** it — the call (allowed *or* blocked) lands in the cycle's
+   `Evidence.sources["tool_calls"]`, so what the runtime *did* sits in the
+   same audit trail as what it *decided*, never off the books.
+
+```text
+Governor.govern         → govern a decision  (Policy gate)
+Governor.govern_tool    → govern an action   (ToolPolicy gate) ─┐
+Invoker.invoke          → run it, or block it, and record it  ──┴─► Evidence.sources["tool_calls"]
+```
+
+This is the piece a plain gateway can't offer: not just reaching many
+tools, but reaching them **under governance, with an audit trail**.
+Execution isolation for side-effecting handlers (a sandbox) is a separate,
+later concern; until then a handler runs in-process behind the policy gate.
+
+> The runtime *decides* to call a tool autonomously (DSPy ReAct) is a
+> further reasoning-integration step layered on this foundation; today tools
+> are invoked explicitly through `runtime.invoke`, always governed and
+> audited.
+
 ## Memory: Evidence, Memory, Experience and Adaptation
 
 AI systems routinely conflate four distinct concerns: *why* a decision was
@@ -340,7 +400,10 @@ ear/
   intent.py        Intent        — prompt / resolved request that starts a reasoning cycle
   skill.py         Skill         — a stacked prompt (a capability), reasoned over by the runtime; no handler code required; carries version/author provenance
   skill_selector.py SkillSelector — select: stack only the Skills relevant to an Intent (LLM-ranked, keyword fallback)
-  persona.py       Persona       — a stack of Skills plus standing instructions
+  persona.py       Persona       — a stack of Skills (reason) plus optional Tools (act) and standing instructions
+  tool.py          Tool          — a declared capability the runtime acts through; prompt-first, handler optional
+  tool_policy.py   ToolPolicy    — governance for a tool call (Policy for actions), judged with a safe-eval fallback
+  invoker.py       Invoker       — invoke: gate a tool call against ToolPolicies, run or block it, record it as Evidence
   step.py          Step          — one narrated instruction in a Workflow, delegated to a Persona
   workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies
   process.py       Process       — a stack of Workflows that performs an action

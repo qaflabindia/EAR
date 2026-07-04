@@ -36,6 +36,27 @@ class Governor:
         policies = [policy for workflow in workflows for policy in getattr(workflow, "policies", [])]
         return self._violations(policies, model_binding, intent)
 
+    def govern_tool(self, runtime: Any, tool: Any, **args: Any) -> list[Any]:
+        """Enforce the runtime's ToolPolicies against a proposed tool call.
+        Governance of an *action*, alongside `govern`/`govern_workflows`
+        which govern a *decision*: returns the ToolPolicies that would be
+        violated by calling `tool` with `args`, so the Invoker can block the
+        call before it runs."""
+        model_binding = getattr(runtime, "model_binding", None)
+        if model_binding is not None:
+            model_binding.activate()
+        context = {
+            **args,
+            "tool": getattr(tool, "name", ""),
+            "permissions": list(getattr(tool, "permissions", [])),
+        }
+        policies = [
+            policy
+            for policy in getattr(runtime, "tool_policies", [])
+            if policy.applies_to(getattr(tool, "name", ""))
+        ]
+        return [policy for policy in policies if not policy.permits(model_binding=model_binding, **context)]
+
     @staticmethod
     def _violations(policies: Any, model_binding: Any, intent: Intent) -> list[Policy]:
         return [
