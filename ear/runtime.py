@@ -26,6 +26,7 @@ from .assessor import Assessor
 from .auditor import Auditor
 from .composer import Composer
 from .decider import Decider
+from .delegator import Delegator
 from .deliberator import Deliberator
 from .discoverer import Discoverer
 from .evidence import Evidence
@@ -48,6 +49,7 @@ from .reasoner import Reasoner
 from .recaller import Recaller
 from .scheduler import Scheduler
 from .selector import Selector
+from .synthesizer import Synthesizer
 from .tool_policy import ToolPolicy
 from .validator import Validator
 from .workflow import Workflow
@@ -74,6 +76,8 @@ class Runtime:
     governor: Governor = field(default_factory=Governor)
     assessor: Assessor = field(default_factory=Assessor)
     invoker: Invoker = field(default_factory=Invoker)
+    delegator: Delegator = field(default_factory=Delegator)
+    synthesizer: Synthesizer = field(default_factory=Synthesizer)
     initializer: Initializer = field(default_factory=Initializer)
     discoverer: Discoverer = field(default_factory=Discoverer)
     selector: Selector = field(default_factory=Selector)
@@ -92,9 +96,11 @@ class Runtime:
     optimizer: Any = None
 
     def __post_init__(self) -> None:
-        # Tool calls made during the current cycle, folded into that cycle's
-        # Evidence so actions are audited alongside decisions.
+        # Tool calls and sub-agent fan-out made during the current cycle,
+        # folded into that cycle's Evidence so both are audited alongside
+        # the decision itself.
         self._cycle_tool_calls: list[dict[str, Any]] = []
+        self._cycle_sub_agent_decisions: list[tuple[str, Any]] = []
         if self.evolver is None:
             from .evolver import Evolver
 
@@ -162,6 +168,7 @@ class Runtime:
         Goal loop re-enters; on its own it is exactly the classic
         single-pass cycle."""
         self._cycle_tool_calls = []
+        self._cycle_sub_agent_decisions = []
         candidates = self.validator.validate_candidates(self.discoverer.discover(self, intent))
         selected = self.validator.validate_selection(self.selector.select(self, candidates))
         plan = self.validator.validate_plan(self.composer.compose(selected))
@@ -203,5 +210,6 @@ class Runtime:
                 "plan": [workflow.name for workflow in plan],
                 "recalled_memory": recalled,
                 "tool_calls": list(getattr(self, "_cycle_tool_calls", [])),
+                "sub_agent_decisions": list(getattr(self, "_cycle_sub_agent_decisions", [])),
             },
         )

@@ -25,18 +25,35 @@ class Invoker:
             blocked_by = ", ".join(policy.name for policy in violations)
             self._record(runtime, tool, args, result=None, allowed=False, blocked_by=blocked_by)
             raise PermissionError(f"Tool '{tool.name}' blocked by: {blocked_by}")
-        result = tool.run(**args)
+        try:
+            result = tool.run(**args)
+        except Exception as error:
+            # A handler failure (including a Sandbox timeout) is still an
+            # audited event, not a silent gap in the trail -- recorded here,
+            # then re-raised so the caller sees it exactly as before.
+            self._record(runtime, tool, args, result=None, allowed=True, error=str(error))
+            raise
         self._record(runtime, tool, args, result=result, allowed=True)
         return result
 
     @staticmethod
-    def _record(runtime: Any, tool: Any, args: dict, result: Any, allowed: bool, blocked_by: str = "") -> None:
+    def _record(
+        runtime: Any,
+        tool: Any,
+        args: dict,
+        result: Any,
+        allowed: bool,
+        blocked_by: str = "",
+        error: str = "",
+    ) -> None:
         log = getattr(runtime, "_cycle_tool_calls", None)
         if log is None:
             return
         entry: dict[str, Any] = {"tool": tool.name, "args": dict(args), "allowed": allowed}
-        if allowed:
-            entry["result"] = result
-        else:
+        if not allowed:
             entry["blocked_by"] = blocked_by
+        elif error:
+            entry["error"] = error
+        else:
+            entry["result"] = result
         log.append(entry)

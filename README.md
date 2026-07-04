@@ -337,14 +337,85 @@ Invoker.invoke          → run it, or block it, and record it  ──┴─► 
 ```
 
 This is the piece a plain gateway can't offer: not just reaching many
-tools, but reaching them **under governance, with an audit trail**.
-Execution isolation for side-effecting handlers (a sandbox) is a separate,
-later concern; until then a handler runs in-process behind the policy gate.
+tools, but reaching them **under governance, with an audit trail**. A
+`Tool`'s handler runs through a `Sandbox` seam (see below) that can bound
+its wall-clock time; true process/container isolation is a separate,
+heavier concern left to whoever wires one in.
 
-> The runtime *decides* to call a tool autonomously (DSPy ReAct) is a
+> The runtime *deciding* to call a tool autonomously (DSPy ReAct) is a
 > further reasoning-integration step layered on this foundation; today tools
 > are invoked explicitly through `runtime.invoke`, always governed and
 > audited.
+
+## Declarative sub-agents: Delegator and Synthesizer
+
+Stacking several `Persona`s onto one `Workflow` reasons them together, in
+one shared call — the ordinary path, unchanged. Mark the workflow
+`parallel=True` and each delegated persona is instead dispatched as its own
+**isolated sub-agent**: a fresh reasoning call that sees only that
+persona's own instructions and skills, never another persona's. Their
+results are then folded into one decision.
+
+```python
+from ear import Persona, Workflow
+
+risk = Persona(name="Risk-Assessor", instructions="Judge creditworthiness from the numbers.")
+compliance = Persona(name="Compliance-Checker", instructions="Check the application against policy only.")
+
+workflow = Workflow(name="Parallel Underwriting Review", parallel=True)
+workflow.add_persona(risk)
+workflow.add_persona(compliance)
+```
+
+```text
+Delegator.delegate      → reason one Persona alone, isolated from the others
+Synthesizer.synthesize  → fold the sub-agents' results into one decision
+```
+
+This is EAR's declarative take on the "lead agent spawns sub-agents, each
+isolated, then synthesizes their results" pattern: the fan-out is
+**declared** on the workflow up front, not decided at runtime by the model.
+`Synthesizer` reconciles the sub-decisions in natural language when a model
+is active, and falls back to a deterministic, labelled join otherwise — the
+same LLM-judged / dependency-free-fallback shape as everything else here.
+Every sub-agent's `(persona_name, decision)` pair is recorded into the
+cycle's `Evidence.sources["sub_agent_decisions"]`, nesting sub-agent
+provenance into the same audit trail as the final decision, alongside any
+tool calls.
+
+Leaving `parallel` at its default `False` costs nothing — the plan reasons
+exactly as it always has.
+
+## Sandbox: bounding a tool's execution time
+
+A `Tool`'s `handler` runs through a `Sandbox` — the seam
+`sandbox.run(handler, **kwargs)` — rather than being called directly.
+`InProcessSandbox`, the default, just calls it: zero overhead, today's
+behaviour unchanged. `TimeoutSandbox` bounds how long the caller waits,
+using only the standard library:
+
+```python
+from ear import Tool, TimeoutSandbox, SandboxTimeout
+
+slow_lookup = Tool(name="pull_bureau", handler=bureau_client.fetch, sandbox=TimeoutSandbox(seconds=10))
+
+try:
+    result = runtime.invoke(slow_lookup, applicant_id="A123")
+except SandboxTimeout:
+    ...  # the bureau call didn't return within 10s
+```
+
+This is deliberately smaller than a Docker- or Kubernetes-backed sandbox —
+EAR stays a library, not a deployment platform, so it ships no container
+runtime. `TimeoutSandbox` gives one honest guarantee: the *caller* is never
+blocked past `seconds`. It does not isolate memory, the filesystem or the
+network, and — because Python cannot safely force-kill a thread — a timed
+out handler may still be running in the background afterward. Reach for a
+process- or container-based `Sandbox` (anything with a matching `run`
+method) when a handler must be forcibly stopped, not just waited past.
+Either way, the `Invoker` records the outcome — including a timeout — into
+`Evidence.sources["tool_calls"]` before re-raising, so a bounded-out call is
+audited, not silently lost.
 
 ## Memory: Evidence, Memory, Experience and Adaptation
 
@@ -404,8 +475,9 @@ ear/
   tool.py          Tool          — a declared capability the runtime acts through; prompt-first, handler optional
   tool_policy.py   ToolPolicy    — governance for a tool call (Policy for actions), judged with a safe-eval fallback
   invoker.py       Invoker       — invoke: gate a tool call against ToolPolicies, run or block it, record it as Evidence
+  sandbox.py       InProcessSandbox, TimeoutSandbox — the seam a Tool's handler runs through; stdlib-only wall-clock timeout
   step.py          Step          — one narrated instruction in a Workflow, delegated to a Persona
-  workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies
+  workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies; `parallel=True` fans delegated Personas out as sub-agents
   process.py       Process       — a stack of Workflows that performs an action
   policy.py        Policy        — governance rule, judged in natural language with a safe-eval fallback; attaches runtime-wide or to a Workflow
   goal.py          Goal          — a completion condition that drives bounded, audited iteration of a reasoning cycle
@@ -428,7 +500,9 @@ ear/
   orchestrator.py  Orchestrator  — orchestrate: coordinate a cycle's execution end to end
   executor.py      Executor      — execute: run the cycle's Performer action
   performer.py     Performer     — perform: chain Deliberator -> Decider -> Validator
-  deliberator.py   Deliberator   — deliberate: reason via the Reasoner
+  deliberator.py   Deliberator   — deliberate: reason via the Reasoner, or fan out to Delegator/Synthesizer for a `parallel` Workflow
+  delegator.py     Delegator     — delegate: reason one Persona alone, isolated from the rest of the plan
+  synthesizer.py   Synthesizer   — synthesize: fold several sub-agents' decisions into one (LLM-judged, deterministic-join fallback)
   decider.py       Decider       — decide: commit to one final decision
   validator.py     Validator     — validate: checker layer for every maker stage's output
   recaller.py      Recaller      — remember: recall Memory context as evidence

@@ -21,7 +21,8 @@ own class so operations AI runtimes often blur together stay distinct:
     Orchestrator -> orchestrate  (coordinate execution of the plan)
     Executor     -> execute      (run the cycle's Performer action)
     Performer    -> perform      (deliberate, decide, validate)
-    Deliberator  -> deliberate   (deliberate via the Reasoner)
+    Deliberator  -> deliberate   (deliberate via the Reasoner, or fan out to
+                                    Delegator/Synthesizer for a `parallel` Workflow)
     Decider      -> decide       (commit to one decision)
     Validator    -> validate     (reject a malformed decision)
     Recaller     -> remember     (recall Memory context as evidence)
@@ -48,6 +49,7 @@ from .assessor import Assessor
 from .auditor import Auditor
 from .composer import Composer
 from .decider import Decider
+from .delegator import Delegator
 from .deliberator import Deliberator
 from .discoverer import Discoverer
 from .evidence import Evidence
@@ -73,11 +75,13 @@ from .reasoner import Reasoner
 from .recaller import Recaller
 from .router import AllProvidersFailed, Router, RoutingStrategy
 from .runtime import Runtime
+from .sandbox import InProcessSandbox, SandboxError, SandboxTimeout, TimeoutSandbox
 from .scheduler import Scheduler
 from .selector import Selector
 from .skill import Skill
 from .skill_selector import SkillSelector
 from .step import Step
+from .synthesizer import Synthesizer
 from .tool import Tool
 from .tool_policy import ToolPolicy
 from .validator import Validator
@@ -121,6 +125,8 @@ __all__ = [
     "Executor",
     "Performer",
     "Deliberator",
+    "Delegator",
+    "Synthesizer",
     "Decider",
     "Validator",
     "Recaller",
@@ -130,5 +136,9 @@ __all__ = [
     "Adapter",
     "Evolver",
     "Optimizer",
+    "InProcessSandbox",
+    "TimeoutSandbox",
+    "SandboxError",
+    "SandboxTimeout",
     "__version__",
 ]

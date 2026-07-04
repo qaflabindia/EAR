@@ -29,6 +29,7 @@ from ear import (
     Auditor,
     Composer,
     Decider,
+    Delegator,
     Deliberator,
     Discoverer,
     Evidence,
@@ -37,6 +38,7 @@ from ear import (
     Explainer,
     Goal,
     Governor,
+    InProcessSandbox,
     Initializer,
     Intent,
     Invoker,
@@ -53,11 +55,15 @@ from ear import (
     Router,
     RoutingStrategy,
     Runtime,
+    SandboxError,
+    SandboxTimeout,
     Scheduler,
     Selector,
     Skill,
     SkillSelector,
     Step,
+    Synthesizer,
+    TimeoutSandbox,
     Tool,
     ToolPolicy,
     Validator,
@@ -852,6 +858,167 @@ def test_persona_holds_tools_and_reasoner_stacks_them():
 
 
 # ---------------------------------------------------------------------------
+# Offline: declarative sub-agents -- Delegator isolates each Persona's
+# reasoning, Synthesizer folds the results, deterministically (no LLM).
+# ---------------------------------------------------------------------------
+
+
+def test_workflow_defaults_to_sequential():
+    assert Workflow(name="WF").parallel is False
+
+
+def test_delegator_isolates_a_personas_reasoning():
+    persona = Persona(name="Underwriter", instructions="Be conservative")
+    persona.add_skill(Skill(name="assess-dti", prompt="Decline if DTI exceeds 0.43"))
+    decision = Delegator().delegate(Runtime(name="R"), Intent(text="Evaluate application"), persona)
+    assert "Underwriter" in decision and "assess-dti" in decision
+
+
+def test_delegator_does_not_leak_other_personas_skills():
+    # Two personas stacked into one isolated delegation each: the decision
+    # for persona A must not contain persona B's skill name, proving the
+    # isolated context is not sharing state.
+    a = Persona(name="Underwriter-A")
+    a.add_skill(Skill(name="skill-a", prompt="do a"))
+    b = Persona(name="Underwriter-B")
+    b.add_skill(Skill(name="skill-b", prompt="do b"))
+    runtime = Runtime(name="R")
+
+    decision_a = Delegator().delegate(runtime, Intent(text="x"), a)
+    assert "skill-a" in decision_a and "skill-b" not in decision_a
+
+
+def test_synthesizer_passes_through_a_single_sub_decision():
+    result = Synthesizer().synthesize(Runtime(name="R"), Intent(text="x"), [("only", "the-decision")])
+    assert result == "the-decision"
+
+
+def test_synthesizer_default_join_combines_multiple_sub_decisions():
+    result = Synthesizer().synthesize(
+        Runtime(name="R"), Intent(text="x"), [("Underwriter-A", "approve"), ("Underwriter-B", "decline")]
+    )
+    assert "Underwriter-A" in result and "approve" in result
+    assert "Underwriter-B" in result and "decline" in result
+    assert "2 sub-agents" in result
+
+
+def test_deliberator_uses_shared_reasoning_when_no_workflow_is_parallel():
+    workflow = Workflow(name="WF")
+    workflow.add_persona(Persona(name="Underwriter"))
+    result = Deliberator().deliberate(Runtime(name="R"), Intent(text="x"), plan=[workflow])
+    assert "R" in result  # the ordinary default-reasoning path, unchanged
+
+
+def test_deliberator_fans_out_a_parallel_workflow_and_synthesizes():
+    a = Persona(name="Underwriter-A")
+    a.add_skill(Skill(name="skill-a", prompt="do a"))
+    b = Persona(name="Underwriter-B")
+    b.add_skill(Skill(name="skill-b", prompt="do b"))
+    workflow = Workflow(name="Parallel Review", parallel=True)
+    workflow.add_persona(a)
+    workflow.add_persona(b)
+
+    result = Deliberator().deliberate(Runtime(name="R"), Intent(text="x"), plan=[workflow])
+    assert "2 sub-agents" in result
+    assert "skill-a" in result and "skill-b" in result
+
+
+def test_deliberator_mixes_parallel_and_sequential_workflows():
+    parallel = Workflow(name="Parallel Review", parallel=True)
+    parallel.add_persona(Persona(name="Solo-Sub-Agent"))
+    sequential = Workflow(name="Shared Review")
+    sequential.add_persona(Persona(name="Shared-Persona"))
+
+    result = Deliberator().deliberate(Runtime(name="R"), Intent(text="x"), plan=[parallel, sequential])
+    assert "Solo-Sub-Agent" in result
+    assert "(shared workflow reasoning)" in result
+
+
+def test_runtime_reason_records_sub_agent_decisions_in_evidence():
+    runtime = Runtime(name="Credit-Risk-Runtime")
+    a = Persona(name="Underwriter-A")
+    b = Persona(name="Underwriter-B")
+    workflow = Workflow(name="Parallel Review", parallel=True)
+    workflow.add_persona(a)
+    workflow.add_persona(b)
+    process = Process(name="Evaluate Credit Application")
+    process.add_workflow(workflow)
+    runtime.add_process(process)
+
+    runtime.reason(Intent(text="Evaluate a credit application"))
+    sub_decisions = runtime.memory.working[-1].evidence.sources["sub_agent_decisions"]
+    assert [label for label, _ in sub_decisions] == ["Underwriter-A", "Underwriter-B"]
+
+
+def test_runtime_reason_without_parallel_workflow_records_empty_sub_agent_list():
+    runtime = Runtime(name="Credit-Risk-Runtime")
+    runtime.add_process(Process(name="Evaluate Credit Application"))
+    runtime.reason(Intent(text="Evaluate a credit application"))
+    assert runtime.memory.working[-1].evidence.sources["sub_agent_decisions"] == []
+
+
+# ---------------------------------------------------------------------------
+# Offline: the Sandbox seam -- InProcessSandbox is the invisible default,
+# TimeoutSandbox bounds a runaway handler with the stdlib only.
+# ---------------------------------------------------------------------------
+
+
+def test_in_process_sandbox_runs_the_handler_directly():
+    result = InProcessSandbox().run(lambda a, b: a + b, a=2, b=3)
+    assert result == 5
+
+
+def test_tool_defaults_to_in_process_sandbox():
+    tool = Tool(name="add", handler=lambda a, b: a + b)
+    assert isinstance(tool.sandbox, InProcessSandbox)
+    assert tool.run(a=2, b=3) == 5
+
+
+def test_timeout_sandbox_returns_a_fast_handlers_result():
+    result = TimeoutSandbox(seconds=1.0).run(lambda: "done")
+    assert result == "done"
+
+
+def test_timeout_sandbox_raises_on_a_slow_handler():
+    import time
+
+    with pytest.raises(SandboxTimeout):
+        TimeoutSandbox(seconds=0.05).run(lambda: time.sleep(1))
+
+
+def test_tool_with_timeout_sandbox_raises_through_run():
+    import time
+
+    tool = Tool(name="slow", handler=lambda: time.sleep(1), sandbox=TimeoutSandbox(seconds=0.05))
+    with pytest.raises(SandboxTimeout):
+        tool.run()
+
+
+def test_invoker_records_a_handler_error_and_re_raises():
+    runtime = Runtime(name="R")
+    tool = Tool(name="broken", handler=lambda: (_ for _ in ()).throw(ValueError("boom")))
+    with pytest.raises(ValueError, match="boom"):
+        runtime.invoke(tool)
+    assert runtime._cycle_tool_calls[-1] == {
+        "tool": "broken",
+        "args": {},
+        "allowed": True,
+        "error": "boom",
+    }
+
+
+def test_invoker_records_a_sandbox_timeout_and_re_raises():
+    import time
+
+    runtime = Runtime(name="R")
+    tool = Tool(name="slow", handler=lambda: time.sleep(1), sandbox=TimeoutSandbox(seconds=0.05))
+    with pytest.raises(SandboxTimeout):
+        runtime.invoke(tool)
+    assert runtime._cycle_tool_calls[-1]["allowed"] is True
+    assert "error" in runtime._cycle_tool_calls[-1]
+
+
+# ---------------------------------------------------------------------------
 # Live: natural-language reasoning against a real Claude model.
 # ---------------------------------------------------------------------------
 
@@ -1071,3 +1238,48 @@ def test_runtime_invoke_blocks_on_llm_judged_tool_policy():
     assert runtime.invoke(tool, consent=True) == "score=720"
     with pytest.raises(PermissionError, match="Bureau Consent"):
         runtime.invoke(tool, consent=False)
+
+
+@requires_anthropic_key
+def test_synthesizer_reconciles_sub_agent_results_with_llm():
+    binding = claude_binding()
+    binding.activate()
+    runtime = Runtime(name="Credit-Risk-Runtime", model_binding=binding)
+
+    synthesis = Synthesizer().synthesize(
+        runtime,
+        Intent(text="Should we approve a $5,000 loan for this applicant?"),
+        [
+            ("Risk-Assessor", "The applicant's credit score of 780 and low DTI support approval."),
+            ("Compliance-Checker", "No policy violations found; consent is on file."),
+        ],
+    )
+    assert isinstance(synthesis, str) and synthesis.strip()
+
+
+@requires_anthropic_key
+def test_runtime_reason_fans_out_a_parallel_workflow_with_llm():
+    binding = claude_binding()
+    runtime = Runtime(name="Credit-Risk-Runtime", model_binding=binding)
+
+    risk = Persona(name="Risk-Assessor", instructions="Judge creditworthiness from the numbers.")
+    compliance = Persona(name="Compliance-Checker", instructions="Check the application against policy only.")
+    workflow = Workflow(name="Parallel Underwriting Review", parallel=True)
+    workflow.add_persona(risk)
+    workflow.add_persona(compliance)
+    process = Process(
+        name="Evaluate Credit Application",
+        description="Reviews a loan applicant's credit history, income and debts to decide approval.",
+    )
+    process.add_workflow(workflow)
+    runtime.add_process(process)
+
+    decision = runtime.reason(
+        Intent(
+            text="Evaluate a $5,000 loan for an applicant with credit score 780 and low debt",
+            context={"credit_score": 780, "debt_to_income": 0.2},
+        )
+    )
+    assert isinstance(decision, str) and decision.strip()
+    sub_decisions = runtime.memory.working[-1].evidence.sources["sub_agent_decisions"]
+    assert [label for label, _ in sub_decisions] == ["Risk-Assessor", "Compliance-Checker"]

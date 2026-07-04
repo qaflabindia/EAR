@@ -90,6 +90,17 @@ class DistillInsight(dspy.Signature):
     insight: str = dspy.OutputField()
 
 
+class SynthesizeSubAgentResults(dspy.Signature):
+    """Combine several sub-agents' independent results into one coherent,
+    final decision for the original intent, the way a lead agent reviewing
+    delegated work would: reconcile agreement, note any conflict, and state
+    one clear outcome."""
+
+    intent_text: str = dspy.InputField()
+    sub_agent_results: str = dspy.InputField(desc="One 'label: result' pair per line, one per sub-agent")
+    synthesis: str = dspy.OutputField(desc="The single, coherent final decision")
+
+
 class AssessGoalCompletion(dspy.Signature):
     """Decide whether a goal is satisfied by the decision reached so far.
 

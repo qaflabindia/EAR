@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from .sandbox import InProcessSandbox
+
 
 @dataclass
 class Tool:
@@ -23,12 +25,18 @@ class Tool:
     the capability tags a ToolPolicy can gate on (e.g. "read:bureau"). The
     `handler` is optional: without one, `run` returns a side-effect-free
     simulated result so a tool can be declared and governed before it is
-    implemented."""
+    implemented.
+
+    `sandbox` is the seam the handler runs through -- `InProcessSandbox` (the
+    default) runs it directly; pass a `TimeoutSandbox` to bound how long a
+    handler may run, or any object with a matching `run(handler, **kwargs)`
+    for heavier isolation."""
 
     name: str
     contract: str = ""
     handler: Optional[Callable[..., Any]] = None
     permissions: list[str] = field(default_factory=list)
+    sandbox: Any = field(default_factory=InProcessSandbox)
 
     def describe(self) -> str:
         """The plain-English contract stacked into reasoning, falling back
@@ -46,4 +54,4 @@ class Tool:
         if self.handler is None:
             rendered = ", ".join(f"{key}={value!r}" for key, value in args.items())
             return f"[simulated {self.name}({rendered})]"
-        return self.handler(**args)
+        return self.sandbox.run(self.handler, **args)
