@@ -150,14 +150,17 @@ class Server:
         if name in self.kernel.instances:
             raise _ClientError(409, f"instance '{name}' already exists")
         stack = body.get("stack")
-        if stack:
+        files = body.get("files")
+        if files:
+            runtime = self._load_inline_stack(name, files)
+        elif stack:
             runtime = self._load_stack(name, str(stack))
         else:
             from .runtime import Runtime
 
             runtime = Runtime(name=name)
         self.kernel.register(name, runtime)
-        return 201, {"instance": name, "from_stack": bool(stack)}
+        return 201, {"instance": name, "from_stack": bool(stack or files)}
 
     def _delete(self, name: str) -> tuple:
         self._instance(name)
@@ -266,6 +269,34 @@ class Server:
             raise _ClientError(404, f"no stack at '{stack}'")
         from .loader import load_runtime
 
+        return load_runtime(target, name=name)
+
+    def _load_inline_stack(self, name: str, files: dict) -> Any:
+        """Build a stack from file contents sent inline in the request body,
+        rather than requiring a caller (e.g. a LENS server in a different
+        process/pod) to share a populated filesystem with this one. Written
+        under the server's own `stacks_root` -- still confined by it, still
+        loaded through the same `load_runtime` every on-disk stack uses --
+        just populated over the wire instead of pre-existing on disk."""
+        if self.stacks_root is None:
+            raise _ClientError(400, "loading a stack requires the server's stacks_root to be configured")
+        if not isinstance(files, dict) or not files:
+            raise _ClientError(400, "'files' must be a non-empty object of filename -> content")
+        from .loader import _FILE_CANDIDATES, load_runtime
+
+        known = {filename for candidates in _FILE_CANDIDATES.values() for filename in candidates}
+        target = (Path(self.stacks_root) / ".inline" / name).resolve()
+        root = Path(self.stacks_root)
+        if root not in target.parents:
+            raise _ClientError(400, f"instance name '{name}' escapes the stacks root")
+        for filename, content in files.items():
+            if filename not in known:
+                raise _ClientError(400, f"unknown stack file '{filename}' -- known files: {', '.join(sorted(known))}")
+            if not isinstance(content, str):
+                raise _ClientError(400, f"content for '{filename}' must be a string")
+        target.mkdir(parents=True, exist_ok=True)
+        for filename, content in files.items():
+            (target / filename).write_text(content, encoding="utf-8")
         return load_runtime(target, name=name)
 
     @staticmethod

@@ -4044,6 +4044,47 @@ def test_server_submits_work_and_reports_status(tmp_path):
     assert server.handle("GET", "/kernel")[1]["dispatched"] == 1
 
 
+def test_server_creates_an_instance_from_inline_files(tmp_path):
+    """A caller in a different process (e.g. a LENS server generating a
+    persona's stack on the fly) has no filesystem to share with this one --
+    `files` lets it hand over file contents directly instead of requiring a
+    pre-populated stacks_root directory."""
+    from ear import Server
+
+    stacks = tmp_path / "stacks"
+    stacks.mkdir()
+    server = Server(stacks_root=stacks)
+
+    status, created = server.handle(
+        "POST",
+        "/instances",
+        {
+            "name": "inline-lending",
+            "files": {
+                "skills.md": MINIMAL_STACK["skills"],
+                "persona.md": MINIMAL_STACK["persona"],
+                "workflow.md": MINIMAL_STACK["workflow"],
+                "process.md": MINIMAL_STACK["process"],
+                "policy.md": MINIMAL_STACK["policy"],
+            },
+        },
+    )
+    assert status == 201 and created["from_stack"] is True
+    assert server.handle("GET", "/instances")[1]["instances"][0]["instance"] == "inline-lending"
+
+    server.handle(
+        "POST", "/instances/inline-lending/submit", {"intent": "Underwrite", "context": {"loan_amount": 5000}}
+    )
+    server.kernel.drain()
+    assert server.kernel.history[-1].status == "ran"
+
+    # An unknown filename or non-string content is a client error, not a crash.
+    assert server.handle("POST", "/instances", {"name": "x", "files": {"evil.md": "hi"}})[0] == 400
+    assert server.handle("POST", "/instances", {"name": "y", "files": {"skills.md": 123}})[0] == 400
+    # An empty files object is indistinguishable from "no files" -- a bare instance, not an error.
+    assert server.handle("POST", "/instances", {"name": "z", "files": {}})[0] == 201
+
+
 def test_server_approve_resubmits_a_parked_intent_over_the_wire(tmp_path):
     """`Exchange`'s approval.md file-drop assumes a shared filesystem --
     not true when the caller is a separate process over the network. The
