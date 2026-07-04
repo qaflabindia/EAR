@@ -83,11 +83,11 @@ class Loader:
         processes_doc = self._parse("processes")
         memory_text = self._read("memory")
 
-        skills = self._load_skills(skills_doc)
-        personas = self._load_personas(personas_doc, skills)
-        policies, policy_scopes = self._load_policies(policies_doc)
-        workflows = self._load_workflows(workflows_doc, personas, policies)
-        processes, referenced = self._load_processes(processes_doc, workflows)
+        skills = Loader._load_skills(skills_doc)
+        personas = Loader._load_personas(personas_doc, skills)
+        policies, policy_scopes = Loader._load_policies(policies_doc)
+        workflows = Loader._load_workflows(workflows_doc, personas, policies)
+        processes, referenced = Loader._load_processes(processes_doc, workflows)
 
         runtime = Runtime(name=name or processes_doc.title or self.directory.name)
         for process in processes:
@@ -118,7 +118,8 @@ class Loader:
 
     # -- stacking each layer ------------------------------------------------
 
-    def _load_skills(self, document: Document) -> dict[str, Skill]:
+    @staticmethod
+    def _load_skills(document: Document) -> dict[str, Skill]:
         skills: dict[str, Skill] = {}
         for section in document.sections:
             body = section.body(field_keys=("description",))
@@ -130,7 +131,8 @@ class Loader:
             )
         return skills
 
-    def _load_personas(self, document: Document, skills: dict[str, Skill]) -> dict[str, Persona]:
+    @staticmethod
+    def _load_personas(document: Document, skills: dict[str, Skill]) -> dict[str, Persona]:
         personas: dict[str, Persona] = {}
         for section in document.sections:
             body = section.body(field_keys=("skills", "skill"))
@@ -150,7 +152,8 @@ class Loader:
             personas[normalize(section.name)] = persona
         return personas
 
-    def _load_policies(self, document: Document) -> tuple[dict[str, Policy], dict[str, str]]:
+    @staticmethod
+    def _load_policies(document: Document) -> tuple[dict[str, Policy], dict[str, str]]:
         policies: dict[str, Policy] = {}
         scopes: dict[str, str] = {}
         for section in document.sections:
@@ -183,7 +186,7 @@ class Loader:
                 name=section.name,
                 statement=statement,
                 fallback_expression=body.field("fallback", "fallback expression"),
-                approval_required=self._read_approval_field(section.name, body.field("approval")),
+                approval_required=Loader._read_approval_field(section.name, body.field("approval")),
                 approvers=_split_references(body.field("approvers", "approver")),
                 escalation=escalation,
                 escalation_days=escalation_days,
@@ -210,8 +213,8 @@ class Loader:
             "write 'Approval: required' or 'Approval: not required'"
         )
 
+    @staticmethod
     def _load_workflows(
-        self,
         document: Document,
         personas: dict[str, Persona],
         policies: dict[str, Policy],
@@ -226,7 +229,7 @@ class Loader:
                     raise ValueError(
                         f"Deliverable section '{section.name}' has no workflow above it to attach to"
                     )
-                last_workflow.contract = self._load_contract(section, last_workflow)
+                last_workflow.contract = Loader._load_contract(section, last_workflow)
                 continue
             body = section.body(
                 field_keys=(
@@ -286,8 +289,9 @@ class Loader:
             raise ValueError(f"Deliverable of '{workflow.name}' declares no fields -- add '- name: meaning' bullets")
         return contract
 
+    @staticmethod
     def _load_processes(
-        self, document: Document, workflows: dict[str, Workflow]
+        document: Document, workflows: dict[str, Workflow]
     ) -> tuple[list[Process], set[str]]:
         processes: list[Process] = []
         referenced: set[str] = set()

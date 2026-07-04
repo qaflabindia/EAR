@@ -44,6 +44,18 @@ class Skill:
         natural-language signal even if only loosely specified."""
         return self.prompt or self.description or self.name
 
+    def to_markdown(self) -> str:
+        """Render this skill the same way skills.md stacks one -- a heading
+        and, optionally, a `Description:` field, then the prompt. Read back
+        by `Loader._load_skills` unchanged, so a Skill saved to a SkillStore
+        round-trips through the same parser every stacked skills.md uses."""
+        lines = [f"## {self.name}", ""]
+        if self.description:
+            lines += [f"Description: {self.description}", ""]
+        if self.prompt:
+            lines.append(self.prompt)
+        return "\n".join(lines).rstrip() + "\n"
+
     def invoke(self, *args: Any, **kwargs: Any) -> Any:
         """Run the optional deterministic handler. Most skills have none --
         they are reasoned over as prompts -- so this is only for the advanced

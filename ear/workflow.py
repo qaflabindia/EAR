@@ -61,6 +61,34 @@ class Workflow:
         self.policies.append(policy)
         return self
 
+    def to_markdown(self) -> str:
+        """Render this workflow the way workflow.md stacks one -- a
+        heading, its recognized fields, numbered steps (each delegated
+        step suffixed `(Persona)`), and, if a Contract is attached, a
+        `### Deliverable` section directly beneath. Read back by
+        `Loader._load_workflows`/`_load_contract` against already-loaded
+        personas and policies, matching cross-store composition order."""
+        lines = [f"## {self.name}", ""]
+        if self.pattern:
+            lines.append(f"Pattern: {self.pattern}")
+        if self.routes:
+            lines.append(f"Routes: {self.routes}")
+        if self.retry_budget is not None:
+            lines.append(f"Retries: retry a failed leg {self.retry_budget} times")
+        if self.policies:
+            lines.append(f"Policies: {', '.join(policy.name for policy in self.policies)}")
+        lines.append("")
+        for number, step in enumerate(self.steps, start=1):
+            suffix = f" ({step.persona.name})" if step.persona is not None else ""
+            lines.append(f"{number}. {step.instruction}{suffix}")
+        if self.contract is not None:
+            lines += ["", "### Deliverable", ""]
+            if self.contract.description:
+                lines += [self.contract.description, ""]
+            for field_ in self.contract.fields:
+                lines.append(f"- {field_.name}: {field_.meaning}")
+        return "\n".join(lines).rstrip() + "\n"
+
     def delegated_personas(self) -> list[Persona]:
         """Every Persona this workflow reasons through -- those delegated to
         a step and any stacked directly -- in order, de-duplicated by

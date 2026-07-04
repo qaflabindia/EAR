@@ -117,7 +117,9 @@ from .skill import Skill
 from .skill_selector import SkillSelector
 from .spawner import Spawner
 from .step import Step
+from .store import PersonaStore, PolicyStore, ProcessStore, SkillStore, Store, Stores, TaskStore, WorkflowStore
 from .strategy import Strategy
+from .task import TaskDefinition
 from .tool import Tool
 from .tool_binder import BoundTool, ToolBinder
 from .validator import Validator
@@ -224,5 +226,14 @@ __all__ = [
     "McpError",
     "McpTool",
     "Ontology",
+    "Store",
+    "SkillStore",
+    "PersonaStore",
+    "TaskStore",
+    "WorkflowStore",
+    "ProcessStore",
+    "PolicyStore",
+    "Stores",
+    "TaskDefinition",
     "__version__",
 ]
