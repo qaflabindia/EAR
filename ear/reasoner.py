@@ -15,11 +15,12 @@ LLM."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
 from .intent import Intent
 from .reasoning_log import calls_so_far, usage_since
+from .skill_selector import SkillSelector
 
 # How many times the native tool loop will correct a malformed turn (a
 # hallucinated tool name, or neither a call nor a decision) before it stops
@@ -35,10 +36,13 @@ class Reasoner:
     ModelBinding's LM, or falls back to a deterministic summary when none
     is active."""
 
+    skill_selector: Optional[SkillSelector] = field(default_factory=SkillSelector)
+
     def reason(self, intent: Intent, runtime: Any = None, plan: Any = None, research: Any = None) -> Any:
-        capabilities = self._render_capabilities(plan)
-        knowledge = self._render_research(research)
         model_binding = getattr(runtime, "model_binding", None)
+        lm_for_selection = getattr(model_binding, "lm", None) if model_binding is not None else None
+        capabilities = self._render_capabilities(plan, intent, lm_for_selection)
+        knowledge = self._render_research(research)
         binder = getattr(runtime, "tool_binder", None)
         bound_tools = binder.bound_tools(runtime, plan) if binder is not None else []
         deliberation_start = calls_so_far(getattr(model_binding, "lm", None))
@@ -209,15 +213,19 @@ class Reasoner:
             f"{processes}{capability_note}{memory_note}"
         )
 
-    @staticmethod
-    def _render_capabilities(plan: Any) -> str:
+    def _render_capabilities(self, plan: Any, intent: Optional[Intent] = None, lm: Any = None) -> str:
         """Flatten the scheduled plan (Workflows -> ordered Steps delegated to
         Personas -> stacked Skill prompts) into a natural-language block the
         reasoner can act on, in order. This is what makes the user's stacking
         matter: the narrated steps, the personas they delegate to and the
         stacked skill prompts are what the LLM reasons with and the order it
         works them in, rather than the bare intent. Returns "" when no plan
-        is threaded through, so reasoning stays valid in that case."""
+        is threaded through, so reasoning stays valid in that case.
+
+        Each persona's skills are passed through the SkillSelector, so only
+        the skills relevant to `intent` are stacked -- progressive
+        selection, not the whole library, when a persona carries more than
+        the selector's `top_k`."""
         if not plan:
             return ""
         lines: list[str] = []
@@ -231,14 +239,21 @@ class Reasoner:
                 if step.persona is not None:
                     delegate = f" [delegated to Persona {step.persona.name}]"
                 lines.append(f"  Step {number}: {step.instruction}{delegate}")
-                Reasoner._render_persona(step.persona, lines, indent="      ")
+                self._render_persona(step.persona, lines, indent="      ", intent=intent, lm=lm)
             # Personas stacked directly on the workflow (no per-step narration).
             for persona in getattr(workflow, "personas", []):
-                Reasoner._render_persona(persona, lines, indent="  ", header=True)
+                self._render_persona(persona, lines, indent="  ", intent=intent, lm=lm, header=True)
         return "\n".join(lines)
 
-    @staticmethod
-    def _render_persona(persona: Any, lines: list[str], indent: str, header: bool = False) -> None:
+    def _render_persona(
+        self,
+        persona: Any,
+        lines: list[str],
+        indent: str,
+        intent: Optional[Intent] = None,
+        lm: Any = None,
+        header: bool = False,
+    ) -> None:
         if persona is None:
             return
         instructions = getattr(persona, "instructions", "")
@@ -249,9 +264,18 @@ class Reasoner:
             lines.append(line)
         elif instructions:
             lines.append(f"{indent}Persona {persona.name}: {instructions}")
-        for skill in getattr(persona, "skills", []):
+        for skill in self._select_skills(persona, intent, lm):
             instruction = skill.instruction() if hasattr(skill, "instruction") else getattr(skill, "name", "")
             lines.append(f"{indent}  - Skill {skill.name}: {instruction}")
+
+    def _select_skills(self, persona: Any, intent: Optional[Intent], lm: Any) -> list[Any]:
+        """The skills to stack for this persona: progressively selected by
+        the SkillSelector when one is set and an intent is known, else every
+        skill (preserving the plain, unfiltered behaviour when no intent is
+        threaded through)."""
+        if self.skill_selector is None or intent is None:
+            return list(getattr(persona, "skills", []))
+        return self.skill_selector.select(persona, intent, lm)
 
     @staticmethod
     def _render_research(research: Any) -> str:

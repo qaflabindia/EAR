@@ -106,6 +106,7 @@ from .process import Process
 from .reasoner import Reasoner
 from .reasoning_log import ReasoningLog, ReasoningRecord
 from .recaller import Recaller
+from .router import AllProvidersFailed, Router, RouterProvider, RoutingStrategy
 from .runtime import Runtime
 from .sandbox import Sandbox, SandboxResult, SandboxViolation
 from .scheduler import Scheduler
@@ -113,6 +114,7 @@ from .selector import Selector
 from .server import Server
 from .session_store import SessionStore
 from .skill import Skill
+from .skill_selector import SkillSelector
 from .spawner import Spawner
 from .step import Step
 from .strategy import Strategy
@@ -133,6 +135,10 @@ __all__ = [
     "Policy",
     "Runtime",
     "ModelBinding",
+    "Router",
+    "RouterProvider",
+    "RoutingStrategy",
+    "AllProvidersFailed",
     "LM",
     "Judgment",
     "Field",
@@ -147,6 +153,7 @@ __all__ = [
     "Initializer",
     "Discoverer",
     "Selector",
+    "SkillSelector",
     "Composer",
     "Scheduler",
     "Delegator",

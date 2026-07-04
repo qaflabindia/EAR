@@ -49,6 +49,19 @@ DiscoverRelevantProcesses = Judgment(
     outputs=[Field("relevant_process_names", "Names of the relevant processes, most relevant first", "list")],
 )
 
+RankRelevantSkills = Judgment(
+    instruction=(
+        "Identify which of a persona's skills are relevant to handling the "
+        "given intent, most relevant first, so only those need be stacked "
+        "into reasoning."
+    ),
+    inputs=[
+        Field("intent_text"),
+        Field("available_skills", "One 'name: instruction' pair per line"),
+    ],
+    outputs=[Field("relevant_skill_names", "Names of the relevant skills, most relevant first", "list")],
+)
+
 SelectProcesses = Judgment(
     instruction=(
         "Choose which of the candidate processes should actually run for the "

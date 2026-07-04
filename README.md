@@ -981,6 +981,102 @@ result = runtime.reason(Intent(text="Create PO for laptops under approved budget
 before any judgment-laden stage runs, so `Policy`, `Discoverer`, the
 `Reasoner` and the `Explainer` all reason against the same live model.
 
+## Provider-agnostic routing: the omni-route `Router`
+
+A single `ModelBinding` speaks to one provider. A `Router` is the
+OmniRoute-style, provider-agnostic agent: it stacks *many* provider
+bindings — any provider `ear/llm.py` speaks to (Anthropic natively, or
+anything OpenAI-compatible via `api_base`: OpenAI, Azure, Ollama, Together,
+vLLM, … 250+), each reading its own key from the environment — behind one
+binding, picks which to try first by a **routing strategy**, **falls back**
+to the next provider when one errors or is rate-limited, and trips a
+**circuit breaker** that benches a failing provider for a cooldown window so
+the next call routes around it.
+
+A `Router` *is* a drop-in `ModelBinding` — same `activate()`, `lm` and
+`model_id` surface — so you assign it to `runtime.model_binding` and the
+whole pipeline (`Governor`, `Discoverer`, `Policy`, `Reasoner`, `Explainer`,
+...) becomes provider-agnostic without any stage knowing a router is there.
+It builds no framework of its own: once a provider's turn comes, `Router`
+just calls that provider's own native `LM.complete(prompt, system=...)` —
+routing is a seam in front of EAR's dependency-free LLM client, not a
+replacement for it.
+
+```python
+from ear import ModelBinding, Router, RoutingStrategy
+
+router = Router.across(
+    ModelBinding(provider="anthropic", model="claude-opus-4-8"),   # tried first (list order = priority)
+    ModelBinding(provider="openai", model="gpt-4o"),
+    ModelBinding(provider="groq", model="llama-3.3-70b"),
+    strategy=RoutingStrategy.PRIORITY,   # ordered fallback
+)
+runtime.model_binding = router
+```
+
+Routing metadata (`priority`, `cost_per_1k`, `weight`, `is_free`, `label`)
+lives on a small `RouterProvider` wrapper, not on the shared `ModelBinding`
+class itself — a binding's priority is a property of *this* router, not of
+the provider. Use `add_provider` for metadata beyond list-order priority:
+
+```python
+router = Router(strategy=RoutingStrategy.FREE_FIRST)
+router.add_provider(ModelBinding(provider="anthropic", model="claude-opus-4-8"), priority=10)
+router.add_provider(ModelBinding(provider="groq", model="llama-3.3-70b"), is_free=True)
+```
+
+The strategy only decides *who goes first*; the Router always walks the
+ordered list and falls back on failure:
+
+| Strategy | Orders providers by |
+| --- | --- |
+| `PRIORITY` | lowest `priority` number first (ordered fallback) |
+| `CHEAPEST` | lowest `cost_per_1k` first |
+| `FREE_FIRST` | `is_free` providers first, then by priority |
+| `ROUND_ROBIN` | rotates the starting provider each call |
+| `WEIGHTED` | random order, biased by each provider's `weight` |
+| `RANDOM` | uniform random order |
+
+Because config belongs in the environment, never hardcoded, a Router can be
+built straight from an env var — a JSON array of providers, or a shorthand
+`provider/model` list:
+
+```python
+# EAR_ROUTER='anthropic/claude-opus-4-8, openai/gpt-4o, groq/llama-3.3-70b'
+router = Router.from_env("EAR_ROUTER", strategy=RoutingStrategy.PRIORITY)
+```
+
+The selection order, the fallback walk and the cooldown breaker are plain,
+deterministic Python (`router.order()`, `router.dispatch(...)`), so the
+routing behaviour is fully testable with fake per-provider `LM`s and no
+network at all — the same offline/live two-tier testability the rest of
+the package keeps.
+
+## Progressive skill selection
+
+A `Persona` can carry a large library of `Skill`s without every prompt
+being stacked into every reasoning call. The `SkillSelector` stacks only
+the skills relevant to the current intent — the same relevance ranking
+`Discoverer` already does for whole processes, applied one level down to a
+persona's skills:
+
+```text
+Discoverer     → ranks Processes relevant to an Intent   (LLM-ranked, keyword fallback)
+SkillSelector  → ranks a Persona's Skills the same way    (LLM-ranked, keyword fallback)
+```
+
+It is on by default (`Reasoner(skill_selector=SkillSelector(top_k=8))`) and
+**short-circuits** — returning every skill, in order — whenever a persona
+has `top_k` or fewer skills, so the common case costs nothing and small
+personas behave exactly as before. Only when a persona exceeds `top_k` does
+it rank (natively, when a model is active; by keyword overlap offline) and
+keep the most relevant. Pass `skill_selector=None` to always stack every
+skill.
+
+`Skill` also carries **provenance** — `version` and `author` — so a
+decision's audit trail can be traced back to the exact skill (and version)
+that shaped it: which version of which capability produced this decision.
+
 ## Memory: Evidence, Memory, Experience and Adaptation
 
 AI systems routinely conflate four distinct concerns: *why* a decision was
@@ -1052,6 +1148,7 @@ ear/
   policy.py        Policy        — governance rule, judged in natural language with a safe-eval fallback; attaches runtime-wide or to a Workflow
   runtime.py       Runtime       — runs every cycle through the full operation pipeline below
   model_binding.py ModelBinding  — LLM provider binding (model, credentials, params -> EAR's own LM)
+  router.py        Router        — omni-route: routes across many ModelBindings with fallback + cooldown (a drop-in ModelBinding)
   llm.py           LM            — the dependency-free LLM client: stdlib HTTPS, provider wire formats
   judgment.py      Judgment      — native structured prompting: declared inputs/outputs, markdown answers
   evidence.py      Evidence      — why this decision was made
@@ -1064,6 +1161,7 @@ ear/
   initializer.py   Initializer   — initialize: activate the ModelBinding
   discoverer.py    Discoverer    — discover: find Processes relevant to an Intent
   selector.py      Selector      — select: choose among candidates (LLM-chosen, dedupe fallback)
+  skill_selector.py SkillSelector — select: stack only the Skills relevant to an Intent (LLM-ranked, keyword fallback)
   delegator.py     Delegator     — delegate: assign undelegated steps to personas at runtime
   composer.py      Composer      — compose: assemble selected processes' Workflows into a plan
   scheduler.py     Scheduler     — schedule: order the composed plan
