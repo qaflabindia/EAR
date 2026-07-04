@@ -85,6 +85,13 @@ class Runtime:
     # the Spawner it bounds.
     strategy: Optional[Any] = None
     session_store: Optional[Any] = None
+    # The named catalogue (Stores: SkillStore, PersonaStore, ...) this
+    # runtime's stack was loaded from -- file-based under `store/` by
+    # default (the fallback), or a PostgresAgeBackend if memory.md's
+    # Catalogue Store section opted in. Loader wires this on every load;
+    # a Runtime built by hand and never loaded from a directory leaves it
+    # None.
+    stores: Optional[Any] = None
     spawner: Spawner = field(default_factory=Spawner)
     tool_binder: ToolBinder = field(default_factory=ToolBinder)
     panel: Panel = field(default_factory=Panel)

@@ -25,6 +25,11 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+# Opt-in only: required for PostgresAgeBackend (ear.store), used only when
+# a memory.md "Catalogue Store" section declares `Store: true` and
+# `Backend: apache-age`. The zero-dependency default (a named on-disk
+# catalogue) needs none of this.
+postgres = ["psycopg[binary]>=3"]
 
 [project.urls]
 Homepage = "https://github.com/qaflabindia/EAR"

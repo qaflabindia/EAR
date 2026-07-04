@@ -374,6 +374,12 @@ class Loader:
         if strategy.knowledge_sources:
             runtime.librarian.knowledge = self._load_knowledge(runtime, strategy)
 
+        # Local import: `store.py` imports `Loader` (to reuse its per-kind
+        # parsing), so a module-level import here would be circular.
+        from .store import Stores
+
+        runtime.stores = Stores.from_strategy(self.directory / "store", strategy)
+
         instructions = self.directory / ".ear" / "instructions.md"
         if instructions.exists():
             # A persisted, reviewable override of the shipped instructions

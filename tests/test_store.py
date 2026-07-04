@@ -192,3 +192,55 @@ def test_task_definition_to_step_delegates_to_the_given_persona():
     assert step.instruction == "Check the data."
     assert step.persona is persona
     assert step.name == "Sanity Check"
+
+
+def test_stores_defaults_to_file_backend_with_no_strategy_opt_in(tmp_path):
+    from ear.strategy import Strategy
+
+    stores = Stores.from_strategy(tmp_path / "store", Strategy())
+    assert stores.backend_name == "file"
+    assert isinstance(stores.skills.store, Store)
+
+
+def test_stores_stays_file_backed_when_store_is_explicitly_false(tmp_path):
+    from ear.strategy import Strategy
+
+    strategy = Strategy.from_markdown("## Catalogue Store\n\nStore: false.\n")
+    stores = Stores.from_strategy(tmp_path / "store", strategy)
+    assert stores.backend_name == "file"
+
+
+def test_stores_opts_into_postgres_age_when_declared(tmp_path):
+    from ear.strategy import Strategy
+
+    strategy = Strategy.from_markdown(
+        "## Catalogue Store\n\nStore: true\nBackend: apache-age\n"
+        "Connection: `postgresql://ear:secret@localhost/ear`\n"
+    )
+    assert strategy.catalogue_store_enabled is True
+    assert strategy.catalogue_backend == "apache-age"
+    assert strategy.catalogue_connection == "postgresql://ear:secret@localhost/ear"
+
+    # psycopg is not installed in this environment, so opting in must fail
+    # loudly and immediately with an actionable message -- never silently
+    # fall back to file storage once the user has explicitly opted in.
+    with pytest.raises(ImportError, match="psycopg"):
+        Stores.from_strategy(tmp_path / "store", strategy)
+
+
+def test_kind_stores_require_either_directory_or_backend():
+    with pytest.raises(ValueError, match="directory.*backend"):
+        SkillStore()
+
+
+def test_loader_wires_runtime_stores_from_directory(tmp_path):
+    from ear.loader import load_runtime
+
+    (tmp_path / "skills.md").write_text("# Skills\n\n## Greet\n\nSay hello.\n")
+    runtime = load_runtime(tmp_path)
+    assert runtime.stores is not None
+    assert runtime.stores.backend_name == "file"
+
+    skill = Skill(name="Persisted Skill", prompt="Do the thing.")
+    runtime.stores.skills.save(skill)
+    assert runtime.stores.skills.load("Persisted Skill").prompt == "Do the thing."
