@@ -44,15 +44,19 @@ import json
 import os
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, Union
 from urllib.parse import parse_qsl
 
 from .approval import Approval
 from .intent import Intent
 from .kernel import Kernel
+from .llm import _ssl_context
+from .section import normalize
 
 MAX_BODY_BYTES = 1_048_576  # 1 MiB -- a control-plane request is small
 
@@ -76,6 +80,18 @@ class Server:
     host: str = "127.0.0.1"
     port: int = 8080
     token: Optional[str] = None
+    # A stack can *declare* a tool in memory.md's Tools section, but a
+    # declaration alone has no executable behind it -- the runtime never
+    # auto-runs a `command` string, on purpose (see tool.py). When the
+    # caller creating an instance is itself a remote system whose own
+    # capabilities the stack's tools are meant to reach (rather than a
+    # human hand-writing a Python handler), `bridge_url`/`bridge_token`
+    # give every declared-but-unbound tool a generic handler: forward the
+    # call as JSON, return the response text, same trail record as any
+    # other tool. Set once for the whole server -- one deployment forwards
+    # to one system.
+    bridge_url: Optional[str] = None
+    bridge_token: Optional[str] = None
     started_at: float = field(default_factory=time.monotonic)
     _httpd: Any = None
     _thread: Any = None
@@ -85,10 +101,19 @@ class Server:
     # file-drop convention `Exchange` uses, so the server is the one that
     # remembers what a parked cycle was actually asked to do.
     _last_intents: dict = field(default_factory=dict)
+    # Per-instance context (e.g. org/task/session identifiers) merged into
+    # every bridged tool call for that instance, so the remote system can
+    # authorise and scope the call without EAR needing to understand what
+    # any of those identifiers mean.
+    _bridge_contexts: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.token is None:
             self.token = os.environ.get("EAR_SERVER_TOKEN")
+        if self.bridge_url is None:
+            self.bridge_url = os.environ.get("EAR_BRIDGE_URL")
+        if self.bridge_token is None:
+            self.bridge_token = os.environ.get("EAR_BRIDGE_TOKEN")
         if self.stacks_root is not None:
             self.stacks_root = Path(self.stacks_root).resolve()
 
@@ -165,6 +190,7 @@ class Server:
             from .runtime import Runtime
 
             runtime = Runtime(name=name)
+        self._bind_bridge_tools(name, runtime, body.get("bridge_context") or {})
         self.kernel.register(name, runtime)
         return 201, {"instance": name, "from_stack": bool(stack or files)}
 
@@ -221,6 +247,35 @@ class Server:
         if api_key:
             binding.api_key = str(api_key)
             binding.lm = None
+
+    def _bind_bridge_tools(self, name: str, runtime: Any, bridge_context: dict) -> None:
+        """Give every tool this stack declared -- but left unbound -- a
+        generic handler that forwards the call to `bridge_url` as JSON.
+        Declaring a tool never wires it to code by itself (see tool.py); this
+        is that wiring, for the one case where "the code" is a remote system
+        reachable over HTTP rather than a Python function in this process."""
+        if not self.bridge_url:
+            return
+        self._bridge_contexts[name] = dict(bridge_context)
+        strategy = getattr(runtime, "strategy", None)
+        declared = getattr(strategy, "tools", None) or []
+        binder = runtime.tool_binder
+        for tool in declared:
+            if normalize(tool.name) in binder.bindings:
+                continue  # a stack-specific handler already claimed this name
+            binder.bind(tool.name, self._bridge_handler(name, tool.name))
+
+    def _bridge_handler(self, instance_name: str, tool_name: str) -> Callable[..., Any]:
+        def handler(**kwargs: Any) -> str:
+            payload = {
+                "tool": tool_name,
+                "input": kwargs,
+                "context": self._bridge_contexts.get(instance_name, {}),
+            }
+            return _call_bridge(str(self.bridge_url), self.bridge_token, payload)
+
+        handler.__name__ = f"bridge_{tool_name}"
+        return handler
 
     def _status(self, name: str) -> dict:
         runtime = self._instance(name)
@@ -394,6 +449,31 @@ def _require(body: dict, key: str) -> Any:
     if key not in body or body[key] in (None, ""):
         raise _ClientError(400, f"missing required field '{key}'")
     return body[key]
+
+
+def _call_bridge(url: str, token: Optional[str], payload: dict) -> str:
+    """POST one bridged tool call and return the remote system's text
+    response. Raises loudly on any failure -- transport, auth, or an
+    error response -- so the failure reaches the model as tool-call text
+    like any other tool failure (ToolBinder._logged wraps every handler)."""
+    data = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, context=_ssl_context(), timeout=30) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace")[:500]
+        raise RuntimeError(f"bridge call to {url} failed ({error.code}): {detail}") from error
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise RuntimeError(f"bridge call to {url} failed: {error}") from error
+    except ValueError as error:
+        raise RuntimeError(f"bridge call to {url} returned malformed JSON: {error}") from error
+    if isinstance(body, dict) and not body.get("ok", True):
+        raise RuntimeError(str(body.get("error") or "bridge call reported failure"))
+    return json.dumps(body.get("output", body)) if isinstance(body, dict) else str(body)
 
 
 def _make_handler(server: Server):

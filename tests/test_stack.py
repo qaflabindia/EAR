@@ -4181,6 +4181,72 @@ def test_server_bearer_token_auth_over_a_real_socket(tmp_path):
         server.stop()
 
 
+def test_server_bridges_a_declared_tool_to_a_remote_http_system(tmp_path):
+    """Declaring `- check_inventory: ...` in memory.md's Tools section gives
+    the model something to see, not something to run (tool.py) -- nothing
+    auto-executes a `command` string. When the caller creating the instance
+    is itself a remote system, bridge_url/bridge_token wire every declared
+    but otherwise-unbound tool to a generic HTTP forward instead."""
+    import json as _json
+    import threading as _threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from ear import Server
+
+    received = []
+
+    class _BridgeHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = _json.loads(self.rfile.read(length))
+            received.append((self.headers.get("Authorization"), payload))
+            body = _json.dumps({"ok": True, "output": {"level": 42}}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            return
+
+    bridge = HTTPServer(("127.0.0.1", 0), _BridgeHandler)
+    thread = _threading.Thread(target=bridge.serve_forever, daemon=True)
+    thread.start()
+    try:
+        bridge_url = f"http://127.0.0.1:{bridge.server_address[1]}/execute"
+        stack = dict(
+            MINIMAL_STACK,
+            memory="# Memory\n\n## Tools\n\n- check_inventory: looks up stock for a SKU\n",
+        )
+        stacks = tmp_path / "stacks"
+        stacks.mkdir()
+        write_stack(stacks / "lending", **stack)
+        server = Server(stacks_root=stacks, bridge_url=bridge_url, bridge_token="bridge-secret")
+        server.handle(
+            "POST",
+            "/instances",
+            {"name": "lending", "stack": "lending", "bridge_context": {"orgId": "org-1", "taskId": "task-1"}},
+        )
+
+        runtime = server.kernel.instances["lending"]
+        tools = runtime.tool_binder.bound_tools(runtime)
+        tool = next(t for t in tools if t.name == "check_inventory")
+        result = tool.handler(sku="ABC-1")
+
+        assert result == '{"level": 42}'
+        auth_header, payload = received[0]
+        assert auth_header == "Bearer bridge-secret"
+        assert payload == {
+            "tool": "check_inventory",
+            "input": {"sku": "ABC-1"},
+            "context": {"orgId": "org-1", "taskId": "task-1"},
+        }
+    finally:
+        bridge.shutdown()
+        thread.join(timeout=2)
+
+
 # ---------------------------------------------------------------------------
 # Kubernetes: EAR instances as Jobs and CronJobs, spoken natively over the
 # K8s REST API. Unit-tested against a faithful fake transport -- not a live
