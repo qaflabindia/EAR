@@ -25,6 +25,7 @@ from ear import (
     AdaptationBank,
     Adapter,
     AllProvidersFailed,
+    Assessor,
     Auditor,
     Composer,
     Decider,
@@ -34,6 +35,7 @@ from ear import (
     Executor,
     Experience,
     Explainer,
+    Goal,
     Governor,
     Initializer,
     Intent,
@@ -603,6 +605,88 @@ def test_router_activate_builds_a_routing_lm():
 
 
 # ---------------------------------------------------------------------------
+# Offline: the Goal loop -- completion is judged by the Assessor's safe-eval
+# fallback (no ModelBinding), so goal-driven iteration is deterministic.
+# ---------------------------------------------------------------------------
+
+
+def test_assessor_fallback_completes_when_expression_holds():
+    goal = Goal(fallback_expression="'approved' in decision")
+    done, blocker = Assessor().assess(Runtime(name="R"), Intent(text="x"), goal, "approved")
+    assert done is True and blocker == ""
+
+
+def test_assessor_fallback_is_not_done_when_expression_fails():
+    goal = Goal(fallback_expression="'approved' in decision")
+    done, _ = Assessor().assess(Runtime(name="R"), Intent(text="x"), goal, "declined")
+    assert done is False
+
+
+def test_assessor_fallback_missing_variable_is_not_done():
+    # A variable the goal expects isn't set yet -> keep iterating, don't crash.
+    goal = Goal(fallback_expression="risk_grade in ('A', 'B')")
+    done, _ = Assessor().assess(Runtime(name="R"), Intent(text="x"), goal, "ungraded text")
+    assert done is False
+
+
+def test_assessor_without_expression_completes_after_one_cycle():
+    # No fallback expression and no LLM -> nothing to iterate on, so done.
+    goal = Goal(statement="graded and decided")
+    done, _ = Assessor().assess(Runtime(name="R"), Intent(text="x"), goal, "anything")
+    assert done is True
+
+
+def test_assessor_fallback_rejects_unsafe_expression():
+    goal = Goal(fallback_expression="__import__('os').system('echo hi')")
+    with pytest.raises(ValueError):
+        Assessor().assess(Runtime(name="R"), Intent(text="x"), goal, "d")
+
+
+def test_intent_continued_with_threads_prior_decisions():
+    first = Intent(text="Evaluate").continued_with("cycle-1")
+    assert first.context["_prior_decision"] == "cycle-1"
+    assert first.context["_prior_decisions"] == ["cycle-1"]
+    second = first.continued_with("cycle-2")
+    assert second.context["_prior_decisions"] == ["cycle-1", "cycle-2"]
+    assert second.text == "Evaluate"
+
+
+def test_runtime_reason_without_a_goal_runs_a_single_cycle():
+    runtime = Runtime(name="Credit-Risk-Runtime")
+    runtime.add_process(Process(name="Evaluate Credit Application"))
+    runtime.reason(Intent(text="Evaluate a credit application"))
+    assert len(runtime.memory.working) == 1
+    assert runtime.experience.observations == 1
+
+
+def test_runtime_reason_with_a_met_goal_stops_after_one_cycle():
+    runtime = Runtime(name="Credit-Risk-Runtime")
+    runtime.add_process(Process(name="Evaluate Credit Application"))
+    # The offline reasoner's output contains the word "resolved".
+    goal = Goal(fallback_expression="'resolved' in decision", max_cycles=5)
+    runtime.reason(Intent(text="Evaluate a credit application"), goal=goal)
+    assert len(runtime.memory.working) == 1
+
+
+def test_runtime_reason_with_an_unmet_goal_iterates_to_the_cap():
+    runtime = Runtime(name="Credit-Risk-Runtime")
+    runtime.add_process(Process(name="Evaluate Credit Application"))
+    goal = Goal(fallback_expression="'never-appears' in decision", max_cycles=3)
+    runtime.reason(Intent(text="Evaluate a credit application"), goal=goal)
+    assert len(runtime.memory.working) == 3
+    assert runtime.experience.observations == 3
+
+
+def test_runtime_reason_stops_when_the_assessor_reports_a_blocker():
+    runtime = Runtime(name="Credit-Risk-Runtime")
+    runtime.add_process(Process(name="Evaluate Credit Application"))
+    runtime.assessor.assess = lambda *args, **kwargs: (False, "needs_input")
+    goal = Goal(fallback_expression="'x' in decision", max_cycles=5)
+    runtime.reason(Intent(text="Evaluate application"), goal=goal)
+    assert len(runtime.memory.working) == 1
+
+
+# ---------------------------------------------------------------------------
 # Live: natural-language reasoning against a real Claude model.
 # ---------------------------------------------------------------------------
 
@@ -726,3 +810,47 @@ def test_router_falls_back_across_providers_in_a_real_runtime_cycle():
     assert isinstance(decision, str) and decision.strip()
     # The working provider is the one that actually served the reasoning.
     assert router.last_served is working
+
+
+@requires_anthropic_key
+def test_assessor_judges_goal_completion_with_llm():
+    binding = claude_binding()
+    binding.activate()
+    runtime = Runtime(name="Credit-Risk-Runtime", model_binding=binding)
+    goal = Goal(statement="The applicant has been given a final approve-or-decline decision.")
+
+    done, _ = Assessor().assess(
+        runtime, Intent(text="Evaluate a loan"), goal, "Decision: approve the $5,000 loan."
+    )
+    assert done is True
+
+    not_done, _ = Assessor().assess(
+        runtime, Intent(text="Evaluate a loan"), goal, "I still need the applicant's income before deciding."
+    )
+    assert not_done is False
+
+
+@requires_anthropic_key
+def test_runtime_reason_iterates_toward_an_llm_judged_goal():
+    binding = claude_binding()
+    runtime = Runtime(name="Credit-Risk-Runtime", model_binding=binding)
+    process = Process(
+        name="Evaluate Credit Application",
+        description="Reviews a loan applicant's credit history, income and debts to decide approval.",
+    )
+    process.add_workflow(Workflow(name="Credit Review Workflow"))
+    runtime.add_process(process)
+
+    decision = runtime.reason(
+        Intent(
+            text="Evaluate a $5,000 loan for an applicant with credit score 780 and low debt",
+            context={"credit_score": 780, "debt_to_income": 0.2},
+        ),
+        goal=Goal(
+            statement="A clear approve or decline decision has been stated.",
+            max_cycles=3,
+        ),
+    )
+    assert isinstance(decision, str) and decision.strip()
+    # It reached a decision within the cap.
+    assert 1 <= len(runtime.memory.working) <= 3

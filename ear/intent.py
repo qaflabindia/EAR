@@ -15,3 +15,20 @@ class Intent:
 
     def __str__(self) -> str:
         return self.text
+
+    def continued_with(self, decision: Any) -> "Intent":
+        """Return the follow-on Intent for the next cycle of a goal-driven
+        loop: the same request, with the prior decision threaded into
+        context so the next cycle builds on it rather than starting cold.
+
+        Memory already threads prior cycles back into reasoning; this also
+        exposes the latest decision (as `decision`) and the running list
+        (`_prior_decisions`) to a Goal's deterministic fallback."""
+        prior = list(self.context.get("_prior_decisions", []))
+        prior.append(decision)
+        new_context = {
+            **self.context,
+            "_prior_decision": decision,
+            "_prior_decisions": prior,
+        }
+        return Intent(text=self.text, context=new_context)

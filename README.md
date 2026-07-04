@@ -89,7 +89,12 @@ Auditor      → audit        inspect evidence for compliance
 Memory       → store memory what happened
 Learner      → learn        fold the cycle into Experience
 Adapter      → adapt        periodically distill a new Adaptation
+Assessor     → assess       (only with a Goal) judge completion; re-enter the cycle, or stop
 ```
+
+With a `Goal` attached, the `Assessor` judges the decision after each cycle
+and either stops or re-enters the pipeline above, bounded by the goal's
+`max_cycles` cap (see [Goals: controlled iteration](#goals-controlled-iteration)).
 
 `Governor` raises `PermissionError` and stops the cycle before anything
 else runs if a `Policy` is violated. `Adapter` only distills a new
@@ -216,6 +221,45 @@ routing behaviour is fully testable with fake per-provider callables and no
 LLM configured at all — the same offline/live two-tier testability the rest
 of the package keeps.
 
+## Goals: controlled iteration
+
+Without a `Goal`, `Runtime.reason` runs exactly one cycle. A `Goal` turns
+that single pass into **bounded, audited iteration**: the runtime re-enters
+the cycle — feeding each decision forward — until the goal is met, a
+blocker is hit, or a hard `max_cycles` cap is reached.
+
+A `Goal` is `Policy`'s mirror image. A `Policy` is a gate the cycle **must
+not cross**; a `Goal` is a finish line the runtime **iterates toward**.
+Where a violated policy *stops* a cycle, an unmet goal *re-enters* it.
+
+```python
+from ear import Goal
+
+runtime.reason(
+    Intent(text="Underwrite a $40k loan", context={"consent": True}),
+    goal=Goal(
+        statement="A final grade A–E and an approve/decline decision are set.",
+        fallback_expression="'approve' in decision or 'decline' in decision",
+        max_cycles=3,
+    ),
+)
+```
+
+The `Assessor` judges completion after each cycle — exactly like `Policy`,
+it reasons in natural language against the active model (the
+`AssessGoalCompletion` signature) and falls back to the goal's safe
+`fallback_expression` (over the intent's context plus the special
+`decision` variable) when no model is configured, so goal-driven iteration
+is fully usable and testable offline. The LLM path can also report a
+**blocker** (`needs_input`, `blocked`, `failed`) to stop a loop that cannot
+make further progress.
+
+Two properties make this safe for an enterprise runtime rather than a
+free-running agent: iteration is **always bounded** by `max_cycles`, and
+because every cycle already writes an `Evidence`-backed `Memory` entry, the
+whole loop is **audited by construction** — you get the decision trail
+across cycles, not an opaque "it thought for a while".
+
 ## Memory: Evidence, Memory, Experience and Adaptation
 
 AI systems routinely conflate four distinct concerns: *why* a decision was
@@ -274,6 +318,8 @@ ear/
   workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies
   process.py       Process       — a stack of Workflows that performs an action
   policy.py        Policy        — governance rule, judged in natural language with a safe-eval fallback; attaches runtime-wide or to a Workflow
+  goal.py          Goal          — a completion condition that drives bounded, audited iteration of a reasoning cycle
+  assessor.py      Assessor      — assess: judge whether a Goal is met after a cycle (LLM-judged, safe-eval fallback)
   runtime.py       Runtime       — runs every cycle through the full operation pipeline below
   model_binding.py ModelBinding  — LLM provider binding (model, credentials, params -> a DSPy LM)
   router.py        Router        — omni-route: routes across many providers with fallback + cooldown (a drop-in ModelBinding)

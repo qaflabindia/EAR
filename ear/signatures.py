@@ -78,3 +78,21 @@ class DistillInsight(dspy.Signature):
 
     experience_summary: str = dspy.InputField()
     insight: str = dspy.OutputField()
+
+
+class AssessGoalCompletion(dspy.Signature):
+    """Decide whether a goal is satisfied by the decision reached so far.
+
+    Read the goal in plain English and judge it against the latest decision
+    and the run's history, the way a reviewer checking a definition of done
+    would. If it is not yet met, say whether anything actually blocks
+    further progress (e.g. missing input, an external wait, a failure) or
+    leave the blocker empty when the runtime should simply keep going."""
+
+    goal_statement: str = dspy.InputField(desc="The completion condition, written in plain English")
+    decision: str = dspy.InputField(desc="The latest decision reached this cycle")
+    history: str = dspy.InputField(desc="Prior cycles in this run, for context")
+    complete: bool = dspy.OutputField(desc="True if the goal is satisfied by the decision so far")
+    blocker: str = dspy.OutputField(
+        desc="Short reason no further progress is possible (e.g. needs_input, blocked, failed), or empty if none"
+    )

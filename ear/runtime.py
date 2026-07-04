@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 from .adaptation import Adaptation, AdaptationBank
 from .adapter import Adapter
+from .assessor import Assessor
 from .auditor import Auditor
 from .composer import Composer
 from .decider import Decider
@@ -31,6 +32,7 @@ from .evidence import Evidence
 from .executor import Executor
 from .experience import Experience
 from .explainer import Explainer
+from .goal import Goal
 from .governor import Governor
 from .initializer import Initializer
 from .intent import Intent
@@ -67,6 +69,7 @@ class Runtime:
 
     # Per-cycle pipeline stages.
     governor: Governor = field(default_factory=Governor)
+    assessor: Assessor = field(default_factory=Assessor)
     initializer: Initializer = field(default_factory=Initializer)
     discoverer: Discoverer = field(default_factory=Discoverer)
     selector: Selector = field(default_factory=Selector)
@@ -106,7 +109,16 @@ class Runtime:
         """Return the policies that are violated by the given context."""
         return [policy for policy in self.policies if not policy.evaluate(self.model_binding, **context)]
 
-    def reason(self, intent: Intent) -> Any:
+    def reason(self, intent: Intent, goal: Optional[Goal] = None) -> Any:
+        """Reason an intent to a decision.
+
+        Without a `goal`, this runs exactly one cycle (the classic path).
+        With one, the cycle is re-entered -- feeding each decision forward --
+        until the Assessor judges the Goal met, reports a blocker, or the
+        Goal's `max_cycles` cap is reached. The runtime-wide Policy gate and
+        the ModelBinding are checked/activated once up front; everything
+        that depends on the intent (discovery, the workflow-policy gate,
+        reasoning, memory) runs inside each cycle."""
         violations = self.governor.govern(self, intent)
         if violations:
             names = ", ".join(policy.name for policy in violations)
@@ -114,6 +126,23 @@ class Runtime:
 
         self.initializer.initialize(self)
 
+        cycles = max(1, goal.max_cycles) if goal is not None else 1
+        decision: Any = None
+        for _ in range(cycles):
+            decision = self._run_cycle(intent)
+            if goal is None:
+                break
+            done, blocker = self.assessor.assess(self, intent, goal, decision)
+            if done or blocker:
+                break
+            intent = intent.continued_with(decision)
+        return decision
+
+    def _run_cycle(self, intent: Intent) -> Any:
+        """Run one full reasoning cycle -- discover, gate, reason, explain,
+        audit and remember -- returning the decision. This is the body the
+        Goal loop re-enters; on its own it is exactly the classic
+        single-pass cycle."""
         candidates = self.validator.validate_candidates(self.discoverer.discover(self, intent))
         selected = self.validator.validate_selection(self.selector.select(self, candidates))
         plan = self.validator.validate_plan(self.composer.compose(selected))

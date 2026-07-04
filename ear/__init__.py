@@ -44,6 +44,7 @@ from __future__ import annotations
 
 from .adaptation import Adaptation, AdaptationBank
 from .adapter import Adapter
+from .assessor import Assessor
 from .auditor import Auditor
 from .composer import Composer
 from .decider import Decider
@@ -54,6 +55,7 @@ from .evolver import Evolver
 from .executor import Executor
 from .experience import Experience
 from .explainer import Explainer
+from .goal import Goal
 from .governor import Governor
 from .initializer import Initializer
 from .intent import Intent
@@ -87,6 +89,8 @@ __all__ = [
     "Workflow",
     "Process",
     "Policy",
+    "Goal",
+    "Assessor",
     "Runtime",
     "ModelBinding",
     "Router",
