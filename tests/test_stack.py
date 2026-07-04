@@ -4044,6 +4044,40 @@ def test_server_submits_work_and_reports_status(tmp_path):
     assert server.handle("GET", "/kernel")[1]["dispatched"] == 1
 
 
+def test_server_submit_credentials_construct_a_binding_the_stack_never_declared(tmp_path):
+    """A stack with no ## Model section leaves runtime.model_binding as None
+    (loader.py's single-tenant-safe default) -- fine when the caller can
+    fall back to os.environ, not when its key arrives per-submission from a
+    multi-tenant server instead. Naming provider/model explicitly also
+    sidesteps memory.md's prose-guessing for providers EAR's own heuristics
+    don't recognise (e.g. "openrouter")."""
+    from ear import Server
+
+    stacks = tmp_path / "stacks"
+    stacks.mkdir()
+    write_stack(stacks / "lending", **MINIMAL_STACK)
+    server = Server(stacks_root=stacks)
+    server.handle("POST", "/instances", {"name": "lending", "stack": "lending"})
+
+    runtime = server.kernel.instances["lending"]
+    assert runtime.model_binding is None
+
+    server.handle(
+        "POST",
+        "/instances/lending/submit",
+        {
+            "intent": "Underwrite",
+            "context": {"loan_amount": 5000},
+            "credentials": {"provider": "openrouter", "model": "anthropic/claude-sonnet-5", "api_key": "sk-tenant-1"},
+        },
+    )
+
+    assert runtime.model_binding is not None
+    assert runtime.model_binding.provider == "openrouter"
+    assert runtime.model_binding.model == "anthropic/claude-sonnet-5"
+    assert runtime.model_binding.resolve_api_key() == "sk-tenant-1"
+
+
 def test_server_creates_an_instance_from_inline_files(tmp_path):
     """A caller in a different process (e.g. a LENS server generating a
     persona's stack on the fly) has no filesystem to share with this one --

@@ -231,16 +231,28 @@ class Server:
 
     @staticmethod
     def _apply_credentials(runtime: Any, credentials: Optional[dict]) -> None:
-        """Override a stack's declared model binding with a per-request
-        credential -- one EAR server process serves many tenants' personas
-        concurrently, so a key resolved once from `os.environ` (the
-        single-tenant default, see `ModelBinding.resolve_api_key`) does not
-        scale here. Resetting the cached `lm` makes a rotated key take
-        effect on the next `activate()` rather than sticking to the first
-        one seen."""
+        """Override -- or, when the stack declared no model at all, supply --
+        this instance's model binding with a per-request credential. One EAR
+        server process serves many tenants' personas concurrently, so a key
+        resolved once from `os.environ` (the single-tenant default, see
+        `ModelBinding.resolve_api_key`) does not scale here, and neither does
+        `loader.py`'s caution about not attaching a binding it can't yet
+        resolve a key for (exactly right for a stack loaded once on a
+        machine with one key; not for a stack whose key arrives per-request
+        instead). A caller naming its own `provider`/`model` also sidesteps
+        memory.md's prose-guessing entirely -- useful for a provider name
+        EAR's own heuristics don't recognise. Resetting the cached `lm`
+        makes a rotated key take effect on the next `activate()` rather than
+        sticking to the first one seen."""
         if not credentials:
             return
         binding = getattr(runtime, "model_binding", None)
+        provider, model = credentials.get("provider"), credentials.get("model")
+        if binding is None and provider and model:
+            from .model_binding import ModelBinding
+
+            binding = ModelBinding(provider=str(provider), model=str(model), api_base=credentials.get("api_base"))
+            runtime.model_binding = binding
         if binding is None:
             return
         api_key = credentials.get("api_key")
