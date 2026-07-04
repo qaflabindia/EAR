@@ -63,6 +63,7 @@ from .initializer import Initializer
 from .intent import Intent
 from .invoker import Invoker
 from .learner import Learner
+from .mcp_toolset import MCPToolset
 from .memory import Memory, MemoryEntry
 from .model_binding import ModelBinding
 from .optimizer import Optimizer
@@ -102,6 +103,7 @@ __all__ = [
     "Tool",
     "ToolPolicy",
     "Invoker",
+    "MCPToolset",
     "Runtime",
     "ModelBinding",
     "Router",

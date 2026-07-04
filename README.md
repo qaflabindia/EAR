@@ -347,6 +347,47 @@ heavier concern left to whoever wires one in.
 > are invoked explicitly through `runtime.invoke`, always governed and
 > audited.
 
+## MCP: provider-agnostic tools
+
+The Tool/ToolPolicy/Invoker foundation above is what makes MCP cheap: an
+`MCPToolset` needs no governance story of its own, because every tool it
+discovers from an [MCP](https://modelcontextprotocol.io) server is wrapped
+as an ordinary `Tool`, gated by the same `ToolPolicy`/`Governor`/`Invoker`
+path as any tool declared by hand. MCP becomes "provider-agnostic tools"
+the same way `ModelBinding`/`Router` are "provider-agnostic models": reach
+a whole ecosystem of tools without EAR authoring each one.
+
+```python
+from ear import MCPToolset, ToolPolicy
+
+toolset = MCPToolset(command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "/data"])
+for tool in toolset.tools():          # connects, lists, wraps each as a governed Tool
+    guru.add_tool(tool)
+
+runtime.add_tool_policy(ToolPolicy(name="Bureau Consent", statement="...", tool="pull_bureau"))
+runtime.invoke(guru.get_tool("read_file"), path="/data/report.txt")   # governed + audited, like any Tool
+```
+
+Or read the server list from the environment — never hardcoded, matching
+`Router.from_env`:
+
+```python
+# EAR_MCP_SERVERS='[{"label": "files", "command": "npx",
+#                     "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"]},
+#                    {"label": "search", "url": "https://mcp.example.com/mcp",
+#                     "api_key_env_var": "SEARCH_MCP_KEY"}]'
+for tool in MCPToolset.tools_from_env():
+    guru.add_tool(tool)
+```
+
+`url` (HTTP, streamable) reaches a remote server; `command`/`args` launches
+a local stdio server. Each `.tools()` call or tool invocation opens a fresh
+connection, does the one operation, and closes it — simpler and more
+stateless than a persistent session, at the cost of a reconnect per call.
+The `mcp` SDK is a lazy import: declaring an `MCPToolset` needs nothing
+extra; only `.tools()` or invoking a discovered tool needs
+`pip install -e '.[mcp]'`.
+
 ## Declarative sub-agents: Delegator and Synthesizer
 
 Stacking several `Persona`s onto one `Workflow` reasons them together, in
@@ -475,6 +516,7 @@ ear/
   tool.py          Tool          — a declared capability the runtime acts through; prompt-first, handler optional
   tool_policy.py   ToolPolicy    — governance for a tool call (Policy for actions), judged with a safe-eval fallback
   invoker.py       Invoker       — invoke: gate a tool call against ToolPolicies, run or block it, record it as Evidence
+  mcp_toolset.py   MCPToolset    — wrap an MCP server's tools as governed EAR Tools (provider-agnostic tools, lazy `mcp` import)
   sandbox.py       InProcessSandbox, TimeoutSandbox — the seam a Tool's handler runs through; stdlib-only wall-clock timeout
   step.py          Step          — one narrated instruction in a Workflow, delegated to a Persona
   workflow.py       Workflow      — an ordered list of Steps (each delegated to a Persona), governed by its own Policies; `parallel=True` fans delegated Personas out as sub-agents

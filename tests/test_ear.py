@@ -16,7 +16,10 @@ Two tiers:
 
 from __future__ import annotations
 
+import importlib.util
 import os
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -43,6 +46,7 @@ from ear import (
     Intent,
     Invoker,
     Learner,
+    MCPToolset,
     Memory,
     ModelBinding,
     Orchestrator,
@@ -77,6 +81,20 @@ requires_anthropic_key = pytest.mark.skipif(
     not ANTHROPIC_API_KEY,
     reason="ANTHROPIC_API_KEY is not set in the environment -- live-LLM tests are skipped",
 )
+
+MCP_INSTALLED = importlib.util.find_spec("mcp") is not None
+requires_mcp = pytest.mark.skipif(
+    not MCP_INSTALLED,
+    reason="the `mcp` package is not installed (`pip install -e '.[mcp]'`) -- MCP tests are skipped",
+)
+MCP_STDIO_SERVER = str(Path(__file__).parent / "fixtures" / "mcp_stdio_server.py")
+
+
+def mcp_test_toolset() -> MCPToolset:
+    """A local, offline MCP server over stdio -- no network -- so the MCP
+    integration tests exercise a genuine round-trip through the real `mcp`
+    SDK on both ends, not a mock."""
+    return MCPToolset(command=sys.executable, args=[MCP_STDIO_SERVER], label="test")
 
 
 def claude_binding() -> ModelBinding:
@@ -1016,6 +1034,101 @@ def test_invoker_records_a_sandbox_timeout_and_re_raises():
         runtime.invoke(tool)
     assert runtime._cycle_tool_calls[-1]["allowed"] is True
     assert "error" in runtime._cycle_tool_calls[-1]
+
+
+# ---------------------------------------------------------------------------
+# Offline: MCPToolset -- config parsing and tool-wrapping are pure, tested
+# with no `mcp` import and no server. The round-trip tests below need the
+# `mcp` package (skipped if absent) but still run fully offline, over a
+# local stdio subprocess -- no network.
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_toolset_from_spec_parses_json():
+    toolsets = MCPToolset.from_spec(
+        '[{"label": "files", "command": "npx", "args": ["-y", "server-filesystem", "/data"]},'
+        ' {"label": "search", "url": "https://mcp.example.com/mcp", "api_key_env_var": "SEARCH_KEY"}]'
+    )
+    assert toolsets[0].command == "npx"
+    assert toolsets[0].args == ["-y", "server-filesystem", "/data"]
+    assert toolsets[1].url == "https://mcp.example.com/mcp"
+    assert toolsets[1].api_key_env_var == "SEARCH_KEY"
+
+
+def test_mcp_toolset_from_env_reads_the_environment(monkeypatch):
+    monkeypatch.setenv("EAR_MCP_SERVERS", '[{"label": "t", "command": "echo"}]')
+    toolsets = MCPToolset.from_env("EAR_MCP_SERVERS")
+    assert toolsets[0].label == "t" and toolsets[0].command == "echo"
+
+
+def test_mcp_toolset_from_env_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("EAR_MCP_SERVERS", raising=False)
+    with pytest.raises(ValueError):
+        MCPToolset.from_env("EAR_MCP_SERVERS")
+
+
+def test_mcp_toolset_wraps_a_description_into_a_governed_tool():
+    from types import SimpleNamespace
+
+    description = SimpleNamespace(name="add", description="Add two integers.")
+    tool = MCPToolset(command="dummy", label="test")._wrap(description)
+    assert tool.name == "add"
+    assert tool.contract == "Add two integers."
+    assert tool.permissions == ["mcp:test"]
+
+
+def test_mcp_toolset_wrap_falls_back_to_name_without_a_description():
+    from types import SimpleNamespace
+
+    tool = MCPToolset(command="dummy")._wrap(SimpleNamespace(name="ping", description=None))
+    assert tool.contract == "ping"
+
+
+def test_mcp_toolset_render_result_flattens_content_blocks():
+    from types import SimpleNamespace
+
+    result = SimpleNamespace(isError=False, content=[SimpleNamespace(text="5")])
+    assert MCPToolset._render_result(result) == "5"
+
+
+def test_mcp_toolset_render_result_raises_cleanly_on_error():
+    from types import SimpleNamespace
+
+    result = SimpleNamespace(isError=True, content=[SimpleNamespace(text="boom")])
+    with pytest.raises(RuntimeError, match="boom"):
+        MCPToolset._render_result(result)
+
+
+@requires_mcp
+def test_mcp_toolset_discovers_tools_over_stdio():
+    tools = mcp_test_toolset().tools()
+    assert {tool.name for tool in tools} == {"add", "fail"}
+    assert next(t for t in tools if t.name == "add").contract == "Add two integers."
+
+
+@requires_mcp
+def test_mcp_tool_handler_calls_the_real_server():
+    add_tool = next(t for t in mcp_test_toolset().tools() if t.name == "add")
+    assert add_tool.run(a=2, b=3) == "5"
+
+
+@requires_mcp
+def test_mcp_tool_server_side_error_propagates_cleanly():
+    fail_tool = next(t for t in mcp_test_toolset().tools() if t.name == "fail")
+    with pytest.raises(RuntimeError, match="boom"):
+        fail_tool.run()
+
+
+@requires_mcp
+def test_mcp_discovered_tool_is_governed_and_audited_like_any_other():
+    tools = {tool.name: tool for tool in mcp_test_toolset().tools()}
+    runtime = Runtime(name="R")
+    runtime.add_tool_policy(ToolPolicy(name="Cap", fallback_expression="a + b <= 10", tool="add"))
+
+    assert runtime.invoke(tools["add"], a=2, b=3) == "5"
+    with pytest.raises(PermissionError, match="Cap"):
+        runtime.invoke(tools["add"], a=20, b=30)
+    assert runtime._cycle_tool_calls[-1]["blocked_by"] == "Cap"
 
 
 # ---------------------------------------------------------------------------
