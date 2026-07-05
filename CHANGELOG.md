@@ -14,6 +14,12 @@ has not yet made a versioned release, so entries accumulate under
   in before running the suite against that install.
 - `LICENSE`: the MIT license text, matching the license already declared
   in `pyproject.toml`.
+- Release automation: `.github/workflows/release.yml` builds the sdist
+  and wheel, verifies the pushed tag matches `pyproject.toml`'s version,
+  runs the full suite, and publishes to PyPI via trusted publishing (OIDC)
+  when a `v*.*.*` tag is pushed. Requires a PyPI trusted publisher
+  configured for this repository before the first tag -- an account-level
+  step, not something CI can do for itself.
 
 ### Fixed
 - MCP client: a timed-out call used to leave its reader thread alive,
