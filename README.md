@@ -53,6 +53,8 @@ process.md   workflows stacked into processes  (prose = description, `Workflows:
 policy.md    governance, risk and controls     (prose = the statement an LLM judges;
                                                 `Fallback:` deterministic expression,
                                                 `Applies to:` runtime or a workflow name)
+tenant.md    the org this stack belongs to     (`Org id:`, fiscal year, timezone; optional --
+                                                defaults to the "default" tenant when absent)
 memory.md    the operating strategy            (see below)
 ```
 
@@ -1186,8 +1188,9 @@ ear/
                                    quality metric, and native reflective instruction refinement
   section.py       Section       — the shared structural parser for stacked markdown files
   loader.py        Loader        — load_runtime: stack skills.md/persona.md/workflow.md/
-                                   process.md/policy.md/memory.md into a Runtime
+                                   process.md/policy.md/tenant.md/memory.md into a Runtime
   strategy.py      Strategy      — the memory.md operating strategy, read from plain English
+  tenant.py        Tenant        — the org this stack belongs to, stacked from tenant.md: org_id, fiscal year bounds, timezone
   exchange.py      Exchange      — the markdown boundary: intents/*.md in, decisions/*.md out
   reasoning_log.py ReasoningLog  — the reasoning audit trail (markdown/JSONL); hash-chained + verify(), retention rotation, usage ledger
   dashboard.py     Dashboard     — self-contained HTML runtime board from the trail (TensorBoard-equivalent): render_fleet, live auto-ticking render_gantt, zero deps

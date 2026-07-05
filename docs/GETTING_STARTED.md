@@ -95,6 +95,7 @@ exist:
 | `workflow.md` | steps → workflows | numbered steps, `(Persona)` delegates, `Policies:` |
 | `process.md` | workflows → processes | prose + `Workflows: a, b` |
 | `policy.md` | governance | prose statement + `Fallback:` / `Applies to:` |
+| `tenant.md` | the org this stack belongs to | `Org id:`, fiscal year, timezone — optional, defaults to the "default" tenant |
 | `memory.md` | the operating strategy | model, memory, tools, knowledge, audit, … |
 
 A minimal stack directory:

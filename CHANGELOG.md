@@ -8,6 +8,14 @@ has not yet made a versioned release, so entries accumulate under
 ## [Unreleased]
 
 ### Added
+- `Tenant` (`ear/tenant.py`): the org a stack belongs to, stacked from an
+  optional `tenant.md` the same way every other stacked file works --
+  `Org id:`, fiscal year bounds, timezone, secret env var. Absent file
+  falls back to a default tenant with calendar-year fiscal bounds.
+  Foundation for multi-tenant boundary enforcement (`org_id` threaded
+  through catalogue records and Kernel tasks) and for `schedule.md`'s
+  workday notation, which resolves `q`/`h`/`y`/`a` occurrences against the
+  tenant's fiscal year.
 - CI: a GitHub Actions workflow (`.github/workflows/ci.yml`) running the
   test suite on Python 3.10-3.12, plus a dedicated bare-environment job
   that installs EAR with zero third-party packages and asserts none crept
