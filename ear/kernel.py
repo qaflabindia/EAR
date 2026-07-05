@@ -51,7 +51,12 @@ class Task:
     `approval` carries a human's verdict released through a network control
     plane (no shared filesystem to drop an `approval.md` beside `intent.md`)
     -- it is threaded straight through to `Runtime.reason(intent, approval=...)`,
-    the same parameter `Exchange` uses for the file-drop case."""
+    the same parameter `Exchange` uses for the file-drop case.
+
+    `claim` (an `ear.identity.Claim`) is the tenant boundary check for
+    scheduled work: threaded to `Runtime.reason(intent, claim=...)` at
+    dispatch time, so a task submitted for the wrong org lands `blocked`
+    rather than touching the instance's data."""
 
     instance: str
     intent: Any
@@ -61,6 +66,7 @@ class Task:
     id: int = field(default_factory=lambda: next(_task_ids))
     runs: int = 0
     approval: Any = None
+    claim: Any = None
 
     @property
     def recurring(self) -> bool:
@@ -119,11 +125,14 @@ class Kernel:
         every: Optional[float] = None,
         delay: float = 0.0,
         approval: Any = None,
+        claim: Any = None,
     ) -> Task:
         """Enqueue work for an instance and wake the loop -- a syscall
         raising an interrupt. `every` makes it recur on that period;
         `delay` defers its first run. `approval` releases a cycle an
-        approval-gated policy previously parked (see `Task.approval`)."""
+        approval-gated policy previously parked (see `Task.approval`).
+        `claim` (an `ear.identity.Claim`) is checked against the target
+        instance's tenant at dispatch time (see `Task.claim`)."""
         task = Task(
             instance=instance,
             intent=intent,
@@ -131,6 +140,7 @@ class Kernel:
             every=every,
             due=time.monotonic() + delay,
             approval=approval,
+            claim=claim,
         )
         with self._lock:
             self.queue.append(task)
@@ -219,7 +229,7 @@ class Kernel:
                     outcome = runtime.pursue(task.goal, task.intent)
                     status, summary = "ran", f"goal {outcome.status}: {outcome.blocker}"
                 else:
-                    decision = runtime.reason(task.intent, approval=task.approval)
+                    decision = runtime.reason(task.intent, approval=task.approval, claim=task.claim)
                     status, summary = "ran", str(decision)[:240]
             except ApprovalRequired as parked:
                 status, summary = "blocked", f"awaiting approval: {parked}"

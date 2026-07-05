@@ -1191,6 +1191,7 @@ ear/
                                    process.md/policy.md/tenant.md/memory.md into a Runtime
   strategy.py      Strategy      — the memory.md operating strategy, read from plain English
   tenant.py        Tenant        — the org this stack belongs to, stacked from tenant.md: org_id, fiscal year bounds, timezone
+  identity.py      Claim         — who is calling and which Tenant org_id(s) they may act as; Runtime.reason/Kernel.submit refuse a Claim not authorized for the instance's tenant
   exchange.py      Exchange      — the markdown boundary: intents/*.md in, decisions/*.md out
   reasoning_log.py ReasoningLog  — the reasoning audit trail (markdown/JSONL); hash-chained + verify(), retention rotation, usage ledger
   dashboard.py     Dashboard     — self-contained HTML runtime board from the trail (TensorBoard-equivalent): render_fleet, live auto-ticking render_gantt, zero deps

@@ -286,6 +286,53 @@ def test_tenant_fiscal_year_bounds_falls_back_to_calendar_year():
 
 
 # ---------------------------------------------------------------------------
+# ear.identity.Claim: who is calling, and which Tenant they may act as.
+# ---------------------------------------------------------------------------
+
+
+def test_claim_may_act_as_the_org_ids_it_carries():
+    from ear import Claim
+
+    claim = Claim(subject="alice", org_ids=("org_acme_prod",))
+    assert claim.may_act_as("org_acme_prod") is True
+    assert claim.may_act_as("org_other") is False
+
+
+def test_claim_require_raises_tenant_boundary_violation_for_an_unauthorized_org():
+    from ear import Claim, TenantBoundaryViolation
+
+    claim = Claim(subject="alice", org_ids=("org_acme_prod",))
+    with pytest.raises(TenantBoundaryViolation, match="alice.*org_other"):
+        claim.require("org_other")
+    claim.require("org_acme_prod")  # authorized -- no raise
+
+
+def test_runtime_reason_with_no_claim_behaves_exactly_as_before(tmp_path):
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    decision = runtime.reason(Intent(text="Underwrite a consumer loan", context={"loan_amount": 5000}))
+    assert "Credit Risk Runtime" in decision
+
+
+def test_runtime_reason_refuses_a_claim_not_authorized_for_its_tenant(tmp_path):
+    from ear import Claim, TenantBoundaryViolation
+
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    assert runtime.tenant.org_id == "default"
+    claim = Claim(subject="bob", org_ids=("org_other",))
+    with pytest.raises(TenantBoundaryViolation, match="bob"):
+        runtime.reason(Intent(text="Underwrite", context={"loan_amount": 5000}), claim=claim)
+
+
+def test_runtime_reason_admits_a_claim_authorized_for_its_tenant(tmp_path):
+    from ear import Claim
+
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    claim = Claim(subject="alice", org_ids=("default", "org_other"))
+    decision = runtime.reason(Intent(text="Underwrite", context={"loan_amount": 5000}), claim=claim)
+    assert "Credit Risk Runtime" in decision
+
+
+# ---------------------------------------------------------------------------
 # The memory.md strategy: every setting read from natural language.
 # ---------------------------------------------------------------------------
 
@@ -4034,6 +4081,33 @@ def test_kernel_cancel_removes_a_queued_task(tmp_path):
     task = kernel.submit("lending", Intent(text="x", context={"loan_amount": 5000}), delay=100)
     assert kernel.pending == 1
     assert kernel.cancel(task) is True and kernel.pending == 0
+
+
+def test_kernel_blocks_a_task_carrying_a_claim_unauthorized_for_the_instance(tmp_path):
+    from ear import Claim, Kernel
+
+    runtime = load_runtime(write_stack(tmp_path / "a", **MINIMAL_STACK))
+    assert runtime.tenant.org_id == "default"
+    kernel = Kernel()
+    kernel.register("lending", runtime)
+
+    claim = Claim(subject="bob", org_ids=("org_other",))
+    kernel.submit("lending", Intent(text="x", context={"loan_amount": 5000}), claim=claim)
+    dispatch = kernel.drain()[0]
+    assert dispatch.status == "blocked" and "bob" in dispatch.summary
+
+
+def test_kernel_runs_a_task_carrying_a_claim_authorized_for_the_instance(tmp_path):
+    from ear import Claim, Kernel
+
+    runtime = load_runtime(write_stack(tmp_path / "a", **MINIMAL_STACK))
+    kernel = Kernel()
+    kernel.register("lending", runtime)
+
+    claim = Claim(subject="alice", org_ids=("default",))
+    kernel.submit("lending", Intent(text="x", context={"loan_amount": 5000}), claim=claim)
+    dispatch = kernel.drain()[0]
+    assert dispatch.status == "ran"
 
 
 def test_kernel_background_loop_wakes_on_submit_and_stops(tmp_path):

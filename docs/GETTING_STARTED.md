@@ -281,6 +281,14 @@ for recurring tasks — spoken natively over the K8s REST API, no SDK), see
 `ear.k8s` and the README's *Kubernetes* section. The in-pod entrypoint is
 `python -m ear.run <stack>`.
 
+**Multi-tenant boundary:** when instances belong to different orgs
+(`tenant.md`'s `Org id:`), pass a `Claim` (`ear.identity`) alongside the
+work — `kernel.submit("lending", intent, claim=Claim(subject="alice",
+org_ids=("org_acme_prod",)))` or `runtime.reason(intent, claim=claim)`
+directly. A Claim not authorized for the target instance's `org_id`
+refuses the cycle before it starts; omit `claim` entirely and nothing
+changes from before this existed.
+
 ---
 
 ## Where to go next

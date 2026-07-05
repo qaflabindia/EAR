@@ -108,6 +108,23 @@ def test_task_store_round_trips_sipoc_fields(tmp_path):
     assert "Artifact: validate_data.py" in loaded.sipoc()
 
 
+def test_task_store_round_trips_org_id(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    store.save(TaskDefinition(name="Reconcile Ledger", instruction="Reconcile.", org_id="org_acme_prod"))
+
+    loaded = store.load("Reconcile Ledger")
+    assert loaded.org_id == "org_acme_prod"
+    assert "Org id: org_acme_prod" in store.store.read("Reconcile Ledger")
+
+
+def test_task_definition_without_org_id_omits_the_field(tmp_path):
+    store = TaskStore(tmp_path / "tasks")
+    store.save(TaskDefinition(name="Untagged", instruction="Do it."))
+
+    assert "Org id" not in store.store.read("Untagged")
+    assert store.load("Untagged").org_id == ""
+
+
 def test_workflow_store_resolves_personas_and_policies(tmp_path):
     persona = Persona(name="Data Engineer", instructions="Careful and methodical.")
     policy = Policy(name="No PII", statement="Never expose PII.")

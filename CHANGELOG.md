@@ -8,14 +8,22 @@ has not yet made a versioned release, so entries accumulate under
 ## [Unreleased]
 
 ### Added
+- `Claim` (`ear/identity.py`): who is calling and which Tenant `org_id`(s)
+  they may act as -- the piece `Tenant` explicitly deferred to. Checked at
+  `Runtime.reason(intent, claim=...)` before a cycle starts and at
+  `Kernel.submit(..., claim=...)`/dispatch time for scheduled work; either
+  refuses with `TenantBoundaryViolation` (a `PermissionError`, so a Kernel
+  task lands `blocked` rather than `failed`). No `claim` supplied is not a
+  violation -- the same "off unless declared" posture as `Tenant` itself.
+  `TaskDefinition` (`ear/task.py`) gained an `org_id` field (an optional
+  `Org id:` line, round-tripped through `TaskStore`) so a shared catalogue
+  can tag which org a stored task belongs to.
 - `Tenant` (`ear/tenant.py`): the org a stack belongs to, stacked from an
   optional `tenant.md` the same way every other stacked file works --
   `Org id:`, fiscal year bounds, timezone, secret env var. Absent file
-  falls back to a default tenant with calendar-year fiscal bounds.
-  Foundation for multi-tenant boundary enforcement (`org_id` threaded
-  through catalogue records and Kernel tasks) and for `schedule.md`'s
-  workday notation, which resolves `q`/`h`/`y`/`a` occurrences against the
-  tenant's fiscal year.
+  falls back to a default tenant with calendar-year fiscal bounds. Also
+  the basis for `schedule.md`'s workday notation, which resolves
+  `q`/`h`/`y`/`a` occurrences against the tenant's fiscal year.
 - CI: a GitHub Actions workflow (`.github/workflows/ci.yml`) running the
   test suite on Python 3.10-3.12, plus a dedicated bare-environment job
   that installs EAR with zero third-party packages and asserts none crept

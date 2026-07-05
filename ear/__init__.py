@@ -79,6 +79,7 @@ from .experience import Experience
 from .explainer import Explainer
 from .goal import Goal, GoalEvaluation, GoalKeeper, GoalOutcome
 from .governor import Governor
+from .identity import Claim, TenantBoundaryViolation
 from .initializer import Initializer
 from .intent import Intent
 from .journey import Journey, Journeys, Leg
@@ -235,5 +236,7 @@ __all__ = [
     "PolicyStore",
     "Stores",
     "TaskDefinition",
+    "Claim",
+    "TenantBoundaryViolation",
     "__version__",
 ]

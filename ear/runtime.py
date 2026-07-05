@@ -222,7 +222,14 @@ class Runtime:
         """Return the policies that are violated by the given context."""
         return [policy for policy in self.policies if not policy.evaluate(self.model_binding, **context)]
 
-    def reason(self, intent: Intent, approval: Any = None) -> Any:
+    def reason(self, intent: Intent, approval: Any = None, claim: Any = None) -> Any:
+        """Run one reasoning cycle. `claim` (an `ear.identity.Claim`) is the
+        boundary check: unset, the cycle runs exactly as it always has (the
+        same "off unless declared" posture as `tenant.md` itself); supplied,
+        it must be authorized to act as this runtime's `tenant.org_id` or
+        the cycle refuses before anything is recorded."""
+        if claim is not None:
+            claim.require(self.tenant.org_id)
         started = time.monotonic()
         calls_before = self._model_calls_so_far()
         self.reasoning_log.begin_cycle(intent)

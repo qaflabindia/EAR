@@ -20,6 +20,11 @@ recurring task's second and later runs, per the runtime's evidence/memory
 retrieval path. `artifact` names the script or file the step's process
 relies on (e.g. `validate_data.py`), so a rerun's reasoning can tell "reuse
 this" from "none exists yet, write one".
+
+`org_id` optionally tags which org (see `ear/tenant.py`) this catalogued
+task belongs to, for a shared TaskStore holding more than one tenant's
+work -- empty (the default) means untagged, exactly as before this field
+existed.
 """
 
 from __future__ import annotations
@@ -46,6 +51,7 @@ class TaskDefinition:
     outputs: str = ""
     customer: str = ""
     artifact: str = ""
+    org_id: str = ""
 
     def to_step(self, persona: Optional[Persona] = None) -> Step:
         """This Task as a Workflow Step, delegated to `persona` (typically
@@ -76,6 +82,8 @@ class TaskDefinition:
         lines = [f"## {self.name}", ""]
         if self.persona_name:
             lines.append(f"Persona: {self.persona_name}")
+        if self.org_id:
+            lines.append(f"Org id: {self.org_id}")
         for label, value in (
             ("Supplier", self.supplier),
             ("Inputs", self.inputs),
@@ -96,6 +104,8 @@ class TaskDefinition:
         body = section.body(
             field_keys=(
                 "persona",
+                "org id",
+                "org",
                 "supplier",
                 "inputs",
                 "input",
@@ -110,6 +120,7 @@ class TaskDefinition:
             name=section.name,
             instruction=body.prose,
             persona_name=body.field("persona"),
+            org_id=body.field("org id", "org"),
             supplier=body.field("supplier"),
             inputs=body.field("inputs", "input"),
             process=body.field("process"),
