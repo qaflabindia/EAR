@@ -4044,6 +4044,141 @@ def test_server_submits_work_and_reports_status(tmp_path):
     assert server.handle("GET", "/kernel")[1]["dispatched"] == 1
 
 
+def test_server_submit_credentials_construct_a_binding_the_stack_never_declared(tmp_path):
+    """A stack with no ## Model section leaves runtime.model_binding as None
+    (loader.py's single-tenant-safe default) -- fine when the caller can
+    fall back to os.environ, not when its key arrives per-submission from a
+    multi-tenant server instead. Naming provider/model explicitly also
+    sidesteps memory.md's prose-guessing for providers EAR's own heuristics
+    don't recognise (e.g. "openrouter")."""
+    from ear import Server
+
+    stacks = tmp_path / "stacks"
+    stacks.mkdir()
+    write_stack(stacks / "lending", **MINIMAL_STACK)
+    server = Server(stacks_root=stacks)
+    server.handle("POST", "/instances", {"name": "lending", "stack": "lending"})
+
+    runtime = server.kernel.instances["lending"]
+    assert runtime.model_binding is None
+
+    server.handle(
+        "POST",
+        "/instances/lending/submit",
+        {
+            "intent": "Underwrite",
+            "context": {"loan_amount": 5000},
+            "credentials": {"provider": "openrouter", "model": "anthropic/claude-sonnet-5", "api_key": "sk-tenant-1"},
+        },
+    )
+
+    assert runtime.model_binding is not None
+    assert runtime.model_binding.provider == "openrouter"
+    assert runtime.model_binding.model == "anthropic/claude-sonnet-5"
+    assert runtime.model_binding.resolve_api_key() == "sk-tenant-1"
+
+
+def test_server_creates_an_instance_from_inline_files(tmp_path):
+    """A caller in a different process (e.g. a LENS server generating a
+    persona's stack on the fly) has no filesystem to share with this one --
+    `files` lets it hand over file contents directly instead of requiring a
+    pre-populated stacks_root directory."""
+    from ear import Server
+
+    stacks = tmp_path / "stacks"
+    stacks.mkdir()
+    server = Server(stacks_root=stacks)
+
+    status, created = server.handle(
+        "POST",
+        "/instances",
+        {
+            "name": "inline-lending",
+            "files": {
+                "skills.md": MINIMAL_STACK["skills"],
+                "persona.md": MINIMAL_STACK["persona"],
+                "workflow.md": MINIMAL_STACK["workflow"],
+                "process.md": MINIMAL_STACK["process"],
+                "policy.md": MINIMAL_STACK["policy"],
+            },
+        },
+    )
+    assert status == 201 and created["from_stack"] is True
+    assert server.handle("GET", "/instances")[1]["instances"][0]["instance"] == "inline-lending"
+
+    server.handle(
+        "POST", "/instances/inline-lending/submit", {"intent": "Underwrite", "context": {"loan_amount": 5000}}
+    )
+    server.kernel.drain()
+    assert server.kernel.history[-1].status == "ran"
+
+    # An unknown filename or non-string content is a client error, not a crash.
+    assert server.handle("POST", "/instances", {"name": "x", "files": {"evil.md": "hi"}})[0] == 400
+    assert server.handle("POST", "/instances", {"name": "y", "files": {"skills.md": 123}})[0] == 400
+    # An empty files object is indistinguishable from "no files" -- a bare instance, not an error.
+    assert server.handle("POST", "/instances", {"name": "z", "files": {}})[0] == 201
+
+
+def test_server_trail_reads_limit_from_the_query_string(tmp_path):
+    """GET requests carry no body over most HTTP clients (Node's fetch
+    refuses one outright), so a caller must be able to pass `limit` as
+    `?limit=N` -- not only as a JSON body, which only a from-scratch client
+    like EAR's own test harness would ever send on a GET."""
+    from ear import Server
+
+    stacks = tmp_path / "stacks"
+    stacks.mkdir()
+    write_stack(stacks / "lending", **MINIMAL_STACK)
+    server = Server(stacks_root=stacks)
+    server.handle("POST", "/instances", {"name": "lending", "stack": "lending"})
+    server.handle("POST", "/instances/lending/submit", {"intent": "Underwrite", "context": {"loan_amount": 5000}})
+    server.kernel.drain()
+
+    status, trail = server.handle("GET", "/instances/lending/trail?limit=2")
+    assert status == 200 and len(trail["records"]) == 2
+
+
+def test_server_approve_resubmits_a_parked_intent_over_the_wire(tmp_path):
+    """`Exchange`'s approval.md file-drop assumes a shared filesystem --
+    not true when the caller is a separate process over the network. The
+    server's `/approve` endpoint is the same release without one: it
+    remembers the last submitted intent and resubmits it with a verdict."""
+    from ear import Server
+
+    stack = dict(
+        MINIMAL_STACK,
+        policy=(
+            "# Policies\n\n## Loan Amount Cap\nThe loan must not exceed $50,000.\n\n"
+            "Fallback: loan_amount <= 50000\nApproval: required\nApplies to: runtime\n"
+        ),
+    )
+    stacks = tmp_path / "stacks"
+    stacks.mkdir()
+    write_stack(stacks / "lending", **stack)
+    server = Server(stacks_root=stacks)
+    server.handle("POST", "/instances", {"name": "lending", "stack": "lending"})
+
+    # No pending intent yet -- approving before ever submitting is a client error.
+    assert server.handle("POST", "/instances/lending/approve", {"verdict": "approved"})[0] == 409
+
+    server.handle(
+        "POST", "/instances/lending/submit", {"intent": "Underwrite", "context": {"loan_amount": 60000}}
+    )
+    server.kernel.drain()
+    assert server.kernel.history[-1].status == "blocked"
+    trail = server.handle("GET", "/instances/lending/trail", {"limit": 20})[1]["records"]
+    assert any(r["stage"] == "approval" and "PENDING" in r["output"] for r in trail)
+
+    status, approved = server.handle(
+        "POST", "/instances/lending/approve",
+        {"verdict": "approved", "approver": "senior@bank.com", "note": "exception reviewed"},
+    )
+    assert status == 202 and approved["verdict"] is True
+
+    server.kernel.drain()
+    assert server.kernel.history[-1].status == "ran"
+
+
 def test_server_unknown_route_is_a_404():
     from ear import Server
 
@@ -4078,6 +4213,72 @@ def test_server_bearer_token_auth_over_a_real_socket(tmp_path):
         assert get("/health", "s3cret") == 200  # right token
     finally:
         server.stop()
+
+
+def test_server_bridges_a_declared_tool_to_a_remote_http_system(tmp_path):
+    """Declaring `- check_inventory: ...` in memory.md's Tools section gives
+    the model something to see, not something to run (tool.py) -- nothing
+    auto-executes a `command` string. When the caller creating the instance
+    is itself a remote system, bridge_url/bridge_token wire every declared
+    but otherwise-unbound tool to a generic HTTP forward instead."""
+    import json as _json
+    import threading as _threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from ear import Server
+
+    received = []
+
+    class _BridgeHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = _json.loads(self.rfile.read(length))
+            received.append((self.headers.get("Authorization"), payload))
+            body = _json.dumps({"ok": True, "output": {"level": 42}}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            return
+
+    bridge = HTTPServer(("127.0.0.1", 0), _BridgeHandler)
+    thread = _threading.Thread(target=bridge.serve_forever, daemon=True)
+    thread.start()
+    try:
+        bridge_url = f"http://127.0.0.1:{bridge.server_address[1]}/execute"
+        stack = dict(
+            MINIMAL_STACK,
+            memory="# Memory\n\n## Tools\n\n- check_inventory: looks up stock for a SKU\n",
+        )
+        stacks = tmp_path / "stacks"
+        stacks.mkdir()
+        write_stack(stacks / "lending", **stack)
+        server = Server(stacks_root=stacks, bridge_url=bridge_url, bridge_token="bridge-secret")
+        server.handle(
+            "POST",
+            "/instances",
+            {"name": "lending", "stack": "lending", "bridge_context": {"orgId": "org-1", "taskId": "task-1"}},
+        )
+
+        runtime = server.kernel.instances["lending"]
+        tools = runtime.tool_binder.bound_tools(runtime)
+        tool = next(t for t in tools if t.name == "check_inventory")
+        result = tool.handler(sku="ABC-1")
+
+        assert result == '{"level": 42}'
+        auth_header, payload = received[0]
+        assert auth_header == "Bearer bridge-secret"
+        assert payload == {
+            "tool": "check_inventory",
+            "input": {"sku": "ABC-1"},
+            "context": {"orgId": "org-1", "taskId": "task-1"},
+        }
+    finally:
+        bridge.shutdown()
+        thread.join(timeout=2)
 
 
 # ---------------------------------------------------------------------------

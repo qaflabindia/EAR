@@ -46,7 +46,12 @@ _task_ids = itertools.count(1)
 class Task:
     """One unit of scheduled work: which instance (process) to run it on,
     the intent to run, an optional goal to pursue instead, and -- when
-    recurring -- the period and the next time it is due."""
+    recurring -- the period and the next time it is due.
+
+    `approval` carries a human's verdict released through a network control
+    plane (no shared filesystem to drop an `approval.md` beside `intent.md`)
+    -- it is threaded straight through to `Runtime.reason(intent, approval=...)`,
+    the same parameter `Exchange` uses for the file-drop case."""
 
     instance: str
     intent: Any
@@ -55,6 +60,7 @@ class Task:
     due: float = 0.0
     id: int = field(default_factory=lambda: next(_task_ids))
     runs: int = 0
+    approval: Any = None
 
     @property
     def recurring(self) -> bool:
@@ -112,11 +118,20 @@ class Kernel:
         goal: Optional[str] = None,
         every: Optional[float] = None,
         delay: float = 0.0,
+        approval: Any = None,
     ) -> Task:
         """Enqueue work for an instance and wake the loop -- a syscall
         raising an interrupt. `every` makes it recur on that period;
-        `delay` defers its first run."""
-        task = Task(instance=instance, intent=intent, goal=goal, every=every, due=time.monotonic() + delay)
+        `delay` defers its first run. `approval` releases a cycle an
+        approval-gated policy previously parked (see `Task.approval`)."""
+        task = Task(
+            instance=instance,
+            intent=intent,
+            goal=goal,
+            every=every,
+            due=time.monotonic() + delay,
+            approval=approval,
+        )
         with self._lock:
             self.queue.append(task)
         self._wake.set()  # interrupt: there may be work now
@@ -204,7 +219,7 @@ class Kernel:
                     outcome = runtime.pursue(task.goal, task.intent)
                     status, summary = "ran", f"goal {outcome.status}: {outcome.blocker}"
                 else:
-                    decision = runtime.reason(task.intent)
+                    decision = runtime.reason(task.intent, approval=task.approval)
                     status, summary = "ran", str(decision)[:240]
             except ApprovalRequired as parked:
                 status, summary = "blocked", f"awaiting approval: {parked}"
