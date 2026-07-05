@@ -1640,6 +1640,40 @@ def test_instructions_persist_and_reload_with_demos(tmp_path):
     assert fresh.demos == [{"intent": "a loan", "decision": "approve"}]
 
 
+def test_load_runtime_applies_persisted_instructions_from_dot_ear(tmp_path):
+    """N1.6's actual promise: optimization survives restarts because the
+    Loader applies `.ear/instructions.md` on load -- not just that
+    Optimizer.load_instructions works when called directly."""
+    from ear import Optimizer
+    from ear.judgment import Judgment
+    from ear.signatures import REGISTRY
+
+    target = REGISTRY["ExplainDecision"]
+    original_instruction, original_demos = target.instruction, target.demos
+    try:
+        directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+        Optimizer().save_instructions(
+            directory / ".ear" / "instructions.md",
+            {"ExplainDecision": Judgment(
+                instruction="A persisted, reload-surviving explanation instruction.",
+                inputs=list(target.inputs),
+                outputs=list(target.outputs),
+                demos=[{"decision": "approved", "explanation": "within every declared limit"}],
+            )},
+        )
+
+        load_runtime(directory)  # the Loader call under test; discards its own runtime
+
+        assert REGISTRY["ExplainDecision"].instruction == (
+            "A persisted, reload-surviving explanation instruction."
+        )
+        assert REGISTRY["ExplainDecision"].demos == [
+            {"decision": "approved", "explanation": "within every declared limit"}
+        ]
+    finally:
+        target.instruction, target.demos = original_instruction, original_demos
+
+
 @requires_anthropic_key
 def test_search_improves_or_keeps_the_baseline_live():
     from ear import ModelBinding, Optimizer
