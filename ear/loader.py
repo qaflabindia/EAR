@@ -6,6 +6,8 @@ files, written entirely in natural language. The user writes no code:
     workflow.md  steps stacked into Workflows     (numbered steps, `(Persona)` delegates)
     process.md   workflows stacked into Processes (prose = description, `Workflows:` = stack)
     policy.md    governance, risk and controls    (prose = statement, `Applies to:` = scope)
+    tenant.md    the org this stack belongs to    (`Org id:`, fiscal year, optional -- defaults
+                                                   to the "default" tenant when absent)
     memory.md    the operating Strategy           (context history, cross-session data,
                                                    subagent spawning, model selection, MCP,
                                                    tools, skills discovery, ontology)
@@ -30,6 +32,7 @@ import difflib
 import re
 import time
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Optional, Union
 
@@ -44,6 +47,7 @@ from .section import Document, Section, normalize, parse_document
 from .session_store import SessionStore
 from .skill import Skill
 from .strategy import Strategy, count_in_prose, days_in_prose
+from .tenant import Tenant
 from .workflow import Workflow
 
 _FILE_CANDIDATES = {
@@ -52,8 +56,19 @@ _FILE_CANDIDATES = {
     "workflows": ("workflow.md", "workflows.md"),
     "processes": ("process.md", "processes.md"),
     "policies": ("policy.md", "policies.md"),
+    "tenant": ("tenant.md", "org.md"),
     "memory": ("memory.md",),
 }
+
+_TENANT_FIELD_KEYS = (
+    "org id",
+    "org",
+    "fiscal year start",
+    "fiscal year end",
+    "timezone",
+    "secret env var",
+    "secret",
+)
 
 _RUNTIME_SCOPES = {"runtime", "the runtime", "all", "everything", "global", "the whole runtime"}
 _TOOL_SCOPES = {"tools", "tool", "tool calls", "tool call", "tool invocations", "tool invocation", "any tool"}
@@ -81,6 +96,7 @@ class Loader:
         policies_doc = self._parse("policies")
         workflows_doc = self._parse("workflows")
         processes_doc = self._parse("processes")
+        tenant_doc = self._parse("tenant")
         memory_text = self._read("memory")
 
         skills = Loader._load_skills(skills_doc)
@@ -88,8 +104,10 @@ class Loader:
         policies, policy_scopes = Loader._load_policies(policies_doc)
         workflows = Loader._load_workflows(workflows_doc, personas, policies)
         processes, referenced = Loader._load_processes(processes_doc, workflows)
+        tenant = Loader._load_tenant(tenant_doc)
 
         runtime = Runtime(name=name or processes_doc.title or self.directory.name)
+        runtime.tenant = tenant
         for process in processes:
             runtime.add_process(process)
         # A workflow no process references is still the author's work: wrap
@@ -312,6 +330,44 @@ class Loader:
                     process.description = "\n".join(filter(None, [process.description, f"- {bullet}"]))
             processes.append(process)
         return processes, referenced
+
+    @staticmethod
+    def _load_tenant(document: Document) -> Tenant:
+        """Read the stack's `tenant.md` -- one org record, the same
+        heading-plus-fields shape as every other stacked file, just with
+        exactly one section expected. No `tenant.md` at all (an empty
+        Document, no sections) yields the default tenant: `org_id`
+        `"default"`, no fiscal year, so workday notation falls back to the
+        calendar year."""
+        if not document.sections:
+            return Tenant()
+        section = document.sections[0]
+        body = section.body(field_keys=_TENANT_FIELD_KEYS)
+        org_id = body.field("org id", "org")
+        if not org_id:
+            raise ValueError(
+                f"Tenant '{section.name}' declares no 'Org id:' -- every tenant.md needs one"
+            )
+        return Tenant(
+            org_id=org_id,
+            name=section.name,
+            fiscal_year_start=Loader._parse_tenant_date(section.name, "Fiscal year start", body.field("fiscal year start")),
+            fiscal_year_end=Loader._parse_tenant_date(section.name, "Fiscal year end", body.field("fiscal year end")),
+            timezone=body.field("timezone") or None,
+            secret_env_var=body.field("secret env var", "secret") or None,
+        )
+
+    @staticmethod
+    def _parse_tenant_date(tenant_name: str, field_label: str, value: str) -> Optional[date]:
+        if not value:
+            return None
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError as error:
+            raise ValueError(
+                f"Tenant '{tenant_name}' declares '{field_label}: {value}' but it isn't a readable "
+                "date -- write it as YYYY-MM-DD"
+            ) from error
 
     # -- mapping governance and strategy onto the runtime --------------------
 

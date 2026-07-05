@@ -230,6 +230,62 @@ def test_missing_files_load_an_empty_runtime(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# tenant.md: the org a stack belongs to.
+# ---------------------------------------------------------------------------
+
+
+def test_missing_tenant_file_defaults_to_the_default_org(tmp_path):
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    assert runtime.tenant.org_id == "default"
+    assert runtime.tenant.fiscal_year_start is None
+    assert runtime.tenant.fiscal_year_end is None
+
+
+def test_tenant_file_stacks_org_id_and_fiscal_year(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["tenant"] = (
+        "## Acme Capital\n\n"
+        "Org id: org_acme_prod\n"
+        "Fiscal year start: 2026-04-01\n"
+        "Fiscal year end: 2027-03-31\n"
+        "Timezone: Asia/Kolkata\n"
+        "Secret env var: EAR_ACME_SECRET\n"
+    )
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    tenant = runtime.tenant
+    assert tenant.org_id == "org_acme_prod"
+    assert tenant.name == "Acme Capital"
+    assert tenant.fiscal_year_start.isoformat() == "2026-04-01"
+    assert tenant.fiscal_year_end.isoformat() == "2027-03-31"
+    assert tenant.timezone == "Asia/Kolkata"
+    assert tenant.secret_env_var == "EAR_ACME_SECRET"
+
+
+def test_tenant_file_without_org_id_fails_loudly(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["tenant"] = "## Acme Capital\n\nFiscal year start: 2026-04-01\n"
+    with pytest.raises(ValueError, match="Org id"):
+        load_runtime(write_stack(tmp_path / "stack", **stack))
+
+
+def test_tenant_file_with_unreadable_date_fails_loudly(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["tenant"] = "## Acme Capital\n\nOrg id: org_acme_prod\nFiscal year start: sometime soon\n"
+    with pytest.raises(ValueError, match="Fiscal year start"):
+        load_runtime(write_stack(tmp_path / "stack", **stack))
+
+
+def test_tenant_fiscal_year_bounds_falls_back_to_calendar_year():
+    from datetime import date
+
+    from ear.tenant import Tenant
+
+    tenant = Tenant()
+    start, end = tenant.fiscal_year_bounds(today=date(2026, 7, 5))
+    assert (start, end) == (date(2026, 1, 1), date(2026, 12, 31))
+
+
+# ---------------------------------------------------------------------------
 # The memory.md strategy: every setting read from natural language.
 # ---------------------------------------------------------------------------
 

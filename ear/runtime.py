@@ -54,6 +54,7 @@ from .recaller import Recaller
 from .scheduler import Scheduler
 from .selector import Selector
 from .spawner import Spawner
+from .tenant import Tenant
 from .tool_binder import ToolBinder
 from .validator import Validator
 from .workflow import Workflow
@@ -67,6 +68,10 @@ class Runtime:
     Memory (what) / Experience (pattern) / Adaptation (adaptation) layers."""
 
     name: str
+    # The org this instance belongs to (`tenant.md`) -- defaults to the
+    # "default" tenant when the stack declares none. A Runtime built by hand
+    # (not via `load_runtime`) also gets this default.
+    tenant: Tenant = field(default_factory=Tenant)
     processes: list[Process] = field(default_factory=list)
     policies: list[Policy] = field(default_factory=list)
     # Policies scoped to tool invocations (`Applies to: tools` in
