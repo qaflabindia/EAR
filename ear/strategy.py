@@ -48,6 +48,9 @@ _MODEL_ID = re.compile(r"(?<![\w./])([A-Za-z][\w-]*)/([A-Za-z][\w.:-]*)(?![\w./]
 _MODEL_TOKEN = re.compile(r"\b([a-z][a-z0-9]*(?:[-.:][a-z0-9]+)+)\b")
 _TEMPERATURE = re.compile(r"temperature\s*(?:of|=|:|at)?\s*([0-9]*\.?[0-9]+)", re.IGNORECASE)
 _URL = re.compile(r"\bhttps?://[^\s`,)]+", re.IGNORECASE)
+_STORE_ENABLED = re.compile(r"\bstore\s*[:=]?\s*(?:true|yes|on|enabled|required)\b", re.IGNORECASE)
+_CATALOGUE_BACKEND = re.compile(r"\bbackend\s*[:=]\s*([\w.-]+)", re.IGNORECASE)
+_CONNECTION_URL = re.compile(r"\b(?:postgres(?:ql)?|age)://[^\s`,)]+", re.IGNORECASE)
 
 # Vocabulary for reading a provider out of prose ("Reason with anthropic's
 # claude-opus-4-8..."). The unambiguous form is the provider/model id with a slash
@@ -145,6 +148,19 @@ class Strategy:
     # Ontological settings -> the reasoning vocabulary.
     ontology: Ontology = field(default_factory=Ontology)
 
+    # Catalogue store -> where Stores (SkillStore, PersonaStore, ...)
+    # reads and writes named objects. Off (or absent) keeps the named
+    # on-disk catalogue (a directory of markdown files) as the only
+    # store, which is why file-based storage is the fallback rather
+    # than something a user opts into: it is what happens when this
+    # section says nothing. `Store: true` plus a `Backend:` opts into
+    # a database-backed store instead; the on-disk catalogue is never
+    # required to be replaced, only optionally supplemented.
+    catalogue_store: str = ""
+    catalogue_store_enabled: bool = False
+    catalogue_backend: str = ""
+    catalogue_connection: str = ""
+
     @classmethod
     def from_markdown(cls, text: str) -> "Strategy":
         strategy = cls()
@@ -154,6 +170,11 @@ class Strategy:
             prose = _full_text(body)
             if "ontolog" in heading or "vocabular" in heading:
                 strategy._read_ontology(body)
+            elif "catalogue" in heading or "catalog" in heading:
+                # Checked before the audit/"log" branch below: "catalogue"
+                # contains the substring "log" and would otherwise be
+                # misread as an audit trail declaration.
+                strategy._read_catalogue_store(prose)
             elif "audit" in heading or "log" in heading or "trace" in heading or "trail" in heading:
                 strategy._read_audit(prose)
             elif "knowledge" in heading:
@@ -292,6 +313,19 @@ class Strategy:
             for word in ("shell", "bash", "command", "file tool", "read and write", "read/write", "expose")
         )
 
+    def _read_catalogue_store(self, prose: str) -> None:
+        """Read the catalogue store declaration: 'Store: true' opts into a
+        database-backed catalogue instead of the named on-disk one;
+        'Backend:' names which (e.g. 'apache-age'); a declared connection
+        string wires it up. Absent, or 'Store: false'/no readable 'true',
+        leaves `catalogue_store_enabled` False -- the on-disk catalogue
+        stays the only store, exactly as if this section did not exist."""
+        self.catalogue_store = prose
+        self.catalogue_store_enabled = bool(_STORE_ENABLED.search(prose)) and not _DISABLED.search(prose)
+        backend = _CATALOGUE_BACKEND.search(prose)
+        self.catalogue_backend = backend.group(1).strip().lower() if backend else ""
+        self.catalogue_connection = _declared_connection(prose)
+
     def _read_execution(self, prose: str) -> None:
         """Read the leg retry budget from prose: 'Retry a failed leg twice
         before giving up.' A section with no readable count declares no
@@ -413,6 +447,16 @@ def _declared_path(prose: str) -> str:
         if "/" in match:
             return match
     return matches[0] if matches else ""
+
+
+def _declared_connection(prose: str) -> str:
+    """The database connection string a Catalogue Store section declares
+    ('Connection: postgresql://user:pass@host/db'), backticked or bare."""
+    for candidate in _BACKTICKED.findall(prose):
+        if _CONNECTION_URL.fullmatch(candidate):
+            return candidate
+    match = _CONNECTION_URL.search(prose)
+    return match.group(0) if match else ""
 
 
 # Refresh cadences a URL knowledge source may declare in prose, in days.

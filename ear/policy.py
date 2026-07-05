@@ -73,6 +73,28 @@ class Policy:
             # doesn't carry, so the policy doesn't apply to this intent.
             return True, f"not applicable to this intent: {missing}"
 
+    def to_markdown(self) -> str:
+        """Render this policy the way policy.md stacks one -- a heading,
+        its recognized fields, then the statement. Read back by
+        `Loader._load_policies` unchanged. Scope (`Applies to:`) is a
+        wiring decision made when a policy is attached to a runtime or
+        workflow, not a property of the policy itself, so it is not
+        round-tripped here -- a PolicyStore catalogues reusable governance
+        text, not where it is currently applied."""
+        lines = [f"## {self.name}", ""]
+        if self.fallback_expression:
+            lines.append(f"Fallback: {self.fallback_expression}")
+        if self.approval_required:
+            lines.append("Approval: required")
+        if self.approvers:
+            lines.append(f"Approvers: {', '.join(self.approvers)}")
+        if self.escalation:
+            lines.append(f"Escalate: {self.escalation}")
+        lines.append("")
+        if self.statement:
+            lines.append(self.statement)
+        return "\n".join(lines).rstrip() + "\n"
+
     def _judge_with_llm(self, lm: Any, context: dict[str, Any]) -> tuple[bool, str]:
         if not self.statement:
             return True, "policy has no statement to judge"

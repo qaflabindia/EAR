@@ -23,3 +23,15 @@ class Process:
     def add_workflow(self, workflow: Workflow) -> "Process":
         self.workflows.append(workflow)
         return self
+
+    def to_markdown(self) -> str:
+        """Render this process the way process.md stacks one -- a heading,
+        a `Workflows:` reference line, then the description. Read back by
+        `Loader._load_processes` against an already-loaded workflow
+        catalogue."""
+        lines = [f"## {self.name}", ""]
+        if self.workflows:
+            lines += [f"Workflows: {', '.join(workflow.name for workflow in self.workflows)}", ""]
+        if self.description:
+            lines.append(self.description)
+        return "\n".join(lines).rstrip() + "\n"
