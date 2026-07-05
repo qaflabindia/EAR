@@ -925,6 +925,9 @@ EAR already ships natively, the honest gap to best-in-class depth, and the
 from-scratch build that closes it. Zero dependencies throughout; the
 authored stack never changes shape.
 
+[`CHANGELOG.md`](CHANGELOG.md) tracks what actually shipped, release by
+release.
+
 ## Install
 
 ```bash
