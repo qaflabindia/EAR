@@ -42,14 +42,19 @@ pass as the only compression, exactly as safe, just less aggressive.
 
 ## Sandbox
 
-Each runtime runs in an isolated workspace under `.ear/box`, seeded with the
-raw daily sales workbook and the dashboard template under `uploads/`. Shell
-commands time out after 90 seconds. Expose file and shell tools, so the
-Reasoner can read the workbooks, write whatever code a step needs, and run it
-itself -- there is no fixed validate_data.py or generate.py handed to it;
-every script that does the loading, sanity-checking, slicing and dicing, or
-reconciliation is authored by the model, at the time it's needed, guided by
-the skills below and the mis manual's rules.
+Each runtime runs in an isolated workspace under `.ear/box`, seeded under
+`uploads/` with the raw source workbook
+`daily_bank_sales_data_2025.xlsx` and the dashboard template
+`daily_bank_sales_dashboard_2025.xlsx`. Shell commands time out after 90
+seconds. Expose file and shell tools, so the Reasoner can read the
+workbooks, write whatever code a step needs, and run it itself -- no step
+script is shipped or handed to it; every script that does the loading,
+sanity-checking, slicing and dicing, or reconciliation is authored by the
+model, at the time it's needed, guided by the skills below and the mis
+manual's rules. The manual fixes only the *names*: the model authors
+`workspace/validate_data.py`, `workspace/generate.py` and
+`workspace/validate_dashboard.py` itself when they are absent, and reruns
+them when present.
 
 ## Toolsets
 
@@ -91,4 +96,6 @@ relevant first, and prefer a single best-fit process over a broad sweep.
   that every downstream step reads, never the raw file itself
 - reconciliation gap: the absolute percentage difference between a dashboard
   total and the same total recomputed from the staged dataset
-- status: exactly one of validated or blocked, never a hedge
+- status: exactly one of validated, blocked or pending, never a hedge --
+  validated means this cycle's step completed with outputs verified on
+  disk; pending means a later step owns the answer
