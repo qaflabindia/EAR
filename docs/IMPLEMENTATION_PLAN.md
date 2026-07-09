@@ -237,6 +237,40 @@ escalates on the next runner pass; a panel concludes early on consensus.
 tool call mid-deliberation; `verify()` catches a hand-edited trail record;
 a declared MCP server's tool runs in a cycle, on the record.
 
+## N5 — Self-extending toolset (parity: an internal tools hub, native)
+
+### N5.1 List, view, manage
+- `Acquirer` (`ear/acquirer.py`): `list_tools`/`view_tool` read the stack's
+  full toolset -- declared Tools, connected MCP tools, Sandbox tools,
+  skills -- one line each, origin and bound-or-declared status included.
+  `python -m ear.tools_cli` gives a human the same operations from the
+  command line, no new dependency.
+
+### N5.2 Acquire (tools that create tools)
+- `create_tool`/`retire_tool` let the runtime grow its own declared
+  toolset at runtime, persisted to `.ear/tools.md` (Section codec,
+  reviewable and diffable) the same way N1.6 persists refined
+  instructions; the Loader merges it back in on the next load, memory.md's
+  own declarations always winning on a name clash. Declaring is never
+  binding -- a self-declared tool is context to the model until an MCP
+  server, sandbox command, or Python binding gives it a handler. Only
+  acquired tools may be retired through code; an authored one is edited by
+  editing memory.md. All four operations are themselves exposed as
+  BoundTools (`Acquirer.as_tools`), so a live deliberation calls them like
+  any other tool -- on the trail, through the logged handler. On by
+  default; disabling language under Tools in memory.md turns it off.
+
+### N5.3 Skillopt (the Optimizer, extended to Skills)
+- `Optimizer.refine_skill` reuses N1.4's `RefineInstruction` reflection
+  against a Skill's prompt instead of a Judgment's instruction;
+  `Optimizer.persist_skill` round-trips the refined prompt back into its
+  stacked skills.md, replacing only that skill's section.
+
+**Done when**: a live cycle declares a new tool for itself mid-deliberation
+and it is on the trail; the declaration survives a reload from
+`.ear/tools.md`; an authored tool refuses retirement through code; a
+refined skill's prompt round-trips through skills.md untouched elsewhere.
+
 ---
 
 ## Sequencing and effort
@@ -247,6 +281,7 @@ a declared MCP server's tool runs in a cycle, on the record.
 | **N2** ✅ shipped | 4–6 | evaluation & knowledge depth | ✅ report history diffs newly failing/passing/still failing; rubric criteria graded separately; A/B `compare` with an independent judge (refuses offline); BM25 narrowing; gist index built live once, reloaded by content hash; synonym query retrieved via gist what word overlap missed; URL sources fetched natively, cached, refreshed on the declared cadence |
 | **N3** ✅ shipped | 7–10 | execution depth | ✅ the authored skip-route skipped live, on the record (router never invents a step; revisit budget refuses loops); a failing leg retried within its declared prose budget, exhaustion FAILED on the record; the runner resumed, released and escalated in one pass (`Escalate: after 3 days` in policy.md); event documents consumed exactly once; the panel's speaker judged per turn, tools inside turns, and a live panel concluded early on consensus |
 | **N4** ✅ shipped | 11–14 | governance & connectivity | ✅ an off-list approver refused on the record, the gate staying parked; a tool-scoped policy blocked one call mid-flight, the refusal returned to the model as text; `verify()` caught a hand-edited record at the exact break in both codecs; retention rotated old cycles behind a note and re-chained cleanly; the usage ledger rendered from the trail with dollars; a declared MCP server's tool invoked natively over stdio, on the record, governed by a tool-scoped policy |
+| **N5** ✅ shipped | 15 | self-extending toolset | ✅ `list_tools`/`view_tool` surface the whole toolset with origin and bound status; `create_tool` declares and persists a new tool to `.ear/tools.md`, reloaded on the next `load_runtime` with memory.md always winning on a name clash; `retire_tool` refuses an authored tool and rotation-notes an acquired one; all four ride as BoundTools in a live tool loop; `refine_skill`/`persist_skill` extend N1.4's reflection to a Skill's prompt, round-tripped through skills.md |
 
 Order rationale: N1 makes every later change *measurable* (metric, evals,
 accounting) before behaviour changes; N2 deepens what decisions are made

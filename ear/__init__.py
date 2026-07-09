@@ -60,6 +60,9 @@ model configured.
 
 from __future__ import annotations
 
+import logging
+
+from .acquirer import Acquirer
 from .adaptation import Adaptation, AdaptationBank
 from .adapter import Adapter
 from .approval import Approval, ApprovalRequired
@@ -91,6 +94,7 @@ from .knowledge import Knowledge, KnowledgeSource, Passage
 from .learner import Learner
 from .librarian import Librarian, Research
 from .loader import Loader, load_runtime
+from .mail import Mail, MailError
 from .mcp_client import McpClient, McpError, McpTool
 from .mcp_server import McpServer
 from .memory import Memory, MemoryEntry
@@ -124,7 +128,22 @@ from .task import TaskDefinition
 from .tool import Tool
 from .tool_binder import BoundTool, ToolBinder
 from .validator import Validator
+from .web import WebAccess, WebError
 from .workflow import Workflow
+
+# EAR uses the standard library's own `logging` module for live progress
+# (an LM call starting/finishing, a sandboxed command running) -- never a
+# print statement, never a bespoke verbosity flag. A library stays silent
+# until its caller configures logging; the NullHandler here is exactly
+# that convention, not a call to basicConfig(). To see it:
+#
+#     import logging
+#     logging.basicConfig(level=logging.INFO)
+#
+# or set EAR_LOG_LEVEL before running `python -m ear.run` (see ear/run.py).
+# Loggers are per-module ("ear.llm", "ear.sandbox", ...), all children of
+# this one, so a caller can also silence or focus on just one of them.
+logging.getLogger("ear").addHandler(logging.NullHandler())
 
 __version__ = "0.1.0"
 
@@ -222,6 +241,11 @@ __all__ = [
     "Tool",
     "ToolBinder",
     "BoundTool",
+    "Acquirer",
+    "WebAccess",
+    "WebError",
+    "Mail",
+    "MailError",
     "McpServer",
     "McpClient",
     "McpError",

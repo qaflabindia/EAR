@@ -29,13 +29,21 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
-from .section import coerce, normalize, parse_document
+from .section import argument_blocks, coerce, normalize, parse_document
 
 _KIND_GUIDANCE = {
     "text": "the full text of the answer, as prose",
     "str": "a short one-line value",
     "bool": "answer with a single word: yes or no",
     "list": "one item per line, each line beginning with '- '",
+    "map": (
+        "one '- name: value' bullet per short argument, exactly as 'list' "
+        "above; for a value that needs more than one line (source code, a "
+        "whole file's content), write 'name:' alone on its line followed by "
+        "the value as a blockquote -- every line, including a blank one, "
+        "starting with '> ' (a lone '>' for a blank line). Never put a "
+        "multi-line value on a single bullet line."
+    ),
 }
 
 
@@ -111,7 +119,9 @@ class Judgment:
     @staticmethod
     def _read(spec: Field, section: Any) -> Any:
         if section is None:
-            return {"list": [], "bool": False, "str": "", "text": ""}[spec.kind]
+            return {"list": [], "map": {}, "bool": False, "str": "", "text": ""}[spec.kind]
+        if spec.kind == "map":
+            return argument_blocks(section.lines)
         body = section.body()
         if spec.kind == "list":
             return list(body.bullets or body.numbered)

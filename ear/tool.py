@@ -22,6 +22,11 @@ class Tool:
     name: str
     description: str = ""
     command: str = ""
+    # Provenance: "authored" (hand-typed in memory.md, the default) or
+    # "acquired" (declared at runtime by the Acquirer -- see ear/acquirer.py).
+    # Only an acquired tool may be retired through code; an authored one is
+    # edited by editing memory.md.
+    origin: str = "authored"
 
     def describe(self) -> str:
         line = self.name

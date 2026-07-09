@@ -80,6 +80,11 @@ class Runtime:
     tool_policies: list[Policy] = field(default_factory=list)
     reasoner: Reasoner = field(default_factory=Reasoner)
     model_binding: Optional[ModelBinding] = None
+    # A second, usually cheaper ModelBinding a runtime may call for
+    # mechanical, non-judgment work -- declared by memory.md's Auxiliary
+    # Model section (see Strategy.auxiliary_model_binding). None is the
+    # default and leaves every such feature a no-op.
+    auxiliary_model_binding: Optional[ModelBinding] = None
     memory: Memory = field(default_factory=Memory)
     experience: Experience = field(default_factory=Experience)
     adaptations: AdaptationBank = field(default_factory=AdaptationBank)
@@ -132,6 +137,15 @@ class Runtime:
     # Standalone, dev-time operation -- not part of the per-cycle pipeline.
     optimizer: Any = None
 
+    # Lists, inspects and grows this runtime's own toolset (see
+    # ear/acquirer.py) -- standalone, like the Optimizer, not a per-cycle
+    # pipeline stage.
+    acquirer: Any = None
+    # Where self-declared tools persist (`.ear/tools.md`), wired by the
+    # Loader; None for a hand-built Runtime never loaded from a directory,
+    # in which case acquisition stays session-only.
+    tools_path: Optional[str] = None
+
     # Live MCP connections opened by connect_mcp, closed by disconnect_mcp.
     _mcp_clients: list = field(default_factory=list)
 
@@ -140,6 +154,10 @@ class Runtime:
             from .optimizer import Optimizer
 
             self.optimizer = Optimizer()
+        if self.acquirer is None:
+            from .acquirer import Acquirer
+
+            self.acquirer = Acquirer()
 
     def connect_mcp(self, name: Optional[str] = None, client: Any = None) -> list:
         """Connect a declared MCP server and bind its tools into the cycle's

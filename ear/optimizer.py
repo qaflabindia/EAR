@@ -177,6 +177,55 @@ class Optimizer:
             raise ValueError(f"No usable examples found in trail '{trail_path}'")
         return self.refine(ReasonAboutIntent, examples, getattr(runtime, "model_binding", None))
 
+    # -- refining Skills (the same primitive, aimed at a prompt) ------------------
+
+    def refine_skill(self, skill: Any, examples: list[Example], model_binding: Any) -> str:
+        """Reflectively improve a Skill's prompt against worked examples --
+        the same `RefineInstruction` reflection N1.4 uses for a Judgment's
+        instruction, aimed at `skill.prompt` instead. Requires a live
+        model -- reflection is itself a judgment; with none bound this is a
+        no-op returning the prompt unchanged."""
+        current = skill.instruction()
+        if model_binding is None or getattr(model_binding, "lm", None) is None:
+            return current
+        if not examples:
+            raise ValueError("refine_skill needs at least one example to reflect on")
+        from .signatures import RefineInstruction
+
+        rendered = "\n\n".join(self._render_example(example) for example in examples)
+        result = RefineInstruction.run(model_binding.lm, current_instruction=current, examples=rendered)
+        improved = str(result.improved_instruction).strip()
+        if improved:
+            skill.prompt = improved
+        return skill.instruction()
+
+    def persist_skill(self, path: Union[str, Path], skill: Any) -> str:
+        """Write a refined Skill back into its stacked skills.md, replacing
+        just that skill's section -- the round-trip `Skill.to_markdown()`
+        was built for, so a refined skill is reviewable and diffable
+        exactly like any human-authored one, and survives past this
+        session. Every other section is carried forward untouched."""
+        path = Path(path)
+        key = normalize(skill.name)
+        rendered = skill.to_markdown().rstrip()
+        parts: list[str] = []
+        replaced = False
+        if path.exists():
+            document = parse_document(path.read_text(encoding="utf-8"))
+            if document.title:
+                parts.append(f"# {document.title}")
+            for section in document.sections:
+                if normalize(section.name) == key:
+                    parts.append(rendered)
+                    replaced = True
+                else:
+                    parts.append(f"## {section.name}\n" + "\n".join(section.lines).strip())
+        if not replaced:
+            parts.append(rendered)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n\n".join(part.strip() for part in parts if part.strip()) + "\n", encoding="utf-8")
+        return str(path)
+
     # -- iterative instruction search --------------------------------------------
 
     def search(

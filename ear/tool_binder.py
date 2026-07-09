@@ -82,6 +82,14 @@ class ToolBinder:
     # Confined file/shell tools from the runtime's Sandbox (see
     # Sandbox.as_tools), joined to the toolset the same way.
     sandbox_tools: list[BoundTool] = field(default_factory=list)
+    # The runtime's own list/view/create/retire tools (see Runtime.acquirer
+    # and Acquirer.as_tools) -- how a runtime grows its own toolset, joined
+    # to the toolset the same way.
+    acquirer_tools: list[BoundTool] = field(default_factory=list)
+    # The basic toolsets (Toolsets in memory.md -- web access/search,
+    # email; see ear/web.py, ear/mail.py) declared enabled for this
+    # runtime, joined to the toolset the same way.
+    basic_tools: list[BoundTool] = field(default_factory=list)
     # How many tool-loop steps a deliberation may take; execution mechanics,
     # not judgment -- the model decides what to call within the budget.
     max_iterations: int = 6
@@ -94,12 +102,18 @@ class ToolBinder:
 
     @staticmethod
     def parse_arguments(items: Any) -> dict[str, Any]:
-        """Read a tool call's arguments from the model's '- name: value'
-        lines into a typed kwargs dict, coerced by the same codec as
-        intent context so numbers arrive as numbers. Shared by every
-        native tool loop (deliberation and panel turns alike)."""
+        """Read a tool call's arguments into a typed kwargs dict, coerced by
+        the same codec as intent context so numbers arrive as numbers and a
+        genuinely multi-line value (a script's source, a whole file) arrives
+        intact. `items` is normally the `name -> value` map `ChooseToolAction`
+        already parsed via `section.argument_blocks`; a flat list of
+        '- name: value' strings is also accepted for a caller that hasn't
+        gone through that parser. Shared by every native tool loop
+        (deliberation and panel turns alike)."""
         from .section import coerce
 
+        if isinstance(items, dict):
+            return {str(name).strip(): coerce(value) for name, value in items.items() if str(name).strip()}
         arguments: dict[str, Any] = {}
         for item in items or []:
             name, separator, value = str(item).partition(":")
@@ -142,6 +156,10 @@ class ToolBinder:
         for tool in self.mcp_tools:
             bound.setdefault(normalize(tool.name), tool)
         for tool in self.sandbox_tools:
+            bound.setdefault(normalize(tool.name), tool)
+        for tool in self.acquirer_tools:
+            bound.setdefault(normalize(tool.name), tool)
+        for tool in self.basic_tools:
             bound.setdefault(normalize(tool.name), tool)
         return list(bound.values())
 

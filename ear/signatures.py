@@ -406,7 +406,10 @@ ChooseToolAction = Judgment(
         "first. Read the tools and what you have gathered so far. If a tool "
         "would help, call exactly one -- name it and give its arguments. "
         "Otherwise, give the final decision. Never invent a tool that is not "
-        "listed."
+        "listed. When an argument's value needs more than one line -- the "
+        "source of a script, a whole file's content -- write it as a "
+        "blockquote rather than cramming it onto one bullet line; see the "
+        "arguments field below for exactly how."
     ),
     inputs=[
         Field("intent", "The intent to resolve"),
@@ -417,9 +420,77 @@ ChooseToolAction = Judgment(
     ],
     outputs=[
         Field("tool", "The name of the one tool to call now, or empty to decide instead", "str"),
-        Field("arguments", "The tool's arguments as '- name: value' lines; empty when deciding", "list"),
+        Field(
+            "arguments",
+            (
+                "The tool's arguments; empty when deciding instead. A short "
+                "value is a '- name: value' bullet, same as always. A value "
+                "spanning more than one line -- a script's source, a whole "
+                "file -- cannot go on a bullet line: write 'name:' alone, "
+                "then the value as a blockquote, every line (blank ones "
+                "too) starting with '> '. Example with one short argument "
+                "and one multi-line one:\n"
+                "- path: workspace/script.py\n"
+                "content:\n"
+                "> import openpyxl\n"
+                ">\n"
+                "> wb = openpyxl.load_workbook('uploads/data.xlsx')\n"
+                "> print(wb.sheetnames)"
+            ),
+            "map",
+        ),
         Field("decision", "The final decision, given only when no tool is called", "text"),
     ],
+)
+
+SummarizeToolResult = Judgment(
+    instruction=(
+        "Compress a tool call's result into short, caveman-style text for "
+        "another model to act on next turn. This text has already been run "
+        "through a deterministic compressor that only ever deletes matched "
+        "filler words -- you may compress further, but you may generate new "
+        "wording, so the following constraints are absolute:\n"
+        "\n"
+        "No fabrication. Never state a fact, number, path, name, or outcome "
+        "that is not literally present in the result. If you are not certain "
+        "a detail survived from the input, quote it verbatim rather than "
+        "paraphrase it -- a quoted fact cannot drift.\n"
+        "No shallowness. Preserve every fact that changes what the next turn "
+        "should do -- exact error text, exact file paths, exact row/column "
+        "counts, exit codes, exact names -- not just the headline outcome.\n"
+        "No fluff. Cut filler, hedging, pleasantries, and restating the "
+        "question; every remaining word must carry information.\n"
+        "No sloppiness. A shorter sentence that becomes ambiguous, or drops "
+        "a qualifier that changes the meaning, is wrong, not concise.\n"
+        "No context loss or distortion. Whether the call succeeded or "
+        "failed is never optional to state. When in doubt between "
+        "compressing a number and keeping it exact, keep it exact."
+    ),
+    inputs=[
+        Field("tool", "The tool that was called"),
+        Field("arguments", "The arguments it was called with"),
+        Field("result", "The tool's full raw result"),
+    ],
+    outputs=[Field("summary", "The compressed, caveman-style summary", "text")],
+)
+
+ConsolidateGatheredContext = Judgment(
+    instruction=(
+        "You are checkpointing an agent's tool-use history partway through a "
+        "task. Read every gathered tool result below -- accumulated over "
+        "several turns -- and produce ONE consolidated statement carrying "
+        "every fact that still matters for what happens next: exact file "
+        "paths, exact numbers (row counts, exit codes, byte sizes), exact "
+        "error text, what has been verified versus merely attempted, and any "
+        "decision already reached. This checkpoint REPLACES the individual "
+        "entries below for every turn from here on, so anything it drops is "
+        "gone for good -- no fabrication (state only what the gathered text "
+        "actually shows), no shallowness (drop only genuine repetition and "
+        "resolved dead ends, never a fact because it seems minor), no fluff, "
+        "no context loss or distortion of any number, path, or outcome."
+    ),
+    inputs=[Field("gathered_so_far", "Every tool result gathered in this cycle so far, in order")],
+    outputs=[Field("checkpoint", "The single consolidated statement of what still matters", "text")],
 )
 
 # The registry of every declared Judgment in this module, by name -- what

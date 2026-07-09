@@ -1244,10 +1244,11 @@ def test_tool_binder_resolves_declared_tools_and_rejects_strays(tmp_path):
     runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
     runtime.bind_tool("amortization_calculator", monthly_payment)
 
-    bound = runtime.tool_binder.bound_tools(runtime)
-    assert [tool.name for tool in bound] == ["amortization_calculator"]
-    assert "monthly payment" in bound[0].description  # the declared description, not the docstring
-    assert bound[0].identifier == "amortization_calculator"
+    bound = {tool.name: tool for tool in runtime.tool_binder.bound_tools(runtime)}
+    assert "monthly payment" in bound["amortization_calculator"].description  # the declared description, not the docstring
+    assert bound["amortization_calculator"].identifier == "amortization_calculator"
+    # the runtime's own basic tools (list/view/create/retire) ride along by default
+    assert {"list_tools", "view_tool", "create_tool", "retire_tool"} <= bound.keys()
 
     runtime.bind_tool("undeclared_gadget", monthly_payment)
     with pytest.raises(ValueError, match="matches nothing the stack declares.*amortization_calculator"):
@@ -1289,7 +1290,7 @@ def test_offline_deliberation_lists_tools_without_invoking_them(tmp_path):
     runtime.reason(Intent(text="Underwrite a consumer loan", context={"loan_amount": 5000}))
 
     deliberation = runtime.reasoning_log.for_stage("deliberation")[0]
-    assert deliberation.inputs["tools"] == ["amortization_calculator"]
+    assert "amortization_calculator" in deliberation.inputs["tools"]
     assert runtime.reasoning_log.for_stage("tool") == []
 
 
@@ -1307,6 +1308,559 @@ def test_logged_tool_wrapper_contains_failures_on_the_record():
     assert record.output.startswith("FAILED")
     assert record.inputs["tool"] == "credit_bureau_check"
     assert "duration_ms" in record.inputs
+
+
+# ---------------------------------------------------------------------------
+# Acquirer: a runtime lists, views, and grows its own toolset, natively.
+# ---------------------------------------------------------------------------
+
+
+def test_acquirer_lists_and_views_declared_tools_and_skills(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = TOOLS_MEMORY
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+
+    listing = runtime.acquirer.list_tools(runtime)
+    assert "amortization_calculator (authored, declared)" in listing
+    assert "risk_grade (skill, prompt-only)" in listing
+
+    view = runtime.acquirer.view_tool(runtime, "amortization_calculator")
+    assert "Origin: authored" in view
+    assert "computes the monthly payment" in view
+
+    assert runtime.acquirer.view_tool(runtime, "nope") == "No tool or skill named 'nope' is declared."
+
+
+def test_acquirer_create_tool_declares_and_persists(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = TOOLS_MEMORY
+    directory = write_stack(tmp_path / "stack", **stack)
+    runtime = load_runtime(directory)
+
+    result = runtime.acquirer.create_tool(runtime, "fetch_rate_sheet", "Look up today's published rate sheet.")
+    assert "Declared tool 'fetch_rate_sheet'" in result
+    assert any(tool.name == "fetch_rate_sheet" for tool in runtime.strategy.tools)
+
+    persisted = (directory / ".ear" / "tools.md").read_text(encoding="utf-8")
+    assert "## fetch_rate_sheet" in persisted
+    assert "Status: active" in persisted
+
+    # A duplicate name is refused rather than shadowing the first.
+    refusal = runtime.acquirer.create_tool(runtime, "fetch_rate_sheet", "Something else entirely.")
+    assert "already declared" in refusal
+
+    # It is context only until a handler binds it.
+    bound_names = {tool.name for tool in runtime.tool_binder.bound_tools(runtime)}
+    assert "fetch_rate_sheet" not in bound_names
+
+
+def test_a_tool_declared_only_in_tools_md_is_unreachable_by_the_native_tool_loop(tmp_path):
+    """The invariant `create_tool` promises in its own return message
+    ('context to the model until a handler binds it') held end to end: a
+    live deliberation naming a tools.md-only entry gets the same
+    hallucinated-tool recovery a made-up name would, never an execution --
+    because `bound_tools()` never auto-promotes a declared Tool into the
+    executable set, no matter how it was declared (memory.md or
+    `.ear/tools.md`)."""
+    from ear.reasoner import Reasoner
+
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = TOOLS_MEMORY
+    directory = write_stack(tmp_path / "stack", **stack)
+    runtime = load_runtime(directory)
+    runtime.acquirer.create_tool(runtime, "fetch_rate_sheet", "Look up today's rate sheet.")
+
+    bound = runtime.tool_binder.bound_tools(runtime)
+    assert "fetch_rate_sheet" not in {tool.name for tool in bound}  # declared, never bound
+
+    lm = ScriptedLM(
+        [
+            _tool_action(tool="fetch_rate_sheet", args="- date: today"),  # the acquired-but-unbound name
+            _tool_action(decision="Approved without the rate sheet."),
+        ]
+    )
+    decision = Reasoner._reason_with_tools(
+        Intent(text="Underwrite a consumer loan"), runtime, lm, context={}, capabilities="none", tools=bound, max_iterations=4
+    )
+    assert decision == "Approved without the rate sheet."
+
+    records = runtime.reasoning_log.for_stage("tool")
+    assert records[0].inputs["recovery"] is True
+    assert records[0].output.startswith("RECOVERED")
+    assert "no tool named 'fetch_rate_sheet'" in records[0].output
+    # Never actually invoked -- there is no non-recovery record for it.
+    assert not any(not record.inputs.get("recovery") and record.inputs.get("tool") == "fetch_rate_sheet" for record in records)
+
+
+def test_acquirer_retire_tool_refuses_authored_and_retires_acquired(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = TOOLS_MEMORY
+    directory = write_stack(tmp_path / "stack", **stack)
+    runtime = load_runtime(directory)
+
+    refusal = runtime.acquirer.retire_tool(runtime, "amortization_calculator")
+    assert "authored in memory.md" in refusal
+    assert any(tool.name == "amortization_calculator" for tool in runtime.strategy.tools)
+
+    runtime.acquirer.create_tool(runtime, "scratch_tool", "A throwaway tool.")
+    result = runtime.acquirer.retire_tool(runtime, "scratch_tool", reason="no longer needed")
+    assert result == "Retired tool 'scratch_tool'."
+    assert not any(tool.name == "scratch_tool" for tool in runtime.strategy.tools)
+
+    persisted = (directory / ".ear" / "tools.md").read_text(encoding="utf-8")
+    assert "Status: retired -- no longer needed" in persisted
+
+    assert runtime.acquirer.retire_tool(runtime, "not_a_tool") == "No tool named 'not_a_tool' is declared."
+
+
+def test_load_runtime_merges_acquired_tools_and_memory_md_wins_on_clash(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = TOOLS_MEMORY
+    directory = write_stack(tmp_path / "stack", **stack)
+    (directory / ".ear").mkdir()
+    (directory / ".ear" / "tools.md").write_text(
+        "# Acquired Tools\n\n"
+        "## fetch_rate_sheet\n\nDescription: Look up today's published rate sheet.\nStatus: active\n\n"
+        "## retired_gadget\n\nDescription: An old one.\nStatus: retired -- superseded\n\n"
+        "## amortization_calculator\n\nDescription: A shadow that must lose to memory.md.\nStatus: active\n",
+        encoding="utf-8",
+    )
+
+    runtime = load_runtime(directory)
+    names = {tool.name: tool for tool in runtime.strategy.tools}
+    assert "fetch_rate_sheet" in names
+    assert names["fetch_rate_sheet"].origin == "acquired"
+    assert "retired_gadget" not in names
+    # memory.md's own declaration is never shadowed by the acquired file.
+    assert names["amortization_calculator"].origin == "authored"
+    assert "computes the monthly payment" in names["amortization_calculator"].description
+
+
+def test_tool_acquisition_can_be_disabled_from_prose(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = (
+        "# Memory & Strategy\n\n## Tools\n\n"
+        "- amortization_calculator: computes the monthly payment\n\n"
+        "This is a fixed toolset -- never create new tools.\n"
+    )
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    assert runtime.strategy.tool_acquisition is False
+    bound_names = {tool.name for tool in runtime.tool_binder.bound_tools(runtime)}
+    assert bound_names.isdisjoint({"list_tools", "view_tool", "create_tool", "retire_tool"})
+
+
+def test_acquirer_exposes_itself_as_bound_tools_in_a_live_toolloop():
+    runtime = Runtime(name="Self-Extending-Runtime")
+    tools = runtime.acquirer.as_tools(runtime)
+    names = {tool.name for tool in tools}
+    assert names == {"list_tools", "view_tool", "create_tool", "retire_tool"}
+    assert "no tools or skills declared" in tools[0].handler()
+
+
+SANDBOXED_TOOLS_MEMORY = (
+    "# Memory & Strategy\n\n## Sandbox\n\nEach runtime runs in an isolated workspace "
+    "under `.ear/box`. Expose a shell.\n\n## Tools\n\n"
+    "- amortization_calculator: computes the monthly payment\n"
+)
+
+
+def test_acquirer_confines_a_created_tool_inside_the_sandbox(tmp_path):
+    """The whole point of running an agent in a k8s pod: its blast radius
+    stays inside the Sandbox. A self-declared tool's own file must land
+    there too, never at the stack-level `.ear/tools.md` a plain host path
+    would name outside the box."""
+    directory = write_stack(tmp_path / "stack", **{**MINIMAL_STACK, "memory": SANDBOXED_TOOLS_MEMORY})
+    runtime = load_runtime(directory)
+    assert runtime.sandbox is not None
+
+    result = runtime.acquirer.create_tool(runtime, "fetch_rate_sheet", "Look up today's rate sheet.")
+    assert "inside the sandbox" in result
+
+    assert runtime.sandbox.exists(".ear/tools.md")
+    assert "fetch_rate_sheet" in runtime.sandbox.read_text(".ear/tools.md")
+    # Never leaked to the stack-level file outside the box.
+    assert not (directory / ".ear" / "tools.md").exists()
+
+
+def test_load_runtime_reloads_a_sandboxed_acquired_tool_from_inside_the_box(tmp_path):
+    directory = write_stack(tmp_path / "stack", **{**MINIMAL_STACK, "memory": SANDBOXED_TOOLS_MEMORY})
+    first = load_runtime(directory)
+    first.acquirer.create_tool(first, "fetch_rate_sheet", "Look up today's rate sheet.")
+
+    second = load_runtime(directory)
+    assert any(tool.name == "fetch_rate_sheet" for tool in second.strategy.tools)
+
+
+def test_acquirer_retire_tool_writes_the_rotation_note_inside_the_sandbox(tmp_path):
+    directory = write_stack(tmp_path / "stack", **{**MINIMAL_STACK, "memory": SANDBOXED_TOOLS_MEMORY})
+    runtime = load_runtime(directory)
+    runtime.acquirer.create_tool(runtime, "scratch_tool", "A throwaway tool.")
+
+    result = runtime.acquirer.retire_tool(runtime, "scratch_tool", reason="no longer needed")
+    assert result == "Retired tool 'scratch_tool'."
+    assert "Status: retired -- no longer needed" in runtime.sandbox.read_text(".ear/tools.md")
+    assert not (directory / ".ear" / "tools.md").exists()
+
+
+def test_discover_then_acquire_a_new_language_recipe_with_no_hardcoded_table(tmp_path):
+    """No per-language table lives anywhere in EAR's own code: running an
+    unfamiliar toolchain is the model's own reasoning over `run_shell`'s
+    raw stdout/stderr/exit-code (`SandboxResult.render()`), not a canned
+    lookup. Once a working recipe is found, `create_tool` persists it --
+    tool acquisition is a runtime, one-time activity, never a static dump
+    shipped in code. Persisting is still not binding: the recipe comes
+    back as declared context (`view_tool`), replayed through the same
+    generic `run_shell` next time, never auto-executed."""
+    from ear.reasoner import Reasoner
+
+    directory = write_stack(tmp_path / "stack", **{**MINIMAL_STACK, "memory": SANDBOXED_TOOLS_MEMORY})
+    runtime = load_runtime(directory)
+    bound = runtime.tool_binder.bound_tools(runtime)
+
+    lm = ScriptedLM(
+        [
+            # First attempt: an unfamiliar toolchain EAR has no built-in
+            # knowledge of -- the failure is raw text, not a templated error.
+            _tool_action(tool="run_shell", args="- command: widgetlang --version"),
+            # The model reasons over that raw failure and tries a different
+            # command -- still nothing EAR's code chose for it.
+            _tool_action(tool="run_shell", args="- command: echo widgetlang built ok"),
+            # Having found what works, the model persists it for reuse.
+            _tool_action(
+                tool="create_tool",
+                args=(
+                    "- name: run_widgetlang\n"
+                    "- description: Build and run a WidgetLang source file.\n"
+                    "- command: echo widgetlang built ok"
+                ),
+            ),
+            _tool_action(decision="WidgetLang toolchain confirmed; recipe saved as run_widgetlang."),
+        ]
+    )
+    decision = Reasoner._reason_with_tools(
+        Intent(text="Run a WidgetLang snippet"), runtime, lm, context={}, capabilities="none", tools=bound, max_iterations=6
+    )
+    assert decision == "WidgetLang toolchain confirmed; recipe saved as run_widgetlang."
+
+    records = runtime.reasoning_log.for_stage("tool")
+    assert "could not launch 'widgetlang'" in records[0].output  # raw, unmediated failure
+    assert "widgetlang built ok" in records[1].output
+
+    # Acquired -- persisted inside the sandbox, reviewable next load.
+    assert any(tool.name == "run_widgetlang" for tool in runtime.strategy.tools)
+    assert "run_widgetlang" in runtime.sandbox.read_text(".ear/tools.md")
+    # Still not auto-executable: declaring a recipe never binds a handler.
+    assert "run_widgetlang" not in {tool.name for tool in runtime.tool_binder.bound_tools(runtime)}
+    view = runtime.acquirer.view_tool(runtime, "run_widgetlang")
+    assert "Command: echo widgetlang built ok" in view  # what the model would replay via run_shell next time
+
+
+# ---------------------------------------------------------------------------
+# Basic toolsets: mechanical capabilities (fetch a URL, search, send mail)
+# that ship ready -- enabled/disabled by declaration, never re-derived by
+# the model each time it needs one.
+# ---------------------------------------------------------------------------
+
+
+def test_toolsets_default_when_no_section_is_declared():
+    from ear.strategy import Strategy
+
+    strategy = Strategy.from_markdown("# Memory & Strategy\n\nNo toolsets section at all.\n")
+    assert strategy.toolsets["internet_access"] is True
+    assert strategy.toolsets["internet_search"] is False
+    assert strategy.toolsets["read_documents"] is True
+    assert strategy.toolsets["write_documents"] is False
+    assert strategy.toolsets["code_executor"] is True
+    assert strategy.toolsets["browser_automation"] is False
+    assert strategy.toolsets["terminal"] is False
+    assert strategy.toolsets["email_sender"] is False
+    assert strategy.toolsets["mcp_connector"] is False
+    assert strategy.toolsets["environment_admin"] is True
+
+
+def test_toolsets_section_overrides_defaults_and_folds_loose_names():
+    from ear.strategy import Strategy
+
+    memory = (
+        "# Memory & Strategy\n\n## Toolsets\n\n"
+        "- Internet Search: enabled, provider tavily, key env var LENS_SEARCH_API_KEY\n"
+        "- Code Executor/Writer: disabled\n"
+        "- Terminal / Shell: enabled\n"
+        "- Email Sender: enabled, smtp host smtp.example.com, port 2525, "
+        "user env var SMTP_USER, password env var SMTP_PASS\n"
+    )
+    strategy = Strategy.from_markdown(memory)
+    assert strategy.toolsets["internet_search"] is True
+    assert strategy.search_provider == "tavily"
+    assert strategy.search_api_key_env_var == "LENS_SEARCH_API_KEY"
+    assert strategy.toolsets["code_executor"] is False
+    assert strategy.toolsets["terminal"] is True
+    assert strategy.toolsets["email_sender"] is True
+    assert strategy.smtp_host == "smtp.example.com"
+    assert strategy.smtp_port == 2525
+    assert strategy.smtp_user_env_var == "SMTP_USER"
+    assert strategy.smtp_password_env_var == "SMTP_PASS"
+    # untouched defaults survive alongside the declared overrides
+    assert strategy.toolsets["internet_access"] is True
+    assert strategy.toolsets["environment_admin"] is True
+
+
+def test_loader_binds_only_the_enabled_basic_toolsets_by_default(tmp_path):
+    runtime = load_runtime(write_stack(tmp_path / "stack", **MINIMAL_STACK))
+    bound_names = {tool.name for tool in runtime.tool_binder.bound_tools(runtime)}
+    assert "fetch_url" in bound_names  # internet_access defaults on
+    assert "web_search" not in bound_names  # internet_search defaults off
+    assert "send_email" not in bound_names  # email_sender defaults off
+
+
+def test_loader_binds_web_search_and_email_once_declared_enabled(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = (
+        "# Memory & Strategy\n\n## Toolsets\n\n"
+        "- Internet Search: enabled, provider tavily, key env var LENS_SEARCH_API_KEY\n"
+        "- Email Sender: enabled, smtp host smtp.example.com, user env var SMTP_USER, "
+        "password env var SMTP_PASS\n"
+    )
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    bound = {tool.name: tool for tool in runtime.tool_binder.bound_tools(runtime)}
+    assert "web_search" in bound
+    assert "send_email" in bound
+    assert "fetch_url" in bound  # internet_access still on by default alongside it
+
+
+class _FakeOpener:
+    """Stands in for `ipv4_opener(context)`'s return value -- an object
+    exposing `.open(request, timeout=...)`, the real seam `fetch_url`/
+    `web_search`/`LM._post` call through. Patching `ipv4_opener` itself
+    (rather than `urllib.request.urlopen`) mocks the actual boundary the
+    code uses now that outbound HTTPS is forced over IPv4 (see
+    `ear.llm.ipv4_opener`) -- a plain `urlopen` patch would never be
+    reached, since nothing calls that name directly any more."""
+
+    def __init__(self, handler):
+        self._handler = handler
+
+    def open(self, request, timeout=None):
+        return self._handler(request, timeout)
+
+
+def test_fetch_url_fetches_and_records_on_the_trail(monkeypatch):
+    from ear import WebAccess
+
+    class _FakeResponse:
+        def read(self, *_args):
+            return b"hello from the web"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("ear.web.ipv4_opener", lambda context: _FakeOpener(lambda request, timeout: _FakeResponse()))
+    result = WebAccess().fetch_url("https://example.com")
+    assert result == "hello from the web"
+
+
+def test_fetch_url_fails_loudly_and_never_crashes_the_cycle(monkeypatch):
+    import urllib.error
+
+    from ear import WebAccess
+    from ear.tool_binder import BoundTool, ToolBinder
+
+    def broken(request, timeout):
+        raise urllib.error.URLError("no route to host")
+
+    monkeypatch.setattr("ear.web.ipv4_opener", lambda context: _FakeOpener(broken))
+    runtime = Runtime(name="Web-Runtime")
+    tool = BoundTool(name="fetch_url", description="fetch", handler=WebAccess().fetch_url)
+    invoke = ToolBinder().logged_handler(runtime, tool)
+    result = invoke("https://example.com")
+    assert "failed" in result and "no route to host" in result
+    record = runtime.reasoning_log.for_stage("tool")[0]
+    assert record.output.startswith("FAILED")
+
+
+def test_web_search_refuses_without_a_declared_provider_and_key():
+    from ear import WebAccess, WebError
+
+    with pytest.raises(WebError, match="Toolsets: internet_search"):
+        WebAccess().web_search("credit risk news")
+
+
+def test_web_search_calls_tavily_with_the_declared_key(monkeypatch):
+    from ear import WebAccess
+
+    captured = {}
+
+    class _FakeResponse:
+        def read(self):
+            return json.dumps({"results": [{"title": "T", "url": "https://x", "content": "c"}]}).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_transport(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return _FakeResponse()
+
+    monkeypatch.setattr("ear.web.ipv4_opener", lambda context: _FakeOpener(fake_transport))
+    monkeypatch.setenv("TAVILY_KEY", "secret-key")
+    web = WebAccess(search_provider="tavily", search_api_key_env_var="TAVILY_KEY")
+    result = web.web_search("credit risk news")
+    assert "T -- https://x" in result
+    assert captured["body"]["api_key"] == "secret-key"
+
+
+def test_send_email_refuses_without_a_declared_host():
+    from ear import Mail, MailError
+
+    with pytest.raises(MailError, match="Toolsets: email_sender"):
+        Mail().send_email("a@b.com", "subject", "body")
+
+
+def test_send_email_sends_through_the_declared_smtp_host(monkeypatch):
+    from ear import Mail
+
+    sent = {}
+
+    class _FakeSMTP:
+        def __init__(self, host, port, timeout=None):
+            sent["host"], sent["port"] = host, port
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def starttls(self):
+            sent["starttls"] = True
+
+        def login(self, user, password):
+            sent["login"] = (user, password)
+
+        def send_message(self, message):
+            sent["to"] = message["To"]
+            sent["subject"] = message["Subject"]
+
+    monkeypatch.setattr("ear.mail.smtplib.SMTP", _FakeSMTP)
+    monkeypatch.setenv("SMTP_USER", "bot@example.com")
+    monkeypatch.setenv("SMTP_PASS", "hunter2")
+    mail = Mail(host="smtp.example.com", user_env_var="SMTP_USER", password_env_var="SMTP_PASS")
+    result = mail.send_email("customer@example.com", "Your loan decision", "Approved.")
+    assert result == "sent to customer@example.com"
+    assert sent == {
+        "host": "smtp.example.com",
+        "port": 587,
+        "starttls": True,
+        "login": ("bot@example.com", "hunter2"),
+        "to": "customer@example.com",
+        "subject": "Your loan decision",
+    }
+
+
+def test_code_executor_and_environment_admin_are_the_same_physical_shell_by_different_names(tmp_path):
+    """Terminal, Code Executor and Environment Admin are three access
+    grants over one physical capability (Sandbox.run) -- not three
+    different implementations. Toolsets defaults code_executor and
+    environment_admin on, terminal off; proving the first two actually
+    run commands (not a restricted subset) shows the access control is
+    the name's reachability, never a fake per-name command filter."""
+    directory = write_stack(tmp_path / "stack", **{**MINIMAL_STACK, "memory": SANDBOXED_TOOLS_MEMORY})
+    runtime = load_runtime(directory)
+    bound = {tool.name: tool for tool in runtime.tool_binder.bound_tools(runtime)}
+
+    assert "code_executor" in bound
+    assert "environment_admin" in bound
+    assert "terminal" not in bound  # off by default -- but see run_shell below
+
+    result_a = bound["code_executor"].handler("echo from code executor")
+    result_b = bound["environment_admin"].handler("echo from code executor")
+    assert "from code executor" in result_a
+    assert "from code executor" in result_b  # identical capability, different name
+
+
+def test_terminal_toolset_grants_the_name_once_declared_enabled(tmp_path):
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = SANDBOXED_TOOLS_MEMORY + "\n## Toolsets\n\n- Terminal / Shell: enabled\n"
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    bound = {tool.name: tool for tool in runtime.tool_binder.bound_tools(runtime)}
+    assert "terminal" in bound
+    assert "echo hi" in bound["terminal"].handler("echo echo hi") or "hi" in bound["terminal"].handler("echo hi")
+
+
+def test_disabling_every_shell_toolset_name_still_leaves_the_sandbox_physically_capable(tmp_path):
+    """Access control governs reachability, never existence: with every
+    shell-backed toolset name off, none of them are bound -- but the
+    sandbox itself can still run a command directly, because the
+    physical capability was never something a toggle could remove."""
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = (
+        SANDBOXED_TOOLS_MEMORY
+        + "\n## Toolsets\n\n- Terminal / Shell: disabled\n- Code Executor/Writer: disabled\n"
+        "- Environment Admin (Stack Setup): disabled\n"
+    )
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    bound_names = {tool.name for tool in runtime.tool_binder.bound_tools(runtime)}
+    assert bound_names.isdisjoint({"terminal", "code_executor", "environment_admin"})
+
+    # Still physically there -- just not reachable by name for the model.
+    result = runtime.sandbox.run("echo still physically here")
+    assert result.ok
+    assert "still physically here" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Optimizer: extended to Skills -- the same reflection primitive N1.4 uses
+# for a Judgment's instruction, aimed at a Skill's prompt instead.
+# ---------------------------------------------------------------------------
+
+
+def test_optimizer_refine_skill_is_a_no_op_without_a_model():
+    from ear import Optimizer, Skill
+    from ear.optimizer import Example
+
+    skill = Skill(name="fetch_score", prompt="Fetch the credit score.")
+    result = Optimizer().refine_skill(skill, [Example(intent="x", decision="y")], model_binding=None)
+    assert result == "Fetch the credit score."
+    assert skill.prompt == "Fetch the credit score."
+
+
+def test_optimizer_refine_skill_rewrites_the_prompt_with_a_scripted_model():
+    from ear import ModelBinding, Optimizer, Skill
+    from ear.optimizer import Example
+
+    binding = ModelBinding(provider="anthropic", model="test")
+    binding.lm = ScriptedLM(["## improved instruction\n\nFetch the applicant's credit score from the bureau.\n"])
+    skill = Skill(name="fetch_score", prompt="Fetch the credit score.")
+
+    result = Optimizer().refine_skill(
+        skill, [Example(intent="check credit", decision="score fetched")], model_binding=binding
+    )
+    assert result == "Fetch the applicant's credit score from the bureau."
+    assert skill.prompt == "Fetch the applicant's credit score from the bureau."
+
+
+def test_optimizer_persist_skill_replaces_only_its_own_section(tmp_path):
+    from ear import Optimizer, Skill
+
+    skills_md = tmp_path / "skills.md"
+    skills_md.write_text(
+        "# Skills\n\n## risk_grade\nCombine the score band and DTI band into a grade A-E.\n\n"
+        "## fetch_score\nFetch the credit score.\n",
+        encoding="utf-8",
+    )
+    refined = Skill(name="fetch_score", prompt="Fetch the applicant's credit score from the bureau.")
+    Optimizer().persist_skill(skills_md, refined)
+
+    text = skills_md.read_text(encoding="utf-8")
+    assert "Fetch the applicant's credit score from the bureau." in text
+    assert "Combine the score band and DTI band into a grade A-E." in text  # untouched section survives
+    assert text.count("## fetch_score") == 1
 
 
 def test_deliberator_backend_seam_stays_on_the_trail():
@@ -1570,19 +2124,24 @@ ANTHROPIC_REPLY = {
 
 
 def test_lm_retries_transient_failures_and_records_them(monkeypatch):
+    import io
     import urllib.error
 
     from ear.llm import LM
 
     attempts = {"count": 0}
 
-    def flaky_urlopen(request, context=None, timeout=None):
+    def flaky(request, timeout):
         attempts["count"] += 1
         if attempts["count"] <= 2:
-            raise urllib.error.HTTPError(request.full_url, 529, "overloaded", {}, None)
+            # A real HTTPError always carries the response body as `fp` --
+            # `ear.llm._post` reads it via `error.read()` to surface the
+            # provider's detail, so the mock must supply a real file-like
+            # object here too, not None.
+            raise urllib.error.HTTPError(request.full_url, 529, "overloaded", {}, io.BytesIO(b"overloaded"))
         return FakeReply(ANTHROPIC_REPLY)
 
-    monkeypatch.setattr("ear.llm.urllib.request.urlopen", flaky_urlopen)
+    monkeypatch.setattr("ear.llm.ipv4_opener", lambda context: _FakeOpener(flaky))
     monkeypatch.setattr("ear.llm.time.sleep", lambda seconds: None)
 
     lm = LM(model="anthropic/test-model", api_key="k")
@@ -1596,17 +2155,18 @@ def test_lm_retries_transient_failures_and_records_them(monkeypatch):
 
 
 def test_lm_fails_fast_on_non_retryable_errors(monkeypatch):
+    import io
     import urllib.error
 
     from ear.llm import LM, LMError
 
     attempts = {"count": 0}
 
-    def unauthorized(request, context=None, timeout=None):
+    def unauthorized(request, timeout):
         attempts["count"] += 1
-        raise urllib.error.HTTPError(request.full_url, 401, "unauthorized", {}, None)
+        raise urllib.error.HTTPError(request.full_url, 401, "unauthorized", {}, io.BytesIO(b"unauthorized"))
 
-    monkeypatch.setattr("ear.llm.urllib.request.urlopen", unauthorized)
+    monkeypatch.setattr("ear.llm.ipv4_opener", lambda context: _FakeOpener(unauthorized))
     with pytest.raises(LMError, match="401"):
         LM(model="anthropic/test-model", api_key="bad").complete("anything")
     assert attempts["count"] == 1  # auth errors never retry
@@ -3532,6 +4092,96 @@ def test_fleet_card_shows_a_freshness_heartbeat(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The live dashboard server: reachable for as long as a human wants it, not
+# just until the driving script's own work finishes -- create_server() is a
+# thread-friendly split of the old blocking serve(), plus two new routes:
+# a download link for whatever lands in the sandbox's outputs/ (confined,
+# so a crafted path can never escape it) and a page-button POST /shutdown
+# that stops the server without touching a single file on disk.
+# ---------------------------------------------------------------------------
+
+
+def test_outputs_section_lists_files_confined_to_the_sandbox(tmp_path):
+    from ear.dashboard import _human_size, _list_outputs, _outputs_section
+
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    (outputs / "dashboard.xlsx").write_bytes(b"x" * 2048)
+    (outputs / "validation_log.md").write_text("# log\n")
+
+    files = _list_outputs(outputs)
+    assert dict(files) == {"dashboard.xlsx": 2048, "validation_log.md": 6}
+    assert _human_size(2048) == "2.0 KB"
+    assert _human_size(500) == "500 B"
+
+    html_text = _outputs_section(outputs)
+    assert "dashboard.xlsx" in html_text and "/download/dashboard.xlsx" in html_text
+    assert "No outputs yet" not in html_text
+
+    assert "No outputs yet" in _outputs_section(None)
+    assert "No outputs yet" in _outputs_section(tmp_path / "does-not-exist")
+
+
+def test_live_dashboard_server_downloads_confines_paths_and_shuts_down(tmp_path):
+    """End to end against a real HTTPServer on an OS-assigned free port:
+    the main page is reachable and lists an output, a download returns the
+    exact bytes with an attachment header, a path-traversal attempt 404s
+    rather than escaping outputs/, and POSTing /shutdown stops the server
+    -- and only the server; the file on disk survives untouched."""
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from ear import Sandbox
+    from ear.dashboard import create_server
+    from ear.reasoning_log import ReasoningLog
+
+    class _FakeRuntime:
+        pass
+
+    sandbox = Sandbox.create(root=str(tmp_path / "box"), name="LiveDashboardTest")
+    outputs = sandbox.resolve("outputs")
+    outputs.mkdir(parents=True, exist_ok=True)
+    (outputs / "completed_dashboard.xlsx").write_bytes(b"fake completed workbook bytes")
+
+    runtime = _FakeRuntime()
+    runtime.sandbox = sandbox
+    runtime.reasoning_log = ReasoningLog(path=None)
+    runtime.strategy = None
+    runtime.name = "LiveDashboardTest"
+
+    server = create_server(runtime, port=0, host="127.0.0.1")
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        body = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5).read().decode()
+        assert "completed_dashboard.xlsx" in body
+        assert 'action="/shutdown"' in body
+
+        response = urllib.request.urlopen(f"http://127.0.0.1:{port}/download/completed_dashboard.xlsx", timeout=5)
+        assert response.read() == b"fake completed workbook bytes"
+        assert "attachment" in response.headers.get("Content-Disposition", "")
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/download/..%2F..%2Fsecrets.txt", timeout=5)
+        assert excinfo.value.code == 404
+
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/shutdown", method="POST", data=b"")
+        shutdown_response = urllib.request.urlopen(request, timeout=5)
+        assert shutdown_response.status == 200
+        assert b"stopped" in shutdown_response.read()
+    finally:
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    with pytest.raises(Exception):
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1)
+    # The file on disk is exactly what shutdown promised it would leave alone.
+    assert (outputs / "completed_dashboard.xlsx").read_bytes() == b"fake completed workbook bytes"
+
+
+# ---------------------------------------------------------------------------
 # Sandbox: each runtime instance in its own filesystem-confined, resource-
 # limited workspace -- native, stdlib-only, on the record.
 # ---------------------------------------------------------------------------
@@ -3594,6 +4244,37 @@ def test_sandbox_tools_run_through_the_logged_handler_and_escapes_return_as_text
     assert "escapes the sandbox" in escaped
     record = runtime.reasoning_log.for_stage("tool")[-1]
     assert record.inputs["tool"] == "read_file"
+
+
+def test_sandbox_capabilities_checks_live_never_assumes(tmp_path):
+    """'Fully capable' is a fact this establishes by actually running
+    `--version` through the confined executor -- not a promise inherited
+    from whatever the image was supposed to contain."""
+    from ear import Sandbox
+
+    box = Sandbox.create(root=str(tmp_path / "box"), name="t")
+    report = box.capabilities(("python3", "definitely_not_a_real_binary_xyz"))
+
+    assert report["python3"]["available"] is True
+    assert report["python3"]["path"]
+    assert "Python" in report["python3"]["version"] or report["python3"]["version"]
+
+    assert report["definitely_not_a_real_binary_xyz"] == {"available": False}
+
+
+def test_check_environment_tool_reports_python_and_node_live(tmp_path):
+    """The environment_admin toolset's own descriptor promise ('inspect
+    the system environment') -- exercised as a bound tool, not just the
+    underlying Sandbox method."""
+    stack = dict(MINIMAL_STACK)
+    stack["memory"] = "# Memory & Strategy\n\n## Sandbox\n\nIsolate each runtime under `.ear/box`.\n"
+    runtime = load_runtime(write_stack(tmp_path / "stack", **stack))
+    bound = {tool.name: tool for tool in runtime.tool_binder.bound_tools(runtime)}
+    assert "check_environment" in bound  # environment_admin defaults on
+
+    report = bound["check_environment"].handler("python3,node")
+    assert "python3: available" in report
+    assert "node: available" in report
 
 
 def test_strategy_reads_the_sandbox_section():
@@ -3883,6 +4564,478 @@ def test_tool_loop_recovery_budget_is_bounded_then_concludes():
     assert decision == "Concluded with what I have"
     recoveries = [r for r in runtime.reasoning_log.for_stage("tool") if r.inputs.get("recovery")]
     assert len(recoveries) == _MAX_TOOL_RECOVERIES  # never unbounded
+
+
+# ---------------------------------------------------------------------------
+# argument_blocks: a tool call's arguments can mix short '- name: value'
+# bullets with a 'name:' + blockquote form for a value that needs more than
+# one line -- a script's source, a whole file -- which a single bullet line
+# can never carry. This is the fix for the native tool loop silently
+# truncating a multi-line write_file/run_shell argument to whatever fit on
+# one line.
+# ---------------------------------------------------------------------------
+
+
+def test_argument_blocks_keeps_short_bullets_working_unchanged():
+    from ear.section import argument_blocks
+
+    blocks = argument_blocks(["- applicant_id: 42", "- date: today"])
+    # Names survive verbatim (never case/underscore-folded by `normalize`):
+    # a tool argument becomes a Python keyword argument, so 'applicant_id'
+    # must stay 'applicant_id', not fold into 'applicant id'.
+    assert blocks == {"applicant_id": "42", "date": "today"}
+
+
+def test_argument_blocks_carries_a_genuinely_multiline_value_intact():
+    from ear.section import argument_blocks
+
+    lines = [
+        "- path: workspace/script.py",
+        "content:",
+        "> import openpyxl",
+        ">",
+        "> wb = openpyxl.load_workbook('x.xlsx')",
+        "> for name in wb.sheetnames:",
+        ">     if name:",
+        ">         print(name)",
+        ">     else:",
+        ">         pass",
+    ]
+    blocks = argument_blocks(lines)
+    assert blocks["path"] == "workspace/script.py"
+    assert blocks["content"] == (
+        "import openpyxl\n"
+        "\n"
+        "wb = openpyxl.load_workbook('x.xlsx')\n"
+        "for name in wb.sheetnames:\n"
+        "    if name:\n"
+        "        print(name)\n"
+        "    else:\n"
+        "        pass"
+    )
+
+
+def test_argument_blocks_does_not_end_a_block_on_an_unquoted_blank_line():
+    from ear.section import argument_blocks
+
+    # The model forgot to prefix the blank line with '>' -- the value must
+    # still survive whole, not truncate at the first line.
+    lines = ["content:", "> line one", "", "> line two"]
+    blocks = argument_blocks(lines)
+    assert blocks["content"] == "line one\n\nline two"
+
+
+def test_tool_loop_passes_a_multiline_script_through_write_file_intact():
+    """End to end through the real ChooseToolAction wire format: a
+    write_file-shaped tool call whose 'content' argument is a multi-line
+    Python script must reach the handler byte-for-byte, not truncated to
+    whatever fit on one bullet line."""
+    from ear.reasoner import Reasoner
+    from ear.tool_binder import BoundTool
+
+    script = (
+        "import openpyxl\n"
+        "\n"
+        "wb = openpyxl.load_workbook('uploads/data.xlsx')\n"
+        "for name in wb.sheetnames:\n"
+        "    print(name)\n"
+    )
+    received = {}
+
+    def write_file(path, content):
+        received["path"], received["content"] = path, content
+        return f"wrote {len(content)} characters to {path}"
+
+    tool = BoundTool(name="write_file", description="write a file", handler=write_file)
+    runtime = Runtime(name="MultilineArgs")
+    call = (
+        "## tool\n\nwrite_file\n\n"
+        "## arguments\n\n"
+        "- path: workspace/script.py\n"
+        "content:\n"
+        + "\n".join(f"> {line}" if line else ">" for line in script.splitlines())
+        + "\n\n## decision\n\n"
+    )
+    lm = ScriptedLM([call, _tool_action(decision="Script written and run.")])
+    decision = Reasoner._reason_with_tools(
+        Intent(text="write a script"), runtime, lm, context={}, capabilities="none", tools=[tool], max_iterations=6
+    )
+    assert decision == "Script written and run."
+    assert received["path"] == "workspace/script.py"
+    # A trailing blank line is inherently unrecoverable through blockquoting
+    # (the same limitation `quote`/`unquote` already have everywhere else in
+    # this codec) -- every other character, including internal blank lines
+    # and indentation, must survive exactly.
+    assert received["content"] == script.rstrip("\n")
+
+
+def test_a_failed_tool_call_reaches_the_model_on_the_next_prompt():
+    """Proof, not assertion: a tool call that raises must show up -- error
+    text and all -- in the exact prompt the model sees on its *next* turn,
+    not just in the internal `gathered` list. `ToolBinder._logged` turns the
+    exception into 'Tool <name> failed: <error>' and the loop appends that
+    into `gathered`, which is one of `ChooseToolAction`'s own input fields,
+    so `render_prompt` places it in the prompt under its own heading. This
+    test reads the *rendered prompt string itself* (`lm.prompts[1]`), not
+    the intermediate variable, so it can't be fooled by a wiring bug between
+    'the result was computed' and 'the result was actually put in front of
+    the model'."""
+    from ear.reasoner import Reasoner
+    from ear.tool_binder import BoundTool
+
+    attempts = {"count": 0}
+
+    def flaky(path):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError("boom: no such file")
+        return f"read {path} fine"
+
+    tool = BoundTool(name="read_file", description="read a file", handler=flaky)
+    runtime = Runtime(name="FailureFeedback")
+    lm = ScriptedLM([
+        _tool_action(tool="read_file", args="- path: missing.xlsx"),  # fails
+        _tool_action(tool="read_file", args="- path: missing.xlsx"),  # retried, succeeds
+        _tool_action(decision="Read the file after one failed attempt."),
+    ])
+    decision = Reasoner._reason_with_tools(
+        Intent(text="read a file"), runtime, lm, context={}, capabilities="none", tools=[tool], max_iterations=6
+    )
+    assert decision == "Read the file after one failed attempt."
+    assert attempts["count"] == 2
+
+    # The second prompt (the one the model saw right after the failure) must
+    # literally contain the failure text -- this is the actual string handed
+    # to the model, read back from the stub LM's own recorded history.
+    second_prompt = lm.prompts[1]
+    assert "Tool 'read_file' failed: boom: no such file" in second_prompt
+    assert "## gathered" in second_prompt
+
+    # And the trail's own tool-stage record shows the same failure, on the
+    # audit trail an investigator would actually read.
+    tool_records = runtime.reasoning_log.for_stage("tool")
+    assert "FAILED" in tool_records[0].output and "boom: no such file" in tool_records[0].output
+
+
+# ---------------------------------------------------------------------------
+# ear.caveman: the deterministic, zero-dependency prose compressor that
+# always runs on a tool result before it re-enters `gathered` -- ported from
+# the MIT-licensed caveman-shrink MCP middleware. It can only delete matched
+# filler words via `re.sub`, never generate replacement text, so it cannot
+# hallucinate or garble a fact -- unlike an earlier LLM-based version of this
+# feature, which once summarized a 907-row file as "1000 rows" and caused a
+# downstream cycle to block on a discrepancy that was never real.
+# ---------------------------------------------------------------------------
+
+
+def test_caveman_drops_articles_filler_pleasantries_and_hedging():
+    from ear.caveman import compress
+
+    assert compress("The user is the owner of an account").text == "User is owner of account"
+
+    result = compress("Sure, this just basically returns the value").text.lower()
+    assert "sure" not in result and "just" not in result and "basically" not in result
+
+    result = compress("I will perhaps connect to the database").text.lower()
+    assert "perhaps" not in result and not result.startswith("i will")
+
+
+def test_caveman_never_touches_protected_spans():
+    from ear.caveman import compress
+
+    # Fenced code, verbatim -- including filler words inside it.
+    text = "See ```\nthe just sure return 1;\n``` for reference"
+    assert "the just sure return 1;" in compress(text).text
+
+    # Inline code, verbatim.
+    assert "`the just basically API`" in compress("Call `the just basically API` now").text
+
+    # URLs, verbatim.
+    url = "https://example.com/the/just/api"
+    assert url in compress(f"Fetch {url} please").text
+
+    # Filesystem paths, verbatim.
+    path = "/tmp/the/just/file.txt"
+    assert path in compress(f"Wrote to {path} successfully").text
+
+    # CONST_CASE identifiers and dotted calls, verbatim.
+    assert "API_KEY_VALUE" in compress("Set the API_KEY_VALUE please").text
+    assert "config.api.endpoint()" in compress("Just call config.api.endpoint() basically").text
+
+
+def test_caveman_never_touches_a_bare_number():
+    """The exact real-world failure this exists to prevent: a row count (or
+    any other bare number) must survive compression byte-for-byte, because
+    nothing in the compression rule set matches digits at all -- there is no
+    generation step that could invent or round a number the way an LLM
+    summarizer can."""
+    from ear.caveman import compress
+
+    text = (
+        "The staged dataset was actually written successfully with 907 data "
+        "rows and 1 header row, basically 908 lines total."
+    )
+    result = compress(text).text
+    assert "907" in result and "908" in result and "1" in result
+
+
+def test_caveman_degrades_safely_on_empty_or_non_string_input():
+    from ear.caveman import compress
+
+    assert compress("").text == ""
+    assert compress("").saved_pct == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Auxiliary Model: a second, cheaper ModelBinding memory.md may optionally
+# declare to compress a tool result *further*, on top of the always-on
+# ear.caveman pass above -- never a replacement for it. Declaring none (the
+# default) still applies deterministic compression; declaring one must never
+# shrink what actually lands on the audit trail, only what feeds the next
+# prompt.
+# ---------------------------------------------------------------------------
+
+
+def test_strategy_reads_the_auxiliary_model_section_without_clobbering_the_primary():
+    from ear import Strategy
+
+    strategy = Strategy.from_markdown(
+        "## Model Selection\n\nReason with anthropic/claude-opus-4-8, reading the credential from "
+        "ANTHROPIC_API_KEY.\n\n"
+        "## Auxiliary Model\n\nCompress tool results with anthropic/claude-haiku-4-5, reading the "
+        "credential from ANTHROPIC_API_KEY.\n"
+    )
+    assert strategy.provider == "anthropic" and strategy.model == "anthropic/claude-opus-4-8"
+    assert strategy.auxiliary_provider == "anthropic"
+    assert strategy.auxiliary_model == "anthropic/claude-haiku-4-5"
+    # Both share the same env var name here, but they're read into distinct
+    # fields, not one shared one -- proven by the models themselves differing.
+    assert strategy.api_key_env_var == "ANTHROPIC_API_KEY"
+    assert strategy.auxiliary_api_key_env_var == "ANTHROPIC_API_KEY"
+
+
+def test_strategy_reads_a_declared_max_output_tokens_and_wires_it_into_the_binding():
+    """The native tool loop can need a reply large enough to hold a whole
+    script's source (see the truncation this caught in the wild: a 4000+
+    character write cut off mid-identifier because the default 2048-token
+    ceiling was never overridable from memory.md prose). 'Allow up to N
+    tokens per reply' must reach the ModelBinding's request params, exactly
+    like temperature does."""
+    from ear import Strategy
+
+    strategy = Strategy.from_markdown(
+        "## Model Selection\n\nReason with anthropic/claude-opus-4-8, reading the credential from "
+        "ANTHROPIC_API_KEY. Allow up to 8,000 tokens per reply.\n\n"
+        "## Auxiliary Model\n\nCompress tool results with anthropic/claude-haiku-4-5, reading the "
+        "credential from ANTHROPIC_API_KEY. max_tokens: 512.\n"
+    )
+    assert strategy.max_output_tokens == 8000
+    assert strategy.auxiliary_max_output_tokens == 512
+
+    binding = strategy.model_binding()
+    assert binding.params["max_tokens"] == 8000
+    aux_binding = strategy.auxiliary_model_binding()
+    assert aux_binding.params["max_tokens"] == 512
+
+    # A stack that never mentions a token ceiling gets none -- ear/llm.py's
+    # own DEFAULT_MAX_TOKENS keeps applying, unchanged, exactly as before
+    # this setting existed.
+    plain = Strategy.from_markdown(
+        "## Model Selection\n\nReason with anthropic/claude-opus-4-8, reading the credential from "
+        "ANTHROPIC_API_KEY.\n"
+    )
+    assert plain.max_output_tokens is None
+    assert "max_tokens" not in plain.model_binding().params
+
+
+def test_no_auxiliary_model_still_applies_deterministic_compression():
+    """No Auxiliary Model declared -- the default -- does not mean "no
+    compression at all" any more: `ear.caveman`'s deterministic pass always
+    runs, needs no credential, and cannot hallucinate (it can only delete
+    matched filler words, never generate replacement text). It is the safe
+    always-on default; the LLM layer below is the opt-in extra squeeze."""
+    from ear.reasoner import Reasoner
+
+    runtime = Runtime(name="NoAux")  # auxiliary_model_binding defaults to None
+    fed_back = Reasoner._compress_tool_result(runtime, "calc", {"x": 5}, "The result is really just 6")
+    assert "6" in fed_back
+    assert "really" not in fed_back.lower() and "just" not in fed_back.lower()
+
+
+def test_auxiliary_model_compresses_what_feeds_the_next_prompt_not_the_trail():
+    from ear import ModelBinding
+    from ear.reasoner import Reasoner
+    from ear.tool_binder import BoundTool
+
+    aux = ModelBinding(provider="anthropic", model="test-haiku")
+    aux.lm = ScriptedLM(["## summary\n\nfile read ok, 907 rows\n"])
+    runtime = Runtime(name="WithAux", auxiliary_model_binding=aux)
+
+    long_result = "read uploads/data.xlsx: 907 rows, 17 columns, sheets=['Daily Sales Data', ...]"
+    tool = BoundTool(name="read_file", description="read", handler=lambda path: long_result)
+    invoke = runtime.tool_binder.logged_handler(runtime, tool)
+    raw = invoke(path="uploads/data.xlsx")
+    assert raw == long_result  # the handler's own return is never touched
+
+    fed_back = Reasoner._compress_tool_result(runtime, "read_file", {"path": "uploads/data.xlsx"}, raw)
+    assert fed_back == "file read ok, 907 rows"  # the compressed text, not the raw one
+
+    # The full, uncompressed result is what actually landed on the trail --
+    # compression only touched the copy handed back into `gathered`.
+    tool_record = runtime.reasoning_log.for_stage("tool")[0]
+    assert tool_record.output == long_result
+
+    summarize_record = runtime.reasoning_log.for_stage("summarize")[0]
+    assert summarize_record.output == "file read ok, 907 rows"
+    assert summarize_record.model == "anthropic/test-haiku"
+
+
+def test_auxiliary_model_failure_falls_back_to_the_deterministic_result():
+    """When the (opt-in) LLM squeeze fails, the fallback is the
+    deterministically-compressed text, not the fully raw one -- the
+    deterministic pass already ran first and never fails, so there is
+    nothing to lose by keeping its output rather than reverting further."""
+    from ear import ModelBinding
+    from ear.reasoner import Reasoner
+
+    class BrokenLM:
+        history = []
+
+        def complete(self, prompt, system=""):
+            raise RuntimeError("summarizer is down")
+
+    aux = ModelBinding(provider="anthropic", model="test-haiku")
+    aux.lm = BrokenLM()
+    runtime = Runtime(name="AuxBroken", auxiliary_model_binding=aux)
+
+    fed_back = Reasoner._compress_tool_result(runtime, "read_file", {"path": "x"}, "the real result")
+    assert "real result" in fed_back.lower()  # substance never lost, never blocked the cycle
+    record = runtime.reasoning_log.for_stage("summarize")[0]
+    assert "FAILED" in record.output and "summarizer is down" in record.output
+
+
+def test_tool_loop_end_to_end_with_auxiliary_model_compression():
+    """The full native tool loop, with a real (scripted) Auxiliary Model in
+    play: the *next* prompt the primary model sees must carry the
+    compressed summary, not the tool's full raw output."""
+    from ear import ModelBinding
+    from ear.reasoner import Reasoner
+    from ear.tool_binder import BoundTool
+
+    raw_output = "wrote 4096 characters to workspace/generate_dashboard.py"
+    tool = BoundTool(name="write_file", description="write", handler=lambda path, content: raw_output)
+
+    aux = ModelBinding(provider="anthropic", model="test-haiku")
+    aux.lm = ScriptedLM(["## summary\n\nfile wrote ok\n"])
+    runtime = Runtime(name="EndToEndAux", auxiliary_model_binding=aux)
+
+    primary = ScriptedLM([
+        (
+            "## tool\n\nwrite_file\n\n## arguments\n\n- path: workspace/generate_dashboard.py\n"
+            "content:\n> print('x')\n\n## decision\n\n"
+        ),
+        _tool_action(decision="Dashboard generated."),
+    ])
+    decision = Reasoner._reason_with_tools(
+        Intent(text="generate"), runtime, primary, context={}, capabilities="none", tools=[tool], max_iterations=6
+    )
+    assert decision == "Dashboard generated."
+
+    second_prompt = primary.prompts[1]
+    assert "file wrote ok" in second_prompt
+    assert raw_output not in second_prompt  # the raw text never re-enters the prompt
+
+    # But the raw text is exactly what an investigator finds on the trail.
+    tool_record = runtime.reasoning_log.for_stage("tool")[0]
+    assert tool_record.output == raw_output
+
+
+# ---------------------------------------------------------------------------
+# Context checkpoint: every _CONTEXT_CHECKPOINT_EVERY (3) tool calls, the
+# native tool loop consolidates everything gathered so far into one verified
+# statement -- via the Auxiliary Model -- so key facts stay retained rather
+# than diluting across a lengthening list of independently-compressed
+# entries. No Auxiliary Model declared is a no-op, same as compression.
+# ---------------------------------------------------------------------------
+
+
+def test_no_auxiliary_model_checkpoint_is_a_noop():
+    from ear.reasoner import Reasoner
+
+    runtime = Runtime(name="NoAuxCheckpoint")  # auxiliary_model_binding defaults to None
+    gathered = ["tool_a({}) -> did a thing", "tool_b({}) -> did another"]
+    assert Reasoner._checkpoint_gathered_context(runtime, gathered) == "\n".join(gathered)
+
+
+def test_checkpoint_consolidates_after_every_third_tool_call():
+    """The 4th tool call's prompt must see the checkpoint's consolidated
+    text, not the three raw gathered entries it replaced."""
+    from ear import ModelBinding
+    from ear.reasoner import Reasoner
+    from ear.tool_binder import BoundTool
+
+    calls = {"count": 0}
+
+    def probe(path):
+        calls["count"] += 1
+        return f"probed {path}, attempt {calls['count']}"
+
+    tool = BoundTool(name="probe", description="probe a path", handler=probe)
+
+    aux = ModelBinding(provider="anthropic", model="test-sonnet")
+    aux.lm = ScriptedLM([
+        "## summary\n\nprobed a, attempt 1\n",
+        "## summary\n\nprobed b, attempt 2\n",
+        "## summary\n\nprobed c, attempt 3\n",
+        "## checkpoint\n\nChecked a, b, c so far -- all probed successfully, 3 attempts total.\n",
+        "## summary\n\nprobed d, attempt 4\n",
+    ])
+    runtime = Runtime(name="CheckpointFlow", auxiliary_model_binding=aux)
+
+    primary = ScriptedLM([
+        _tool_action(tool="probe", args="- path: a"),
+        _tool_action(tool="probe", args="- path: b"),
+        _tool_action(tool="probe", args="- path: c"),
+        _tool_action(tool="probe", args="- path: d"),
+        _tool_action(decision="Done."),
+    ])
+    decision = Reasoner._reason_with_tools(
+        Intent(text="probe things"), runtime, primary, context={}, capabilities="none",
+        tools=[tool], max_iterations=8,
+    )
+    assert decision == "Done."
+
+    # The prompt for the 4th tool call (index 3) must carry the checkpoint,
+    # not the three individual entries it consolidated.
+    fourth_call_prompt = primary.prompts[3]
+    assert "Checked a, b, c so far" in fourth_call_prompt
+    assert "probed a, attempt 1" not in fourth_call_prompt
+
+    checkpoint_record = runtime.reasoning_log.for_stage("checkpoint")[0]
+    assert checkpoint_record.inputs["entries"] == 3
+    assert "Checked a, b, c so far" in checkpoint_record.output
+    assert checkpoint_record.model == "anthropic/test-sonnet"
+
+
+def test_checkpoint_failure_falls_back_to_joined_entries():
+    from ear import ModelBinding
+    from ear.reasoner import Reasoner
+
+    class BrokenLM:
+        history = []
+
+        def complete(self, prompt, system=""):
+            raise RuntimeError("checkpoint model is down")
+
+    aux = ModelBinding(provider="anthropic", model="test-sonnet")
+    aux.lm = BrokenLM()
+    runtime = Runtime(name="CheckpointBroken", auxiliary_model_binding=aux)
+
+    gathered = ["tool_a({}) -> fact one", "tool_b({}) -> fact two"]
+    result = Reasoner._checkpoint_gathered_context(runtime, gathered)
+    assert "fact one" in result and "fact two" in result  # nothing lost on failure
+    record = runtime.reasoning_log.for_stage("checkpoint")[0]
+    assert "FAILED" in record.output and "checkpoint model is down" in record.output
 
 
 # ---------------------------------------------------------------------------
@@ -4562,6 +5715,73 @@ def test_kube_client_and_provider_speak_the_api(tmp_path):
     provider.schedule("lending", Intent(text="daily"), every=86400)
     _, cron_url, cron_body = fake.calls[-1]
     assert cron_url.endswith("/cronjobs") and cron_body["spec"]["schedule"] == "0 0 * * *"
+
+
+def test_job_manifest_omits_volumes_when_none_are_given():
+    """The pre-existing shape is untouched when no shared volume is
+    configured -- additive, never a behavior change for a caller who
+    never asked for one."""
+    from ear.k8s import job_manifest
+
+    job = job_manifest("lending", "ear:1.0")
+    pod = job["spec"]["template"]["spec"]
+    assert "volumes" not in pod
+    assert "volumeMounts" not in pod["containers"][0]
+
+
+def test_host_path_and_pvc_volume_manifests_have_the_right_shape():
+    from ear.k8s import host_path_volume, job_manifest, pvc_volume, volume_mount
+
+    hostpath = host_path_volume("stack", "/srv/ear/lending")
+    assert hostpath == {"name": "stack", "hostPath": {"path": "/srv/ear/lending", "type": "DirectoryOrCreate"}}
+
+    claim = pvc_volume("stack", "ear-stacks-pvc")
+    assert claim == {"name": "stack", "persistentVolumeClaim": {"claimName": "ear-stacks-pvc"}}
+
+    mount = volume_mount("stack", "/stack")
+    assert mount == {"name": "stack", "mountPath": "/stack"}
+
+    job = job_manifest("lending", "ear:1.0", volumes=[hostpath], volume_mounts=[mount])
+    pod = job["spec"]["template"]["spec"]
+    assert pod["volumes"] == [hostpath]
+    assert pod["containers"][0]["volumeMounts"] == [mount]
+
+
+def test_kube_provider_mounts_a_host_path_at_stack_mount_for_every_job_and_cronjob():
+    """The swift host<->container artifact path this session asked for:
+    configure `host_path` once on the provider, every Job and CronJob it
+    creates mounts it at `stack_mount` automatically -- the sandbox's
+    uploads/outputs inside that mount are then plain host files, not
+    something fetched through the Kubernetes API after the fact."""
+    from ear import Intent, KubeClient, KubeConfig, KubeProvider
+
+    fake = _FakeKube()
+    client = KubeClient(KubeConfig(api_server="https://k8s:443", token="t", namespace="tenants"), transport=fake)
+    provider = KubeProvider(client=client, image="ear:1.0", host_path="/srv/ear/lending")
+
+    provider.run("lending", Intent(text="Underwrite"))
+    _, _, job_body = fake.calls[-1]
+    pod = job_body["spec"]["template"]["spec"]
+    assert pod["volumes"] == [{"name": "stack", "hostPath": {"path": "/srv/ear/lending", "type": "DirectoryOrCreate"}}]
+    assert pod["containers"][0]["volumeMounts"] == [{"name": "stack", "mountPath": "/stack"}]
+
+    provider.schedule("lending", Intent(text="daily"), every=86400)
+    _, _, cron_body = fake.calls[-1]
+    cron_pod = cron_body["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    assert cron_pod["volumes"] == [{"name": "stack", "hostPath": {"path": "/srv/ear/lending", "type": "DirectoryOrCreate"}}]
+
+
+def test_kube_provider_prefers_pvc_over_host_path_when_both_are_set():
+    from ear import Intent, KubeClient, KubeConfig, KubeProvider
+
+    fake = _FakeKube()
+    client = KubeClient(KubeConfig(api_server="https://k8s:443", token="t"), transport=fake)
+    provider = KubeProvider(client=client, image="ear:1.0", host_path="/srv/ear/lending", pvc_claim="ear-stacks-pvc")
+
+    provider.run("lending", Intent(text="Underwrite"))
+    _, _, job_body = fake.calls[-1]
+    pod = job_body["spec"]["template"]["spec"]
+    assert pod["volumes"] == [{"name": "stack", "persistentVolumeClaim": {"claimName": "ear-stacks-pvc"}}]
 
 
 def test_kube_client_raises_on_api_errors():

@@ -173,6 +173,34 @@ def _labels(instance: str, extra: Optional[dict]) -> dict:
     return {"app": "ear", "ear/instance": _dns_name(instance), **(extra or {})}
 
 
+def volume_mount(name: str, mount_path: str, read_only: bool = False) -> dict:
+    """Where a declared volume lands inside the container -- pairs with
+    an entry `host_path_volume`/`pvc_volume` puts on the pod spec."""
+    spec: dict = {"name": name, "mountPath": mount_path}
+    if read_only:
+        spec["readOnly"] = True
+    return spec
+
+
+def host_path_volume(name: str, host_path: str, kind: str = "DirectoryOrCreate") -> dict:
+    """A volume backed by a directory on the node's own host filesystem
+    -- the direct way to share files between the host and the container,
+    for a single-node cluster (kind/minikube, or a small self-managed
+    one). Not visible across nodes: a pod rescheduled onto a different
+    node sees an empty directory, not this one. `kind` is Kubernetes'
+    own hostPath type vocabulary ('Directory', 'DirectoryOrCreate', ...)."""
+    return {"name": name, "hostPath": {"path": host_path, "type": kind}}
+
+
+def pvc_volume(name: str, claim_name: str) -> dict:
+    """A volume backed by an existing PersistentVolumeClaim -- the
+    multi-node-safe way to share the same storage across pods scheduled
+    on different nodes, where a hostPath volume would not be visible.
+    The claim itself is provisioned outside EAR (by the cluster operator
+    or a StorageClass); this only ever references it by name."""
+    return {"name": name, "persistentVolumeClaim": {"claimName": claim_name}}
+
+
 def container_spec(
     image: str,
     command: Optional[list] = None,
@@ -181,6 +209,7 @@ def container_spec(
     cpu: Optional[str] = None,
     memory: Optional[str] = None,
     name: str = "ear",
+    volume_mounts: Optional[list] = None,
 ) -> dict:
     spec: dict = {"name": name, "image": image}
     if command:
@@ -196,6 +225,8 @@ def container_spec(
         limits["memory"] = str(memory)
     if limits:
         spec["resources"] = {"limits": limits, "requests": limits}
+    if volume_mounts:
+        spec["volumeMounts"] = list(volume_mounts)
     return spec
 
 
@@ -212,8 +243,16 @@ def job_manifest(
     ttl_seconds: int = 3600,
     cpu: Optional[str] = None,
     memory: Optional[str] = None,
+    volumes: Optional[list] = None,
+    volume_mounts: Optional[list] = None,
 ) -> dict:
     tags = _labels(name, labels)
+    pod_spec: dict = {
+        "restartPolicy": "Never",
+        "containers": [container_spec(image, command, args, env, cpu, memory, volume_mounts=volume_mounts)],
+    }
+    if volumes:
+        pod_spec["volumes"] = list(volumes)
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -221,13 +260,7 @@ def job_manifest(
         "spec": {
             "backoffLimit": backoff_limit,
             "ttlSecondsAfterFinished": ttl_seconds,
-            "template": {
-                "metadata": {"labels": tags},
-                "spec": {
-                    "restartPolicy": "Never",
-                    "containers": [container_spec(image, command, args, env, cpu, memory)],
-                },
-            },
+            "template": {"metadata": {"labels": tags}, "spec": pod_spec},
         },
     }
 
@@ -244,8 +277,16 @@ def cronjob_manifest(
     labels: Optional[dict] = None,
     cpu: Optional[str] = None,
     memory: Optional[str] = None,
+    volumes: Optional[list] = None,
+    volume_mounts: Optional[list] = None,
 ) -> dict:
     tags = _labels(name, labels)
+    pod_spec: dict = {
+        "restartPolicy": "Never",
+        "containers": [container_spec(image, command, args, env, cpu, memory, volume_mounts=volume_mounts)],
+    }
+    if volumes:
+        pod_spec["volumes"] = list(volumes)
     return {
         "apiVersion": "batch/v1",
         "kind": "CronJob",
@@ -255,17 +296,7 @@ def cronjob_manifest(
             "concurrencyPolicy": "Forbid",
             "successfulJobsHistoryLimit": 3,
             "failedJobsHistoryLimit": 3,
-            "jobTemplate": {
-                "spec": {
-                    "template": {
-                        "metadata": {"labels": tags},
-                        "spec": {
-                            "restartPolicy": "Never",
-                            "containers": [container_spec(image, command, args, env, cpu, memory)],
-                        },
-                    }
-                }
-            },
+            "jobTemplate": {"spec": {"template": {"metadata": {"labels": tags}, "spec": pod_spec}}},
         },
     }
 
@@ -311,16 +342,41 @@ class KubeProvider:
     """Runs EAR instances on the cluster: one-off Jobs for a single cycle,
     CronJobs for recurring tasks, and an adapter so it can be the Kernel's
     dispatcher. The container is the EAR image, running the in-pod entry
-    `python -m ear.run <stack_mount>` with the intent in the environment."""
+    `python -m ear.run <stack_mount>` with the intent in the environment.
+
+    `stack_mount` names *where* the stack lives inside the container; on
+    its own that says nothing about how it gets there. `host_path` (a
+    single-node cluster) or `pvc_claim` (a claim already provisioned for
+    a multi-node one) name *what backs it* -- the stack directory (and
+    the sandbox's `uploads/`/`outputs/` inside it) becomes a real shared
+    volume between the host and every pod this provider creates, so
+    artifacts move in and out as plain file writes, never a copy-through-
+    the-API round trip. Neither set: the image is assumed to already
+    carry `/stack` itself, read-only, exactly as before this field
+    existed."""
 
     client: KubeClient
     image: str
     stack_mount: str = "/stack"
     cpu: Optional[str] = None
     memory: Optional[str] = None
+    host_path: Optional[str] = None
+    pvc_claim: Optional[str] = None
+
+    def _volumes(self) -> tuple:
+        """The (volumes, volume_mounts) pair for `stack_mount`, or
+        (None, None) when neither a host path nor a claim is configured
+        -- `job_manifest`/`cronjob_manifest` then build a pod exactly as
+        they did before this field existed."""
+        if self.pvc_claim:
+            return [pvc_volume("stack", self.pvc_claim)], [volume_mount("stack", self.stack_mount)]
+        if self.host_path:
+            return [host_path_volume("stack", self.host_path)], [volume_mount("stack", self.stack_mount)]
+        return None, None
 
     def run(self, instance: str, intent: Any, context: Optional[dict] = None, labels: Optional[dict] = None) -> dict:
         """Create a Job that runs one governed cycle for `instance`."""
+        volumes, volume_mounts = self._volumes()
         job = job_manifest(
             f"{_dns_name(instance)}-{uuid.uuid4().hex[:8]}",
             self.image,
@@ -330,12 +386,15 @@ class KubeProvider:
             labels={"ear/instance": _dns_name(instance), **(labels or {})},
             cpu=self.cpu,
             memory=self.memory,
+            volumes=volumes,
+            volume_mounts=volume_mounts,
         )
         return self.client.create_job(job)
 
     def schedule(self, instance: str, intent: Any, every: float, context: Optional[dict] = None) -> dict:
         """Create a CronJob so the cluster runs `instance` on a period --
         Kubernetes owns the recurrence."""
+        volumes, volume_mounts = self._volumes()
         cron = cronjob_manifest(
             f"{_dns_name(instance)}-cron",
             self.image,
@@ -346,6 +405,8 @@ class KubeProvider:
             labels={"ear/instance": _dns_name(instance)},
             cpu=self.cpu,
             memory=self.memory,
+            volumes=volumes,
+            volume_mounts=volume_mounts,
         )
         return self.client.create_cronjob(cron)
 

@@ -62,6 +62,8 @@ _CATEGORY = {
     "indexing": "know",
     "recall": "know",
     "tool": "tool",
+    "summarize": "tool",
+    "checkpoint": "tool",
     "explanation": "reflect",
     "audit": "reflect",
     "evaluation": "reflect",
@@ -165,17 +167,31 @@ class Dashboard:
 # -- serving -----------------------------------------------------------------
 
 
-def serve(
+def create_server(
     source: Any, port: int = 8000, host: str = "127.0.0.1", refresh: int = 3, gantt: bool = False
-) -> None:  # pragma: no cover - blocking loop
-    """Serve a live dashboard over the standard-library HTTP server,
-    re-rendering on every request and telling the browser to tick itself
-    every `refresh` seconds -- the autonomous loop that keeps the view
-    live. `source` may be a Runtime, a ReasoningLog, a JSONL trail path, a
+) -> Any:
+    """Build the live dashboard's HTTPServer, wired and bound, but not yet
+    serving -- `serve()` below is a thin `serve_forever()` wrapper around
+    this for the common case; a caller that wants to run the loop in its
+    own thread (so its own main thread can keep running after a task
+    finishes, and stop the server only when told to) uses this directly.
+
+    Three routes: `GET /` re-renders on every request and tells the browser
+    to tick itself every `refresh` seconds, so the page stays live without
+    the server ever pushing anything. `GET /download/<name>` streams a file
+    out of the sandbox's `outputs/` directory -- confined by
+    `Sandbox.resolve`, so a crafted path can never escape it. `POST
+    /shutdown` stops the server (and only the server -- nothing under
+    `uploads/`, `workspace/` or `outputs/` is touched) from a page button,
+    so a live run stays reachable exactly until a human says otherwise
+    rather than dying the instant the driving script's cycles finish.
+
+    `source` may be a Runtime, a ReasoningLog, a JSONL trail path, a
     directory of trails, or a {name: runtime} fleet; a path is reloaded
     from disk each tick, so a separate process writing the trail is watched
-    live. `gantt=True` serves the Gantt timeline. Ctrl-C to stop. Zero
-    dependencies -- this is `http.server`, nothing more."""
+    live. `gantt=True` serves the Gantt timeline. Zero dependencies --
+    this is `http.server`, nothing more."""
+    import urllib.parse
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     dashboard = Dashboard()
@@ -186,13 +202,24 @@ def serve(
         if not is_fleet and _is_trail_path(source):
             origin = ReasoningLog.from_trail(str(source))
         if gantt:
-            return dashboard.render_gantt(origin, refresh=refresh)
-        if is_fleet:
-            return dashboard.render_fleet(source, refresh=refresh)
-        return dashboard.render(origin, refresh=refresh)
+            page = dashboard.render_gantt(origin, refresh=refresh)
+        elif is_fleet:
+            page = dashboard.render_fleet(source, refresh=refresh)
+        else:
+            page = dashboard.render(origin, refresh=refresh)
+        # Live-only controls spliced in just before </body> -- render()/
+        # write() (the static snapshot path) stay plain, since a file on
+        # disk has no server behind /download or /shutdown to answer to.
+        if not is_fleet:
+            extra = _outputs_section(_outputs_dir(source)) + _shutdown_control()
+            page = page.replace("</body>", extra + "</body>")
+        return page
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            if self.path.startswith("/download/"):
+                self._serve_download(self.path[len("/download/"):])
+                return
             body = current_html().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -200,14 +227,80 @@ def serve(
             self.end_headers()
             self.wfile.write(body)
 
+        def do_POST(self) -> None:
+            if self.path == "/shutdown":
+                body = (
+                    "<!doctype html><meta charset='utf-8'><title>Dashboard stopped</title>"
+                    "<body style='font:15px sans-serif;padding:40px;text-align:center'>"
+                    "<h1>Dashboard stopped.</h1>"
+                    "<p>Files in outputs/ and workspace/ are untouched.</p></body>"
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                # shutdown() deadlocks if called from the thread running
+                # serve_forever() -- which is this request's own thread in
+                # the single-threaded HTTPServer -- so it runs on a
+                # one-shot thread instead.
+                import threading
+
+                threading.Thread(target=server.shutdown, daemon=True).start()
+                return
+            self.send_response(404)
+            self.end_headers()
+
+        def _serve_download(self, encoded_name: str) -> None:
+            # Reuse Sandbox.resolve's own tested confinement (refuses an
+            # absolute path or a '..' escape) rather than re-deriving path
+            # safety here -- one rule for what "inside outputs/" means.
+            sandbox = getattr(source, "sandbox", None)
+            name = urllib.parse.unquote(encoded_name)
+            target = None
+            if sandbox is not None:
+                try:
+                    candidate = sandbox.resolve(f"outputs/{name}")
+                except Exception:  # noqa: BLE001 - SandboxViolation or a bad path both mean 404
+                    candidate = None
+                if candidate is not None:
+                    target = candidate
+            if target is None or not target.is_file():
+                self.send_response(404)
+                self.end_headers()
+                return
+            data = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{target.name}"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
         def log_message(self, *args: Any) -> None:
             return  # keep the terminal quiet; the trail is the record
 
     server = HTTPServer((host, port), Handler)
+    return server
+
+
+def serve(
+    source: Any, port: int = 8000, host: str = "127.0.0.1", refresh: int = 3, gantt: bool = False
+) -> None:  # pragma: no cover - blocking loop
+    """Serve a live dashboard, blocking, until Ctrl-C or a page's Shut Down
+    button stops it -- see `create_server` for the routes and what each
+    does. This is the simple case: build the server and run it in the
+    calling thread. A caller that needs its own thread to keep running
+    after the server stops (so it can do something once the dashboard is
+    closed, rather than the process just ending) should call
+    `create_server` directly and drive `serve_forever()`/`shutdown()` itself."""
+    server = create_server(source, port=port, host=host, refresh=refresh, gantt=gantt)
     print(f"EAR dashboard live at http://{host}:{port}/  (Ctrl-C to stop)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        pass
+    finally:
         server.server_close()
 
 
@@ -929,6 +1022,77 @@ def _footer() -> str:
     )
 
 
+# -- live-only controls (serve() splices these in; render()/write() stay plain,
+# since a static snapshot has no server behind /download or /shutdown) --------
+
+
+def _outputs_dir(source: Any) -> Optional[Path]:
+    """The sandbox's `outputs/` directory for `source` (a live Runtime), or
+    None when `source` carries no sandbox -- a bare ReasoningLog, a JSONL
+    trail path, a fleet. No outputs section is shown in that case."""
+    sandbox = getattr(source, "sandbox", None)
+    if sandbox is None:
+        return None
+    try:
+        return sandbox.resolve("outputs")
+    except Exception:  # noqa: BLE001 - a confinement violation just means no listing
+        return None
+
+
+def _human_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"  # pragma: no cover - unreachable, satisfies linters
+
+
+def _list_outputs(outputs_dir: Optional[Path]) -> list[tuple[str, int]]:
+    if outputs_dir is None or not outputs_dir.is_dir():
+        return []
+    files = []
+    for path in sorted(outputs_dir.rglob("*")):
+        if path.is_file():
+            files.append((str(path.relative_to(outputs_dir)), path.stat().st_size))
+    return files
+
+
+def _outputs_section(outputs_dir: Optional[Path]) -> str:
+    """A live-refreshing panel listing every file under the sandbox's
+    `outputs/` as a download link -- appears the instant a step writes a
+    real output (the completed dashboard, a validation log), no restart or
+    re-render trigger needed since the page already ticks itself."""
+    import urllib.parse
+
+    files = _list_outputs(outputs_dir)
+    if not files:
+        body = '<p class="muted">No outputs yet — still running.</p>'
+    else:
+        rows = "".join(
+            f'<div class="output-row"><a href="/download/{urllib.parse.quote(name)}" download>'
+            f"{html.escape(name)}</a><span class=\"muted\">{_human_size(size)}</span></div>"
+            for name, size in files
+        )
+        body = f'<div class="outputs-list">{rows}</div>'
+    return _panel("Outputs", body)
+
+
+def _shutdown_control() -> str:
+    """A form (no JS required beyond a confirm() dialog) posting to
+    /shutdown -- stops the HTTP server only. Files under uploads/,
+    workspace/ and outputs/ are never touched; the sandbox is not
+    ephemeral and this control has no path to delete anything."""
+    return (
+        '<div class="controls">'
+        '<form method="POST" action="/shutdown" '
+        "onsubmit=\"return confirm('Shut down the live dashboard? "
+        "Files in outputs/ and workspace/ are not affected.')\">"
+        '<button type="submit" class="btn btn-danger">⏻ Shut Down Dashboard</button>'
+        "</form></div>"
+    )
+
+
 def _clip(text: str, width: int) -> str:
     text = " ".join(str(text).split())
     return text if len(text) <= width else text[: width - 1] + "…"
@@ -1057,6 +1221,20 @@ tr.v-good td:first-child{box-shadow:inset 3px 0 var(--good)}
 .rec-m{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:6px}
 .kv{font-size:11.5px;color:var(--muted)} .kv b{color:var(--ink);font-weight:600}
 footer{color:var(--muted);font-size:12px;padding:26px 20px 40px;text-align:center}
+.outputs-list{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.output-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:11px 16px;border-bottom:1px solid var(--line)}
+.output-row:last-child{border-bottom:none}
+.output-row a{color:var(--reason);text-decoration:none;font-weight:560;word-break:break-all}
+.output-row a:hover{text-decoration:underline}
+.btn{font:inherit;font-size:13px;font-weight:650;padding:9px 16px;border-radius:9px;
+  border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+.btn:hover{border-color:var(--muted)}
+.btn-danger{border-color:rgba(224,49,49,.35);color:var(--bad)}
+.btn-danger:hover{background:rgba(224,49,49,.08);border-color:var(--bad)}
+.controls{max-width:1080px;margin:0 auto;padding:0 20px}
+.stopped-banner{max-width:1080px;margin:14px auto 0;padding:12px 16px;border-radius:10px;
+  background:rgba(224,49,49,.1);border:1px solid rgba(224,49,49,.3);color:var(--bad);font-weight:600}
 </style></head>
 <body>{{BODY}}</body></html>
 """

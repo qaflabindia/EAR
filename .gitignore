@@ -9,3 +9,9 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .ear/
+.env
+.env.*
+!.env.example
+key.txt
+*.key
+.DS_Store

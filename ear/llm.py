@@ -23,13 +23,18 @@ format.
 
 from __future__ import annotations
 
+import http.client
 import json
+import logging
 import os
+import socket
 import ssl
 import time
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+logger = logging.getLogger("ear.llm")
 
 DEFAULT_MAX_TOKENS = 2048
 ANTHROPIC_VERSION = "2023-06-01"
@@ -69,15 +74,19 @@ class LM:
             url, headers, body, parse = self._anthropic(prompt, system)
         else:
             url, headers, body, parse = self._openai(prompt, system)
+        logger.info("LM call starting: %s (%d prompt chars, %d system chars)", self._bare_model, len(prompt), len(system))
         started = time.monotonic()
         raw, retries = self._post_with_retries(url, headers, body)
         text, usage = parse(raw)
-        self.history.append(
-            {
-                "usage": usage,
-                "latency_ms": int((time.monotonic() - started) * 1000),
-                "retries": retries,
-            }
+        latency_ms = int((time.monotonic() - started) * 1000)
+        self.history.append({"usage": usage, "latency_ms": latency_ms, "retries": retries})
+        logger.info(
+            "LM call finished: %s in %dms (retries=%d, %s+%s tok)",
+            self._bare_model,
+            latency_ms,
+            retries,
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
         )
         return text
 
@@ -157,17 +166,26 @@ class LM:
             except LMError as error:
                 last_error = error
                 if not error.retryable or attempt == MAX_ATTEMPTS - 1:
+                    logger.warning("LM call to %s failed, not retrying: %s", url, error)
                     raise
-                time.sleep(RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)])
+                wait = RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)]
+                logger.warning(
+                    "LM call to %s failed (attempt %d/%d), retrying in %.1fs: %s",
+                    url,
+                    attempt + 1,
+                    MAX_ATTEMPTS,
+                    wait,
+                    error,
+                )
+                time.sleep(wait)
         raise last_error if last_error is not None else LMError(f"LLM call to {url} failed")
 
     @staticmethod
     def _post(url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         payload = json.dumps(body).encode("utf-8")
         request = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-        context = _ssl_context()
         try:
-            with urllib.request.urlopen(request, context=context, timeout=120) as response:
+            with ipv4_opener(_ssl_context()).open(request, timeout=120) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:  # noqa: PERF203 -- surface the provider's message
             detail = error.read().decode("utf-8", "replace")[:500]
@@ -194,13 +212,55 @@ def _ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+class _IPv4HTTPSConnection(http.client.HTTPSConnection):
+    """An HTTPSConnection that resolves and connects over IPv4 only.
+
+    Some networks silently blackhole IPv6 to a dual-stack host -- no RST,
+    no ICMP unreachable, just silence -- while IPv4 to the same host
+    answers instantly. Stdlib's `socket.create_connection` (what
+    `http.client` uses by default) tries `getaddrinfo`'s addresses in
+    order with no "happy eyeballs" racing the way curl or a browser does,
+    so a host whose DNS answer puts an AAAA record first stalls for the
+    full OS-level TCP connect timeout -- observed here as ~15s per call,
+    every call, silently, against a host `curl` reached in half a second
+    -- before ever falling back to IPv4. Forcing IPv4 here removes that
+    stall deterministically rather than hoping the OS falls back fast."""
+
+    def connect(self) -> None:
+        info = socket.getaddrinfo(self.host, self.port, socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket.socket(*info[0][:3])
+        if self.timeout is not None:
+            sock.settimeout(self.timeout)
+        sock.connect(info[0][4])
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _IPv4HTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, context: ssl.SSLContext) -> None:
+        super().__init__()
+        self._context = context
+
+    def https_open(self, req):  # noqa: ANN001 -- matches urllib.request.HTTPSHandler's own signature
+        return self.do_open(
+            lambda host, **kwargs: _IPv4HTTPSConnection(host, context=self._context, **kwargs), req
+        )
+
+
+def ipv4_opener(context: ssl.SSLContext) -> urllib.request.OpenerDirector:
+    """An opener that speaks HTTPS over IPv4 only -- see
+    `_IPv4HTTPSConnection` for why. Shared by every native HTTPS call in
+    this package (`ear/llm.py`, `ear/web.py`) so none of them are exposed
+    to a silently blackholed IPv6 route."""
+    return urllib.request.build_opener(_IPv4HTTPSHandler(context))
+
+
 def fetch_text(url: str, timeout: int = 60) -> str:
     """GET a text document over the same native transport the LM client
     uses -- standard library, proxy and CA-bundle aware, verification
     always on. Used by the loader for URL knowledge sources."""
     request = urllib.request.Request(url, headers={"user-agent": "ear-knowledge"})
     try:
-        with urllib.request.urlopen(request, context=_ssl_context(), timeout=timeout) as response:
+        with ipv4_opener(_ssl_context()).open(request, timeout=timeout) as response:
             return response.read().decode("utf-8", "replace")
     except (urllib.error.URLError, TimeoutError) as error:
         raise LMError(f"Fetch of {url} failed: {error}") from error

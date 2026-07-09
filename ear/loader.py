@@ -411,6 +411,10 @@ class Loader:
             # instead of crashing mid-reasoning.
             runtime.model_binding = binding
 
+        aux_binding = strategy.auxiliary_model_binding()
+        if aux_binding is not None and (aux_binding.resolve_api_key() is not None or aux_binding.api_base):
+            runtime.auxiliary_model_binding = aux_binding
+
         if strategy.cross_session and strategy.session_enabled:
             raw_path = Path(strategy.session_path or ".ear/session.md")
             path = raw_path if raw_path.is_absolute() else self.directory / raw_path
@@ -442,6 +446,102 @@ class Loader:
             # (see Optimizer.load_instructions for scope).
             runtime.optimizer.load_instructions(instructions)
 
+        tools = self.directory / ".ear" / "tools.md"
+        runtime.tools_path = str(tools)
+        from .acquirer import Acquirer
+
+        # Tools this runtime declared for itself on a prior run (see
+        # Acquirer.create_tool) -- merged in, memory.md's own declarations
+        # always winning on a name clash. When a Sandbox confines this
+        # runtime, its acquired tools live *inside* the sandbox root (see
+        # Acquirer's blast-radius note), so that -- not the stack-level
+        # file -- is where the reload looks.
+        if runtime.sandbox is not None:
+            if runtime.sandbox.exists(".ear/tools.md"):
+                Acquirer.load_tools(runtime.sandbox.resolve(".ear/tools.md"), strategy)
+        elif tools.exists():
+            Acquirer.load_tools(tools, strategy)
+        if strategy.tool_acquisition:
+            runtime.tool_binder.acquirer_tools = runtime.acquirer.as_tools(runtime)
+
+        self._bind_basic_toolsets(runtime, strategy)
+
+    # Terminal / Shell, Code Executor and Environment Admin are three
+    # *names* over one physical capability (Sandbox.run) -- Toolsets
+    # controls which name(s) are granted, never a fake per-name command
+    # filter. A restricted allow-list per name would just be the static
+    # per-language table this design already rejected, wearing a
+    # different hat: the sandbox can run any command under any of these
+    # names, so pretending "code_executor" is narrower than "terminal"
+    # would be theater, not access control. What tools.md actually
+    # controls is reachability -- which name is bound at all -- never
+    # whether the underlying capability physically exists; it always
+    # does, the moment a Sandbox is open.
+    _SHELL_TOOLSET_NAMES = {
+        "terminal": "Run a shell command inside the sandbox -- confined to the workspace and time-limited.",
+        "code_executor": "Compile and/or run code inside the sandbox -- confined to the workspace and time-limited.",
+        "environment_admin": "Provision the environment (install a package, set up a toolchain) inside the sandbox -- confined to the workspace and time-limited.",
+    }
+
+    def _bind_basic_toolsets(self, runtime: Runtime, strategy: Strategy) -> None:
+        """Bind the basic toolsets declared enabled (Toolsets in
+        memory.md, or the shipped defaults when the section is absent) --
+        mechanical capabilities that ship ready rather than something the
+        model derives itself each time. Reading/writing
+        PDF/Markdown/DOCX/CSV/PPTX/XLSX and the MCP connector are covered
+        by tools this Loader already binds elsewhere (Acquirer, native
+        MCP client) or by a later pass; this wires web access/search,
+        email, and the three sandbox-shell names."""
+        from .tool_binder import BoundTool
+
+        enabled = {name for name, on in strategy.toolsets.items() if on}
+
+        from .web import WebAccess
+
+        web = WebAccess(search_provider=strategy.search_provider, search_api_key_env_var=strategy.search_api_key_env_var)
+        runtime.tool_binder.basic_tools = web.as_tools(enabled)
+
+        from .mail import Mail
+
+        mail = Mail(
+            host=strategy.smtp_host,
+            port=strategy.smtp_port,
+            user_env_var=strategy.smtp_user_env_var,
+            password_env_var=strategy.smtp_password_env_var,
+        )
+        runtime.tool_binder.basic_tools += mail.as_tools(enabled)
+
+        if runtime.sandbox is not None:
+            sandbox = runtime.sandbox
+
+            def run_in_sandbox(command: str) -> str:
+                return sandbox.run(command).render()
+
+            for name, description in self._SHELL_TOOLSET_NAMES.items():
+                if name in enabled:
+                    runtime.tool_binder.basic_tools.append(BoundTool(name=name, description=description, handler=run_in_sandbox))
+
+            if "environment_admin" in enabled:
+                def check_environment(names: str = "") -> str:
+                    requested = tuple(n.strip() for n in names.split(",") if n.strip()) or ("python3", "node", "npm", "pip")
+                    report = sandbox.capabilities(requested)
+                    return "\n".join(
+                        f"{name}: available -- {info['version']} ({info['path']})"
+                        if info["available"]
+                        else f"{name}: not available"
+                        for name, info in report.items()
+                    )
+
+                runtime.tool_binder.basic_tools.append(
+                    BoundTool(
+                        name="check_environment",
+                        description=(
+                            "Check which runtimes are actually installed and reachable in this "
+                            "sandbox (default: python3, node, npm, pip) -- verified live, never assumed."
+                        ),
+                        handler=check_environment,
+                    )
+                )
 
     def _open_sandbox(self, runtime: Runtime, strategy: Strategy) -> None:
         """Give this runtime instance its own isolated workspace, declared

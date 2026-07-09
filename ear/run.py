@@ -11,11 +11,17 @@ stack, runs one governed cycle, writes the decision to
 The exit code reflects the cycle's outcome, so the Job's success or failure
 is the decision's: 0 when a decision was reached, 2 when governance blocked
 it (a refusal is a valid, non-crash outcome), 1 on an unexpected error.
+
+Set `EAR_LOG_LEVEL` (DEBUG/INFO/WARNING/...) to see live progress on
+stderr as the cycle runs -- every LM call and sandboxed command, as they
+happen, not just the final decision. Unset means silent, exactly as
+before this existed.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -23,6 +29,10 @@ from typing import Optional
 
 
 def main(argv: Optional[list] = None) -> int:
+    level = os.environ.get("EAR_LOG_LEVEL")
+    if level:
+        logging.basicConfig(level=level.upper(), format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print("usage: python -m ear.run <stack-dir>", file=sys.stderr)

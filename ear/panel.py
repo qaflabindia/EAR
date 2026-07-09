@@ -238,7 +238,10 @@ class Panel:
                 break  # neither a tool nor a statement -- speak plainly below
             arguments = ToolBinder.parse_arguments(action.arguments)
             result = binder.logged_handler(runtime, chosen)(**arguments)
-            gathered.append(f"{chosen.name}({arguments}) -> {result}")
+            from .reasoner import Reasoner
+
+            fed_back = Reasoner._compress_tool_result(runtime, chosen.name, arguments, result)
+            gathered.append(f"{chosen.name}({arguments}) -> {fed_back}")
         rendered = self._render_transcript(transcript)
         if gathered:
             rendered += f"\n\n[facts {persona.name} gathered with tools]\n" + "\n".join(gathered)

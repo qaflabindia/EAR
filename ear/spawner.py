@@ -53,6 +53,7 @@ class Spawner:
         subagent = Runtime(
             name=f"{runtime.name}::{persona.name}",
             model_binding=getattr(runtime, "model_binding", None),
+            auxiliary_model_binding=getattr(runtime, "auxiliary_model_binding", None),
             strategy=getattr(runtime, "strategy", None),
         )
         subagent.add_process(process)

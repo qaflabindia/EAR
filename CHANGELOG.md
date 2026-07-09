@@ -8,6 +8,112 @@ has not yet made a versioned release, so entries accumulate under
 ## [Unreleased]
 
 ### Added
+- `ear/caveman.py`: a deterministic, zero-dependency prose compressor
+  (ported, MIT license, from github.com/JuliusBrussee/caveman's
+  `caveman-shrink` MCP middleware) that always compresses a tool result
+  before it re-enters the native tool loop's `gathered` context -- drops
+  filler words via `re.sub`, protects fenced/inline code, URLs, paths,
+  `CONST_CASE` identifiers, dotted calls and version numbers via sentinel
+  substitution, and never touches a bare number (nothing in the rule set
+  matches digits). Deterministic by construction: it can only delete
+  matched words, never generate replacement text, so it cannot hallucinate
+  or garble a fact the way a generative summarizer can.
+- Auxiliary Model (memory.md): a second, optional ModelBinding a stack may
+  declare for two mechanical jobs layered on top of `ear.caveman`'s
+  always-on pass -- squeezing a tool result further
+  (`SummarizeToolResult`), and consolidating everything gathered so far
+  into one checkpoint every 3 tool calls (`ConsolidateGatheredContext`,
+  `Reasoner._checkpoint_gathered_context`) so key facts stay retained
+  instead of diluting across a lengthening list of compressed entries.
+  Both judgments' instructions are explicit: no fabrication, no
+  shallowness, no fluff, no sloppiness, no context loss or distortion of
+  any number, path, name or outcome. The full, uncompressed tool result
+  always lands on the reasoning trail regardless -- only the copy that
+  re-enters the prompt is ever touched. Declaring no Auxiliary Model
+  leaves both a no-op; `Strategy._parse_model_prose` now also reads a
+  declared `max_output_tokens` ("allow up to N tokens per reply"), shared
+  by the primary Model Selection and the Auxiliary Model sections.
+- `section.argument_blocks` + a new `"map"` Judgment field kind
+  (`ear/judgment.py`, `ear/tool_binder.py`): a tool call's arguments may
+  now mix short `- name: value` bullets with a `name:` + blockquote form
+  for a value that needs more than one line -- a script's source, a whole
+  file's content -- which a single bullet line can never carry.
+- `ear/dashboard.py`'s live server gained a `create_server()`/`serve()`
+  split (build the `HTTPServer` without blocking, so a caller can run it
+  in its own thread and control its lifecycle), a `GET /download/<name>`
+  route streaming a file out of the sandbox's `outputs/` (confined by
+  `Sandbox.resolve`), an "Outputs" panel listing whatever lands there as
+  it appears, and a `POST /shutdown` route (a page button) that stops the
+  server -- and only the server; nothing under `uploads/`, `workspace/`
+  or `outputs/` is ever touched.
+- `examples/sales_mis_stack/` + `examples/sales_mis_guru.py`: a second
+  worked example alongside `credit_risk_stack` -- a four-step Sales MIS
+  cycle (load, sanity-check, slice-and-dice a dashboard workbook,
+  reconcile and validate) driven entirely by the model authoring and
+  running its own code inside the Sandbox, never a hand-written script.
+  `examples/sales_mis_stack/logs/` keeps the debugging trail of getting a
+  real multi-step tool-loop cycle working end to end, including the bugs
+  this release's Fixed section below closes.
+- Shared-volume support in `ear/k8s.py`: `host_path_volume`/`pvc_volume`/
+  `volume_mount` (pure manifest builders, same style as `container_spec`)
+  and `volumes`/`volume_mounts` params on `container_spec`/`job_manifest`/
+  `cronjob_manifest`. `KubeProvider` gained `host_path`/`pvc_claim` --
+  when either is set, every Job/CronJob it creates mounts it at
+  `stack_mount` automatically, so a stack's files (and the Sandbox's
+  `uploads/`/`outputs/` inside it) move between the host and the
+  container as plain file writes, never a copy-through-the-API round
+  trip. Neither set: the manifest is byte-identical to before this
+  field existed -- purely additive, no behavior change for an existing
+  caller.
+- `Sandbox.capabilities()` (`ear/sandbox.py`): checks which runtimes
+  (`python3`, `node`, `npm`, `pip` by default) are actually reachable on
+  the sandbox's PATH and their live `--version`, via `shutil.which` plus
+  the same confined `run()` every command goes through -- verified, never
+  assumed. Bound as `check_environment` under the `environment_admin`
+  toolset. A reference `Dockerfile` at the repo root gives `ear/k8s.py`'s
+  `KubeProvider.image` a pod image with both toolchains installed
+  (Debian `nodejs`/`npm` alongside the zero-dependency `pip install .`);
+  built and its `python3`/`node`/`npm`/`pip` presence confirmed live
+  inside the built image, not just claimed.
+- `Toolsets` (memory.md), `ear/web.py` (`WebAccess`), `ear/mail.py`
+  (`Mail`): ten basic toolsets an operator enables/disables by
+  declaration -- `internet_access`, `internet_search`, `read_documents`,
+  `write_documents`, `code_executor`, `browser_automation`, `terminal`,
+  `email_sender`, `mcp_connector`, `environment_admin` -- for mechanics
+  that need no per-call reasoning (fetching a URL, sending mail). `fetch_url`
+  and `web_search` (Tavily) and `send_email` are the net-new native
+  tools this ships (stdlib `urllib`/`smtplib` only); the other seven names
+  in the table map onto tools already shipped elsewhere (Sandbox,
+  Acquirer, native MCP client) rather than duplicating them. Defaults
+  mirror a Tools-Hub-style posture: internet access, document reads, code
+  execution and environment admin on; search, document writes, browser
+  automation, terminal and mail off. `Strategy.toolsets` folds loose
+  bullet phrasing ("Internet Access (Web Fetch)", "Terminal / Shell") to
+  the ten canonical keys; an unrecognized name still becomes its own
+  toggle rather than an error.
+- `Acquirer` (`ear/acquirer.py`): a runtime's basic tools for managing its
+  own toolset -- `list_tools`, `view_tool`, `create_tool`, `retire_tool` --
+  themselves exposed as BoundTools (`Acquirer.as_tools`), so a live
+  deliberation can declare a brand-new tool for itself mid-cycle the same
+  way it calls any other tool. A declared tool persists to `.ear/tools.md`
+  (Section codec, reviewable and diffable) and survives past the session;
+  the Loader merges it back in on the next load, memory.md's own
+  declarations always winning on a name clash. Declaring is not binding: a
+  self-declared tool stays context to the model until an MCP server,
+  sandbox command, or Python binding gives it a handler. Only tools the
+  Acquirer itself declared (`Tool.origin == "acquired"`) can be retired
+  through it; a human-authored tool is edited by editing memory.md, never
+  rewritten by code. On by default (`Strategy.tool_acquisition`), turned
+  off by disabling language under Tools in memory.md ("fixed toolset",
+  "no new tools"). `python -m ear.tools_cli list|view|create|retire
+  <stack-dir> ...` gives a human the same four operations from the
+  command line.
+- `Optimizer.refine_skill` / `Optimizer.persist_skill` (`ear/optimizer.py`):
+  N1.4's reflective instruction rewrite (`RefineInstruction`), aimed at a
+  Skill's prompt instead of a Judgment's instruction, and a round-trip
+  writer that replaces just that skill's section in a stacked skills.md --
+  a refined skill is reviewable and diffable exactly like any
+  human-authored one, and survives past the session.
 - `Claim` (`ear/identity.py`): who is calling and which Tenant `org_id`(s)
   they may act as -- the piece `Tenant` explicitly deferred to. Checked at
   `Runtime.reason(intent, claim=...)` before a cycle starts and at
@@ -38,6 +144,17 @@ has not yet made a versioned release, so entries accumulate under
   step, not something CI can do for itself.
 
 ### Fixed
+- The native tool loop's `ChooseToolAction` arguments were parsed as flat
+  `- name: value` bullets, one per line -- a value containing a newline
+  (a whole script's source) silently truncated to whatever fit on one
+  line, with no error and no signal back to the model. `argument_blocks`
+  (see Added) fixes this while staying backward compatible with every
+  existing short-value bullet.
+- `LM`'s request body (`ear/llm.py`) hardcoded `DEFAULT_MAX_TOKENS = 2048`
+  with no way to override it from memory.md; a tool-loop turn writing a
+  real script routinely needs far more, and a reply cut off mid-token
+  looked identical to a model that simply stopped early. `max_output_tokens`
+  is now readable from Model Selection/Auxiliary Model prose (see Added).
 - MCP client: a timed-out call used to leave its reader thread alive,
   racing later calls' own reader threads for the same stdout bytes and
   occasionally stealing a later call's response. Replaced with one

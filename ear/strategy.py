@@ -47,6 +47,15 @@ _ENV_VAR = re.compile(r"\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN)[A-Z0-9_]*)\b")
 _MODEL_ID = re.compile(r"(?<![\w./])([A-Za-z][\w-]*)/([A-Za-z][\w.:-]*)(?![\w./])")
 _MODEL_TOKEN = re.compile(r"\b([a-z][a-z0-9]*(?:[-.:][a-z0-9]+)+)\b")
 _TEMPERATURE = re.compile(r"temperature\s*(?:of|=|:|at)?\s*([0-9]*\.?[0-9]+)", re.IGNORECASE)
+_MAX_TOKENS = re.compile(
+    # 'max_tokens: 512' names tokens in the anchor itself, so no trailing
+    # unit word is required; 'up to 8000 tokens' does need one, or 'up to
+    # 3 subagents' elsewhere in the same prose would false-match.
+    r"max[_ ]?tokens\s*(?:of|=|:)?\s*([\d,]+)|"
+    r"max(?:imum)?\s+(?:output|response|reply)(?:\s+length)?\s*(?:of|=|:)?\s*([\d,]+)\s*tokens?|"
+    r"up\s+to\s*(?:of|=|:)?\s*([\d,]+)\s*tokens?",
+    re.IGNORECASE,
+)
 _URL = re.compile(r"\bhttps?://[^\s`,)]+", re.IGNORECASE)
 _STORE_ENABLED = re.compile(r"\bstore\s*[:=]?\s*(?:true|yes|on|enabled|required)\b", re.IGNORECASE)
 _CATALOGUE_BACKEND = re.compile(r"\bbackend\s*[:=]\s*([\w.-]+)", re.IGNORECASE)
@@ -76,6 +85,53 @@ _PROVIDERS = (
     "huggingface",
 )
 
+# The ten basic toolsets and their shipped defaults -- mirrors an
+# operator's Tools Hub: mechanical capabilities enabled or disabled
+# platform-wide, never something the model must reason its way into each
+# time. An absent Toolsets section keeps these exactly as they are.
+_DEFAULT_TOOLSETS = {
+    "internet_access": True,
+    "internet_search": False,
+    "read_documents": True,
+    "write_documents": False,
+    "code_executor": True,
+    "browser_automation": False,
+    "terminal": False,
+    "email_sender": False,
+    "mcp_connector": False,
+    "environment_admin": True,
+}
+
+
+def _toolset_key(name: str) -> str:
+    """Fold a Toolsets bullet's name to one of the ten canonical keys --
+    tolerant of the way people actually write these ('Internet Access
+    (Web Fetch)', 'Terminal / Shell', 'Read PDF/Md/Docx/csv/pptx/xlsx')
+    rather than demanding an exact identifier. An unrecognized name still
+    becomes its own toggle (normalized), never an error -- authoring a
+    novel toolset name is never refused."""
+    lowered = name.lower()
+    if "search" in lowered:
+        return "internet_search"
+    if "internet" in lowered or "web fetch" in lowered or lowered.strip() in {"fetch", "web"}:
+        return "internet_access"
+    _document_formats = ("pdf", "doc", "csv", "ppt", "xls", "md", "markdown")
+    if any(fmt in lowered for fmt in _document_formats):
+        return "write_documents" if "write" in lowered else "read_documents"
+    if "code" in lowered:
+        return "code_executor"
+    if "browser" in lowered or "playwright" in lowered:
+        return "browser_automation"
+    if "terminal" in lowered or "shell" in lowered:
+        return "terminal"
+    if "email" in lowered or "mail" in lowered:
+        return "email_sender"
+    if "mcp" in lowered:
+        return "mcp_connector"
+    if "environment" in lowered or "stack setup" in lowered:
+        return "environment_admin"
+    return re.sub(r"[\s/]+", "_", lowered.strip())
+
 
 @dataclass
 class Strategy:
@@ -104,10 +160,45 @@ class Strategy:
     api_key_env_var: str = ""
     api_base: str = ""
     temperature: Optional[float] = None
+    max_output_tokens: Optional[int] = None
+
+    # Auxiliary model -> a second, usually cheaper ModelBinding a runtime may
+    # call for mechanical, non-judgment work (today: compressing a tool
+    # result before it re-enters the native tool loop's gathered context).
+    # Declaring none is the default and leaves every such feature a no-op.
+    auxiliary_model_selection: str = ""
+    auxiliary_provider: str = ""
+    auxiliary_model: str = ""
+    auxiliary_api_key_env_var: str = ""
+    auxiliary_api_base: str = ""
+    auxiliary_temperature: Optional[float] = None
+    auxiliary_max_output_tokens: Optional[int] = None
 
     # Declared capabilities, surfaced to reasoning.
     mcp_servers: list[McpServer] = field(default_factory=list)
     tools: list[Tool] = field(default_factory=list)
+    # Whether the runtime may declare new tools for itself at runtime (see
+    # ear/acquirer.py) -- on by default (a basic capability, not one the
+    # author must opt into), turned off by disabling language under Tools
+    # ("fixed toolset", "no new tools", "never create tools").
+    tool_acquisition: bool = True
+
+    # Basic toolsets (Toolsets in memory.md): mechanical capabilities --
+    # fetch a URL, parse a known file format, send mail -- that ship ready
+    # rather than something the model derives itself each time. Keyed by
+    # canonical name (see _toolset_key), enabled/disabled per bullet;
+    # absent bullets, or an absent section, keep _DEFAULT_TOOLSETS.
+    toolsets: dict = field(default_factory=lambda: dict(_DEFAULT_TOOLSETS))
+    # internet_search config: provider name (e.g. "tavily") and the
+    # environment-variable *name* its API key is read from -- never a key
+    # written in memory.md, the same rule Model Selection follows.
+    search_provider: str = ""
+    search_api_key_env_var: str = ""
+    # email_sender config: SMTP host/port and credential env-var names.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user_env_var: str = ""
+    smtp_password_env_var: str = ""
 
     # Skills discovery guidance -> Discoverer.
     skills_discovery: str = ""
@@ -189,8 +280,18 @@ class Strategy:
                 strategy._read_mcp(body)
             elif "discover" in heading:
                 strategy.skills_discovery = prose
+            elif "toolset" in heading:
+                # Checked before the "tool" branch below: "toolset"
+                # contains the substring "tool" and would otherwise be
+                # misread as a Tools declaration.
+                strategy._read_toolsets(body)
             elif "tool" in heading:
                 strategy._read_tools(body)
+            elif "auxiliary" in heading or "summar" in heading:
+                # Checked before the plain "model" branch below: "Auxiliary
+                # Model" contains the substring "model" and would otherwise
+                # overwrite the primary Model Selection's fields.
+                strategy._read_auxiliary_model(prose)
             elif "model" in heading:
                 strategy._read_model(prose)
             elif "session" in heading or "cross" in heading or "persist" in heading:
@@ -342,17 +443,27 @@ class Strategy:
             if count:
                 self.max_subagents = int(count.group(1))
 
-    def _read_model(self, prose: str) -> None:
-        self.model_selection = prose
+    @staticmethod
+    def _parse_model_prose(prose: str) -> dict:
+        """The provider/model id, credential env-var name, API base and
+        temperature readable out of a model-declaring section's prose --
+        shared by the primary Model Selection and the Auxiliary Model
+        sections so both are read by exactly one rule, never two drifting
+        copies of it."""
+        parsed: dict = {}
         url = _URL.search(prose)
         if url:
-            self.api_base = url.group(0).rstrip(".,;")
+            parsed["api_base"] = url.group(0).rstrip(".,;")
         env_var = _ENV_VAR.search(prose)
         if env_var:
-            self.api_key_env_var = env_var.group(1)
+            parsed["api_key_env_var"] = env_var.group(1)
         temperature = _TEMPERATURE.search(prose)
         if temperature:
-            self.temperature = float(temperature.group(1))
+            parsed["temperature"] = float(temperature.group(1))
+        max_tokens = _MAX_TOKENS.search(prose)
+        if max_tokens:
+            digits = next(g for g in max_tokens.groups() if g is not None)
+            parsed["max_output_tokens"] = int(digits.replace(",", ""))
         for match in _MODEL_ID.finditer(prose):
             # A model id written at the end of a sentence must not swallow
             # the sentence's period.
@@ -361,15 +472,45 @@ class Strategy:
             # ("claude-opus-4-8"); this keeps prose like "approve/decline"
             # from being mistaken for one.
             if left.lower() in _PROVIDERS or any(ch.isdigit() for ch in right):
-                self.provider, self.model = left.lower(), f"{left.lower()}/{right}"
-                return
+                parsed["provider"], parsed["model"] = left.lower(), f"{left.lower()}/{right}"
+                return parsed
         lowered = prose.lower()
         provider = next((p for p in _PROVIDERS if re.search(rf"\b{p}\b", lowered)), "")
         if provider:
             for token in _MODEL_TOKEN.findall(lowered):
                 if token != provider and any(ch.isdigit() for ch in token):
-                    self.provider, self.model = provider, token
-                    return
+                    parsed["provider"], parsed["model"] = provider, token
+                    return parsed
+        return parsed
+
+    def _read_model(self, prose: str) -> None:
+        self.model_selection = prose
+        parsed = self._parse_model_prose(prose)
+        self.provider = parsed.get("provider", self.provider)
+        self.model = parsed.get("model", self.model)
+        self.api_key_env_var = parsed.get("api_key_env_var", self.api_key_env_var)
+        self.api_base = parsed.get("api_base", self.api_base)
+        if "temperature" in parsed:
+            self.temperature = parsed["temperature"]
+        if "max_output_tokens" in parsed:
+            self.max_output_tokens = parsed["max_output_tokens"]
+
+    def _read_auxiliary_model(self, prose: str) -> None:
+        """A second, usually cheaper model a runtime may call for mechanical
+        work -- not judgment -- such as compressing a tool result before it
+        re-enters the native tool loop's gathered context. Read by exactly
+        the same rule as the primary Model Selection (`_parse_model_prose`),
+        into its own fields so the two never collide."""
+        self.auxiliary_model_selection = prose
+        parsed = self._parse_model_prose(prose)
+        self.auxiliary_provider = parsed.get("provider", self.auxiliary_provider)
+        self.auxiliary_model = parsed.get("model", self.auxiliary_model)
+        self.auxiliary_api_key_env_var = parsed.get("api_key_env_var", self.auxiliary_api_key_env_var)
+        self.auxiliary_api_base = parsed.get("api_base", self.auxiliary_api_base)
+        if "temperature" in parsed:
+            self.auxiliary_temperature = parsed["temperature"]
+        if "max_output_tokens" in parsed:
+            self.auxiliary_max_output_tokens = parsed["max_output_tokens"]
 
     def _read_mcp(self, body: Body) -> None:
         for bullet in body.bullets:
@@ -382,6 +523,47 @@ class Strategy:
             name, description = _split_declaration(bullet)
             command, _url, description = _extract_reach(description)
             self.tools.append(Tool(name=name, description=description, command=command))
+        prose = _full_text(body).lower()
+        if prose and (_DISABLED.search(prose) or "fixed toolset" in prose or "no new tools" in prose):
+            self.tool_acquisition = False
+
+    def _read_toolsets(self, body: Body) -> None:
+        """Read the Toolsets declaration: one bullet per basic toolset,
+        'name: enabled' or 'name: disabled' -- mechanical capabilities
+        (fetch a URL, parse a known file format, send mail) that ship
+        ready rather than something the model derives itself each time.
+        Absent bullets, or an absent section entirely, keep the shipped
+        defaults (_DEFAULT_TOOLSETS). internet_search's provider/API-key
+        env var and email_sender's SMTP config may ride in the same
+        bullets' free text."""
+        self.toolsets = dict(_DEFAULT_TOOLSETS)
+        for bullet in body.bullets:
+            name, description = _split_declaration(bullet)
+            key = _toolset_key(name)
+            lowered = description.lower()
+            if _DISABLED.search(description) or "disabled" in lowered or " off" in f" {lowered}":
+                self.toolsets[key] = False
+            elif "enabled" in lowered or " on" in f" {lowered}":
+                self.toolsets[key] = True
+        prose = _full_text(body)
+        provider = re.search(r"\bprovider\s+(\w+)", prose, re.IGNORECASE)
+        if provider:
+            self.search_provider = provider.group(1).lower()
+        key_env = re.search(r"\bkey env var\s+([A-Z][A-Z0-9_]*)", prose)
+        if key_env:
+            self.search_api_key_env_var = key_env.group(1)
+        host = re.search(r"\bsmtp host\s+(\S+)", prose, re.IGNORECASE)
+        if host:
+            self.smtp_host = host.group(1).rstrip(".,;")
+        port = re.search(r"\bport\s+(\d+)", prose, re.IGNORECASE)
+        if port:
+            self.smtp_port = int(port.group(1))
+        user_env = re.search(r"\buser env var\s+([A-Z][A-Z0-9_]*)", prose)
+        if user_env:
+            self.smtp_user_env_var = user_env.group(1)
+        password_env = re.search(r"\bpassword env var\s+([A-Z][A-Z0-9_]*)", prose)
+        if password_env:
+            self.smtp_password_env_var = password_env.group(1)
 
     def _read_ontology(self, body: Body) -> None:
         for bullet in body.bullets:
@@ -403,11 +585,32 @@ class Strategy:
         params: dict = {}
         if self.temperature is not None:
             params["temperature"] = self.temperature
+        if self.max_output_tokens is not None:
+            params["max_tokens"] = self.max_output_tokens
         return ModelBinding(
             provider=self.provider,
             model=self.model,
             api_key_env_var=self.api_key_env_var or None,
             api_base=self.api_base or None,
+            params=params,
+        )
+
+    def auxiliary_model_binding(self) -> Optional[ModelBinding]:
+        """The ModelBinding an Auxiliary Model section declares, or None
+        when none was named -- the default, which leaves every feature
+        that would use it (today: tool-result compression) a no-op."""
+        if not self.auxiliary_model:
+            return None
+        params: dict = {}
+        if self.auxiliary_temperature is not None:
+            params["temperature"] = self.auxiliary_temperature
+        if self.auxiliary_max_output_tokens is not None:
+            params["max_tokens"] = self.auxiliary_max_output_tokens
+        return ModelBinding(
+            provider=self.auxiliary_provider,
+            model=self.auxiliary_model,
+            api_key_env_var=self.auxiliary_api_key_env_var or None,
+            api_base=self.auxiliary_api_base or None,
             params=params,
         )
 

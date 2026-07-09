@@ -33,6 +33,7 @@ instance it spawns -- runs in its own box.
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import shutil
@@ -41,6 +42,8 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger("ear.sandbox")
 from typing import Any, Optional, Union
 
 _POSIX = os.name == "posix"
@@ -227,6 +230,7 @@ class Sandbox:
         if not argv:
             raise SandboxViolation("empty command")
         limit = self.timeout if timeout is None else timeout
+        logger.info("sandbox '%s' running (timeout=%.0fs): %s", self.name, limit, " ".join(argv))
         started = time.monotonic()
         kwargs: dict[str, Any] = {
             "cwd": str(self.root),
@@ -259,11 +263,18 @@ class Sandbox:
                 out, err = "", ""
         out, cut_out = self._truncate(out or "")
         err, cut_err = self._truncate(err or "")
+        duration_ms = int((time.monotonic() - started) * 1000)
+        logger.info(
+            "sandbox '%s' finished in %dms: %s",
+            self.name,
+            duration_ms,
+            "timed out" if timed_out else f"exit {process.returncode}",
+        )
         return SandboxResult(
             returncode=process.returncode if process.returncode is not None else -1,
             stdout=out,
             stderr=err,
-            duration_ms=int((time.monotonic() - started) * 1000),
+            duration_ms=duration_ms,
             timed_out=timed_out,
             truncated=cut_out or cut_err,
         )
@@ -316,6 +327,30 @@ class Sandbox:
         if len(text) <= self.max_output_bytes:
             return text, False
         return text[: self.max_output_bytes] + "\n…[truncated]", True
+
+    # -- runtime capability, checked not assumed -------------------------------
+
+    def capabilities(self, names: tuple = ("python3", "node", "npm", "pip")) -> dict:
+        """Which of the named runtimes are actually reachable on this
+        sandbox's PATH, and their reported version -- verified by
+        `shutil.which` plus a `--version` call through the same confined
+        `run()` every command goes through, never assumed from what the
+        image was *supposed* to have. A pod claiming to be 'fully capable'
+        is a fact this establishes, not a promise inherited from a
+        Dockerfile nobody re-checked."""
+        report: dict = {}
+        for name in names:
+            path = shutil.which(name)
+            if not path:
+                report[name] = {"available": False}
+                continue
+            result = self.run([name, "--version"], timeout=5)
+            report[name] = {
+                "available": result.ok,
+                "path": path,
+                "version": (result.stdout or result.stderr).strip(),
+            }
+        return report
 
     # -- as tools -------------------------------------------------------------
 

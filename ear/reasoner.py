@@ -27,6 +27,13 @@ from .skill_selector import SkillSelector
 # retrying and concludes with what it has. Recovery mechanics, not judgment.
 _MAX_TOOL_RECOVERIES = 2
 
+# How many tool calls accumulate in `gathered` before the loop checkpoints:
+# consolidates every entry gathered so far into one verified statement of
+# what still matters, then continues from that alone. Bounds context growth
+# and re-grounds the model in the accumulated facts instead of leaving them
+# to dilute across a lengthening list of independently-compressed entries.
+_CONTEXT_CHECKPOINT_EVERY = 3
+
 
 @dataclass
 class Reasoner:
@@ -142,6 +149,7 @@ class Reasoner:
         catalogue = "\n".join(f"{tool.name}({', '.join(tool.parameters)}): {tool.description}" for tool in tools)
         available = ", ".join(tool.name for tool in tools) or "none"
         gathered: list[str] = []
+        tool_calls = 0
         recoveries = 0
         for _ in range(max_iterations):
             action = ChooseToolAction.run(
@@ -174,7 +182,17 @@ class Reasoner:
             arguments = ToolBinder.parse_arguments(action.arguments)
             invoke = binder.logged_handler(runtime, chosen) if binder is not None else chosen.handler
             result = invoke(**arguments)
-            gathered.append(f"{chosen.name}({arguments}) -> {result}")
+            # The full result already landed on the trail via the tool-stage
+            # record `invoke` just wrote (ToolBinder._logged) -- nothing an
+            # investigator reads is shortened. Only the copy re-entering
+            # `gathered`, which grows every remaining iteration of this
+            # loop, may be compressed, and only when the stack declares an
+            # Auxiliary Model; otherwise this is the raw result, unchanged.
+            fed_back = Reasoner._compress_tool_result(runtime, chosen.name, arguments, result)
+            gathered.append(f"{chosen.name}({arguments}) -> {fed_back}")
+            tool_calls += 1
+            if tool_calls % _CONTEXT_CHECKPOINT_EVERY == 0:
+                gathered = [Reasoner._checkpoint_gathered_context(runtime, gathered)]
         # Budget spent (or the model declined to decide): conclude with the
         # gathered facts in view.
         enriched = dict(context)
@@ -182,6 +200,107 @@ class Reasoner:
             enriched["_tool_results"] = "\n".join(gathered)
         result = ReasonAboutIntent.run(lm, intent=intent.text, context=enriched, capabilities=capabilities)
         return result.decision
+
+    @staticmethod
+    def _compress_tool_result(runtime: Any, tool_name: str, arguments: dict, result: Any) -> str:
+        """The text that re-enters `gathered` for a tool call just made --
+        compressed so a long tool loop's growing context doesn't reprint
+        every full script and stack trace on every remaining turn. The
+        full, uncompressed result already landed on the trail via the
+        tool-stage record the caller wrote before this runs; compressing
+        the feedback never touches what an investigator reads there.
+
+        Compression is deterministic first, always on, and needs no model:
+        `ear.caveman.compress` drops filler prose via `re.sub` and can only
+        delete matched words, never generate replacement text -- it is
+        structurally incapable of inventing or garbling a fact (a row
+        count, an exit code) the way a generative summarizer can. That
+        matters here specifically: an earlier LLM-based version of this
+        method summarized a 907-row file as "1000 rows", and a downstream
+        cycle blocked on a discrepancy that was never real.
+
+        If the stack additionally declares an Auxiliary Model (memory.md),
+        that cheaper model may compress the *already deterministically
+        compressed* text further -- an opt-in extra squeeze layered on top
+        of the safe default, never a replacement for it. Any failure at
+        either stage falls back to the best text already in hand; this is
+        a context-cost optimisation and must never break the cycle."""
+        from . import caveman
+
+        raw = str(result)
+        squeezed = caveman.compress(raw).text or raw
+
+        binding = getattr(runtime, "auxiliary_model_binding", None)
+        if binding is None:
+            return squeezed
+        binding.activate()
+        lm = getattr(binding, "lm", None)
+        if lm is None:
+            return squeezed
+        from .signatures import SummarizeToolResult
+
+        log = getattr(runtime, "reasoning_log", None)
+        start = calls_so_far(lm)
+        try:
+            summary = str(
+                SummarizeToolResult.run(lm, tool=tool_name, arguments=str(arguments), result=squeezed).summary
+            ).strip()
+        except Exception as error:  # noqa: BLE001 -- a summarizer failure must never break the cycle
+            if log is not None:
+                log.record(stage="summarize", inputs={"tool": tool_name}, output=f"FAILED -- {error}; using deterministic result")
+            return squeezed
+        if not summary:
+            return squeezed
+        if log is not None:
+            log.record(
+                stage="summarize",
+                inputs={"tool": tool_name, "raw_length": len(raw), "summary_length": len(summary)},
+                output=summary,
+                model=binding.model_id,
+                usage=usage_since(lm, start),
+            )
+        return summary
+
+    @staticmethod
+    def _checkpoint_gathered_context(runtime: Any, gathered: list[str]) -> str:
+        """Consolidate every `gathered` entry accumulated so far into one
+        verified statement, called every `_CONTEXT_CHECKPOINT_EVERY` tool
+        calls so key facts stay retained rather than diluting across a
+        lengthening list of independently-compressed entries. Requires the
+        stack's Auxiliary Model (memory.md); with none configured this is a
+        no-op that keeps `gathered` exactly as it was -- bounded context is
+        an optimisation, never a precondition for the loop to run. A
+        checkpoint failure of any kind falls back to the unconsolidated
+        entries joined as-is, never dropping a turn's own work."""
+        joined = "\n".join(gathered)
+        binding = getattr(runtime, "auxiliary_model_binding", None)
+        if binding is None:
+            return joined
+        binding.activate()
+        lm = getattr(binding, "lm", None)
+        if lm is None:
+            return joined
+        from .signatures import ConsolidateGatheredContext
+
+        log = getattr(runtime, "reasoning_log", None)
+        start = calls_so_far(lm)
+        try:
+            checkpoint = str(ConsolidateGatheredContext.run(lm, gathered_so_far=joined).checkpoint).strip()
+        except Exception as error:  # noqa: BLE001 -- a checkpoint failure must never break the cycle
+            if log is not None:
+                log.record(stage="checkpoint", inputs={"entries": len(gathered)}, output=f"FAILED -- {error}; keeping entries as-is")
+            return joined
+        if not checkpoint:
+            return joined
+        if log is not None:
+            log.record(
+                stage="checkpoint",
+                inputs={"entries": len(gathered), "joined_length": len(joined)},
+                output=checkpoint,
+                model=binding.model_id,
+                usage=usage_since(lm, start),
+            )
+        return checkpoint
 
     @staticmethod
     def _record_tool_recovery(runtime: Any, tool_name: str, note: str) -> None:

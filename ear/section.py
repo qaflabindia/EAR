@@ -106,6 +106,62 @@ def labelled_blocks(lines: list[str]) -> dict[str, str]:
     return blocks
 
 
+def argument_blocks(lines: list[str]) -> dict[str, str]:
+    """Parse a tool call's arguments in either of two forms, freely mixed: a
+    short scalar as a one-line bullet (`- name: value`, the original
+    convention -- still the natural choice for a path, a flag, a number),
+    or a value that needs more than one line as a label followed by a
+    `>`-quoted block (`name:` then `> ...` lines) -- the only layout in this
+    codec that reliably carries a multi-line value like a whole file's
+    source, the way `quote`/`labelled_blocks` already carry a decision's or
+    an explanation's multi-paragraph prose.
+
+    Unlike `labelled_blocks`, a blank or unquoted line never ends an open
+    label's block on its own -- only the next bullet or label does. That
+    matters here specifically: `labelled_blocks` is read against markdown
+    *EAR itself* writes with `quote`, which always quotes a blank line as a
+    bare `>`; here the *model* is producing the text, and forgetting to
+    quote one blank line inside a script must not silently truncate it.
+
+    Unlike `labelled_blocks`, names are kept verbatim (only stripped), never
+    case/underscore-folded by `normalize` -- a tool argument becomes a
+    Python keyword argument, so `applicant_id` must stay `applicant_id`,
+    not fold into `applicant id`."""
+    blocks: dict[str, str] = {}
+    label: str = ""
+    pending: list[str] = []
+
+    def commit() -> None:
+        nonlocal label, pending
+        if label:
+            blocks[label] = "\n".join(pending).strip("\n")
+        label, pending = "", []
+
+    for line in lines:
+        bullet = _BULLET.match(line)
+        if bullet:
+            commit()
+            name, separator, value = bullet.group(1).partition(":")
+            if separator and name.strip():
+                blocks[name.strip()] = value.strip()
+            continue
+        stripped = line.strip()
+        if not stripped.startswith(">") and _is_label(stripped):
+            commit()
+            label = stripped[:-1]
+            continue
+        if not label:
+            continue
+        if stripped.startswith("> "):
+            pending.append(stripped[2:])
+        elif stripped == ">":
+            pending.append("")
+        else:
+            pending.append(line)
+    commit()
+    return blocks
+
+
 def _is_label(stripped: str) -> bool:
     """A label line is a short word-or-phrase ending in a bare colon,
     e.g. 'Decision:' or 'Evidence basis:' -- never a sentence."""
