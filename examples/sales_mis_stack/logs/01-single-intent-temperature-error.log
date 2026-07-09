@@ -1,0 +1,51 @@
+ANTHROPIC_API_KEY is set -- reasoning runs against a live model
+Runtime: Sales MIS Guru Runtime
+Model:   anthropic/claude-opus-4-8
+Sandbox: /Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/examples/sales_mis_stack/.ear/box
+Seeded sandbox uploads/: bank_daily_sales_2025.xlsx, bank_daily_sales_dashboard_2025.xlsx
+intents/fy2025-cycle.md dropped into the exchange
+Traceback (most recent call last):
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/ear/llm.py", line 188, in _post
+    with ipv4_opener(_ssl_context()).open(request, timeout=120) as response:
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/urllib/request.py", line 523, in open
+    response = meth(req, response)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/urllib/request.py", line 632, in http_response
+    response = self.parent.error(
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/urllib/request.py", line 561, in error
+    return self._call_chain(*args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/urllib/request.py", line 494, in _call_chain
+    result = func(*args)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/urllib/request.py", line 641, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 400: Bad Request
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/examples/sales_mis_guru.py", line 74, in <module>
+    raise SystemExit(main())
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/examples/sales_mis_guru.py", line 63, in main
+    for path in exchange.run(runtime):
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/ear/exchange.py", line 91, in run
+    self.respond(runtime, intent_path.read_text(encoding="utf-8")),
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/ear/exchange.py", line 62, in respond
+    decision = runtime.reason(intent, approval=approval)
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/ear/runtime.py", line 250, in reason
+    violations = self.governor.govern(self, intent, approval=approval)
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/ear/governor.py", line 31, in govern
+    return self._violations(runtime.policies, model_binding, intent, runtime=runtime, approval=approval)
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/ear/governor.py", line 56, in _violations
+    complies, rationale = policy.judge(model_binding=model_binding, **intent.context)
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/ear/policy.py", line 65, in judge
+    return self._judge_with_llm(model_binding.lm, context)
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/ear/policy.py", line 103, in _judge_with_llm
+    result = JudgePolicyCompliance.run(lm, policy_statement=self.statement, context=context)
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/ear/judgment.py", line 73, in run
+    reply = lm.complete(self.render_prompt(values), system=self.instruction)
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/ear/llm.py", line 79, in complete
+    raw, retries = self._post_with_retries(url, headers, body)
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/ear/llm.py", line 165, in _post_with_retries
+    return cls._post(url, headers, body), attempt
+  File "/Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/ear/llm.py", line 194, in _post
+    raise failure from error
+ear.llm.LMError: LLM call to https://api.anthropic.com/v1/messages failed (400): {"type":"error","error":{"type":"invalid_request_error","message":"`temperature` is deprecated for this model."},"request_id":"req_011CcnZWFJtMWM7ELhALoezE"}

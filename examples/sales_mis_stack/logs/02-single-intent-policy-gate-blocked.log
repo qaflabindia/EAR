@@ -1,0 +1,43 @@
+ANTHROPIC_API_KEY is set -- reasoning runs against a live model
+Runtime: Sales MIS Guru Runtime
+Model:   anthropic/claude-opus-4-8
+Sandbox: /Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/examples/sales_mis_stack/.ear/box
+Seeded sandbox uploads/: bank_daily_sales_2025.xlsx, bank_daily_sales_dashboard_2025.xlsx
+intents/fy2025-cycle.md dropped into the exchange
+
+--- decisions/fy2025-cycle.md ---
+# Decision -- Complete the FY2025 daily bank sales MIS cycle
+
+Runtime: Sales MIS Guru Runtime
+Cycle: 1
+Model: anthropic/claude-opus-4-8
+Status: BLOCKED
+
+## Intent
+
+> Complete the FY2025 daily bank sales MIS cycle
+
+Context:
+
+- raw_source_workbook: uploads/bank_daily_sales_2025.xlsx
+- dashboard_template: uploads/bank_daily_sales_dashboard_2025.xlsx
+- completed_dashboard_output: outputs/bank_daily_sales_dashboard_2025_completed.xlsx
+
+## Decision
+
+> Workflow policy violated: Reconciliation Tolerance, Dashboard Sign-Off Gate, Schema Drift Block
+
+## Policy judgments
+
+- Data Provenance Control: complies
+  The context only references the raw source workbook, a dashboard template, and a completed output file, with no indication that any figures or fields were fabricated to fill gaps beyond what the source workbook contains, so nothing here violates the policy.
+- Reconciliation Tolerance: VIOLATED
+  The context only provides file paths for the source workbook, template, and completed dashboard but contains no reconciled totals or comparison figures demonstrating that KPIs, trends, product, branch, and RM leaderboard sums match within half a percent, so the required reconciliation check cannot be shown as passed.
+- Dashboard Sign-Off Gate: VIOLATED
+  The context provides only file paths for the source, template, and completed dashboard but contains no validation log showing that every sheet passed reconciliation, so compliance with the delivery precondition cannot be established.
+- Schema Drift Block: VIOLATED
+  The context only provides file paths for the source workbook, dashboard template, and output, but offers no evidence of dynamic header-row detection or validation that every required column from the source schema is present, so it cannot be shown to satisfy the policy.
+
+
+Reasoning trail: /Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/examples/sales_mis_stack/.ear/reasoning.md
+Sandbox workspace: /Users/lakshminarasimhan.santhanamgigkri.com/workspace/LENS/EAR/examples/sales_mis_stack/.ear/box

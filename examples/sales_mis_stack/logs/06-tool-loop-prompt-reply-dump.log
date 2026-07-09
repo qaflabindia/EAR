@@ -1,0 +1,201 @@
+Scenario: read_file(missing.xlsx) raises on the first call, succeeds on the
+second. This dump shows the exact prompt text sent to the model on every
+turn, and the exact reply -- so 'does a tool failure reach the model on the
+next call' is answered by reading the wire text directly, not by trusting
+a description of the code.
+
+Final decision returned: 'Read the file after one failed attempt.'
+Tool handler invocation count: 2
+
+==============================================================================
+TURN 1 -- system instruction
+==============================================================================
+You are reasoning toward a decision and may use tools to get facts first. Read the tools and what you have gathered so far. If a tool would help, call exactly one -- name it and give its arguments. Otherwise, give the final decision. Never invent a tool that is not listed. When an argument's value needs more than one line -- the source of a script, a whole file's content -- write it as a blockquote rather than cramming it onto one bullet line; see the arguments field below for exactly how.
+
+------------------------------------------------------------------------------
+TURN 1 -- full prompt sent to the model
+------------------------------------------------------------------------------
+You are reasoning toward a decision and may use tools to get facts first. Read the tools and what you have gathered so far. If a tool would help, call exactly one -- name it and give its arguments. Otherwise, give the final decision. Never invent a tool that is not listed. When an argument's value needs more than one line -- the source of a script, a whole file's content -- write it as a blockquote rather than cramming it onto one bullet line; see the arguments field below for exactly how.
+
+## intent
+
+read a file
+
+## context
+
+{}
+
+## capabilities
+
+none
+
+## tools
+
+read_file(path): read a file
+
+## gathered
+
+none yet
+
+Respond using exactly the following markdown sections, each a level-2 heading (`## Name`) followed by its value. Add nothing outside these sections:
+
+## tool
+(The name of the one tool to call now, or empty to decide instead -- a short one-line value)
+
+## arguments
+(The tool's arguments; empty when deciding instead. A short value is a '- name: value' bullet, same as always. A value spanning more than one line -- a script's source, a whole file -- cannot go on a bullet line: write 'name:' alone, then the value as a blockquote, every line (blank ones too) starting with '> '. Example with one short argument and one multi-line one:
+- path: workspace/script.py
+content:
+> import openpyxl
+>
+> wb = openpyxl.load_workbook('uploads/data.xlsx')
+> print(wb.sheetnames) -- one '- name: value' bullet per short argument, exactly as 'list' above; for a value that needs more than one line (source code, a whole file's content), write 'name:' alone on its line followed by the value as a blockquote -- every line, including a blank one, starting with '> ' (a lone '>' for a blank line). Never put a multi-line value on a single bullet line.)
+
+## decision
+(The final decision, given only when no tool is called -- the full text of the answer, as prose)
+
+
+------------------------------------------------------------------------------
+TURN 1 -- model's raw reply
+------------------------------------------------------------------------------
+## tool
+
+read_file
+
+## arguments
+
+- path: missing.xlsx
+
+## decision
+
+
+
+
+==============================================================================
+TURN 2 -- system instruction
+==============================================================================
+You are reasoning toward a decision and may use tools to get facts first. Read the tools and what you have gathered so far. If a tool would help, call exactly one -- name it and give its arguments. Otherwise, give the final decision. Never invent a tool that is not listed. When an argument's value needs more than one line -- the source of a script, a whole file's content -- write it as a blockquote rather than cramming it onto one bullet line; see the arguments field below for exactly how.
+
+------------------------------------------------------------------------------
+TURN 2 -- full prompt sent to the model
+------------------------------------------------------------------------------
+You are reasoning toward a decision and may use tools to get facts first. Read the tools and what you have gathered so far. If a tool would help, call exactly one -- name it and give its arguments. Otherwise, give the final decision. Never invent a tool that is not listed. When an argument's value needs more than one line -- the source of a script, a whole file's content -- write it as a blockquote rather than cramming it onto one bullet line; see the arguments field below for exactly how.
+
+## intent
+
+read a file
+
+## context
+
+{}
+
+## capabilities
+
+none
+
+## tools
+
+read_file(path): read a file
+
+## gathered
+
+read_file({'path': 'missing.xlsx'}) -> Tool 'read_file' failed: boom: no such file
+
+Respond using exactly the following markdown sections, each a level-2 heading (`## Name`) followed by its value. Add nothing outside these sections:
+
+## tool
+(The name of the one tool to call now, or empty to decide instead -- a short one-line value)
+
+## arguments
+(The tool's arguments; empty when deciding instead. A short value is a '- name: value' bullet, same as always. A value spanning more than one line -- a script's source, a whole file -- cannot go on a bullet line: write 'name:' alone, then the value as a blockquote, every line (blank ones too) starting with '> '. Example with one short argument and one multi-line one:
+- path: workspace/script.py
+content:
+> import openpyxl
+>
+> wb = openpyxl.load_workbook('uploads/data.xlsx')
+> print(wb.sheetnames) -- one '- name: value' bullet per short argument, exactly as 'list' above; for a value that needs more than one line (source code, a whole file's content), write 'name:' alone on its line followed by the value as a blockquote -- every line, including a blank one, starting with '> ' (a lone '>' for a blank line). Never put a multi-line value on a single bullet line.)
+
+## decision
+(The final decision, given only when no tool is called -- the full text of the answer, as prose)
+
+
+------------------------------------------------------------------------------
+TURN 2 -- model's raw reply
+------------------------------------------------------------------------------
+## tool
+
+read_file
+
+## arguments
+
+- path: missing.xlsx
+
+## decision
+
+
+
+
+==============================================================================
+TURN 3 -- system instruction
+==============================================================================
+You are reasoning toward a decision and may use tools to get facts first. Read the tools and what you have gathered so far. If a tool would help, call exactly one -- name it and give its arguments. Otherwise, give the final decision. Never invent a tool that is not listed. When an argument's value needs more than one line -- the source of a script, a whole file's content -- write it as a blockquote rather than cramming it onto one bullet line; see the arguments field below for exactly how.
+
+------------------------------------------------------------------------------
+TURN 3 -- full prompt sent to the model
+------------------------------------------------------------------------------
+You are reasoning toward a decision and may use tools to get facts first. Read the tools and what you have gathered so far. If a tool would help, call exactly one -- name it and give its arguments. Otherwise, give the final decision. Never invent a tool that is not listed. When an argument's value needs more than one line -- the source of a script, a whole file's content -- write it as a blockquote rather than cramming it onto one bullet line; see the arguments field below for exactly how.
+
+## intent
+
+read a file
+
+## context
+
+{}
+
+## capabilities
+
+none
+
+## tools
+
+read_file(path): read a file
+
+## gathered
+
+read_file({'path': 'missing.xlsx'}) -> Tool 'read_file' failed: boom: no such file
+read_file({'path': 'missing.xlsx'}) -> read missing.xlsx fine
+
+Respond using exactly the following markdown sections, each a level-2 heading (`## Name`) followed by its value. Add nothing outside these sections:
+
+## tool
+(The name of the one tool to call now, or empty to decide instead -- a short one-line value)
+
+## arguments
+(The tool's arguments; empty when deciding instead. A short value is a '- name: value' bullet, same as always. A value spanning more than one line -- a script's source, a whole file -- cannot go on a bullet line: write 'name:' alone, then the value as a blockquote, every line (blank ones too) starting with '> '. Example with one short argument and one multi-line one:
+- path: workspace/script.py
+content:
+> import openpyxl
+>
+> wb = openpyxl.load_workbook('uploads/data.xlsx')
+> print(wb.sheetnames) -- one '- name: value' bullet per short argument, exactly as 'list' above; for a value that needs more than one line (source code, a whole file's content), write 'name:' alone on its line followed by the value as a blockquote -- every line, including a blank one, starting with '> ' (a lone '>' for a blank line). Never put a multi-line value on a single bullet line.)
+
+## decision
+(The final decision, given only when no tool is called -- the full text of the answer, as prose)
+
+
+------------------------------------------------------------------------------
+TURN 3 -- model's raw reply
+------------------------------------------------------------------------------
+## tool
+
+
+
+## arguments
+
+
+
+## decision
+
+Read the file after one failed attempt.
+
