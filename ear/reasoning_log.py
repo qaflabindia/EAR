@@ -98,13 +98,22 @@ def usage_since(lm: Any, start: int) -> Optional[dict[str, int]]:
     calls = history[start:]
     if not calls:
         return None
-    usage = {"input_tokens": 0, "output_tokens": 0, "latency_ms": 0, "retries": 0}
+    usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "latency_ms": 0,
+        "retries": 0,
+    }
     for call in calls:
         if not isinstance(call, dict):
             continue
         tokens = call.get("usage") or {}
         usage["input_tokens"] += int(tokens.get("prompt_tokens") or 0)
         usage["output_tokens"] += int(tokens.get("completion_tokens") or 0)
+        usage["cache_read_tokens"] += int(tokens.get("cache_read_tokens") or 0)
+        usage["cache_write_tokens"] += int(tokens.get("cache_write_tokens") or 0)
         usage["latency_ms"] += int(call.get("latency_ms") or 0)
         usage["retries"] += int(call.get("retries") or 0)
     return usage

@@ -20,6 +20,8 @@ Boundaries (never touched, via sentinel substitution before compression
 and restoration after):
     - fenced code blocks (``` ... ```)
     - inline code (`...`)
+    - indented lines (2+ spaces or a tab) -- code, YAML, tables: structure,
+      not prose
     - URLs (https?://...)
     - filesystem paths (anything with / or \\)
     - CONST_CASE identifiers
@@ -29,9 +31,16 @@ and restoration after):
 Bare numbers need no explicit protection: none of the compression rules
 below match digits at all.
 
+Text that is *mostly* code -- a read_file of a script, a generated
+program echoed back -- is returned untouched: the prose rules are
+meaningless there and any deletion garbles syntax (observed in the wild:
+`for a in anomalies:` lost its loop variable to the article rule, and a
+downstream cycle then "repaired" a script that was never broken).
+
 Compression applied to everything else: drop articles, filler words,
 pleasantries, hedging, and leading "I'll"/"I will"/"let me"-style phrases;
-collapse the whitespace that removal leaves behind.
+collapse the whitespace that removal leaves behind -- interior runs only,
+never a line's leading indentation.
 """
 
 from __future__ import annotations
@@ -67,6 +76,7 @@ _ARTICLES = re.compile(r"\b(?:a|an|the)\s+(?=[a-z])", re.IGNORECASE)
 _PROTECTED_PATTERNS = [
     re.compile(r"```[\s\S]*?```"),                              # fenced code
     re.compile(r"`[^`\n]+`"),                                   # inline code
+    re.compile(r"^[ \t]{2,}\S[^\n]*", re.MULTILINE),             # indented lines: structure, not prose
     re.compile(r"\bhttps?://\S+", re.IGNORECASE),                # URLs
     re.compile(r"\b[\w.-]*[/\\][\w./\\-]+"),                     # paths with / or \
     re.compile(r"\b[A-Z][A-Za-z0-9]*(?:_[A-Z][A-Za-z0-9]*)+\b"),  # CONST_CASE
@@ -76,6 +86,32 @@ _PROTECTED_PATTERNS = [
 ]
 
 _SENTINEL = re.compile(r"\x00(\d+)\x00")
+
+# A line that reads as source code rather than prose: a keyword statement,
+# a decorator/comment/shebang, a scope opener, or an assignment. Used only
+# in aggregate -- one prose sentence starting with "if" proves nothing; a
+# text where most lines look like this is a program. A trailing bare colon
+# deliberately does not count ("Output was:" is prose); real block openers
+# start with a keyword and are caught by that rule.
+_CODE_LINE = re.compile(
+    r"^(?:def|class|import|from|return|if|elif|else|for|while|try|except|finally|with|lambda|const|let|var|function|public|private|package)\b"
+    r"|^[@#]"
+    r"|[;{}(\[]\s*$"
+    r"|\s=\s"
+)
+
+
+def _looks_like_code(text: str) -> bool:
+    """Whether `text` is mostly source code -- in which case every prose
+    rule is meaningless and any deletion garbles syntax, so compression
+    must be a no-op on the whole text. Only unindented lines vote:
+    indented lines are already protected span-by-span, so what decides is
+    whether the top-level lines read as statements or as sentences."""
+    lines = [line for line in text.splitlines() if line.strip() and line[:1] not in (" ", "\t")]
+    if len(lines) < 3:
+        return False
+    hits = sum(1 for line in lines if _CODE_LINE.search(line))
+    return hits >= len(lines) * 0.5
 
 
 def _with_protected_segments(text: str, transform) -> str:
@@ -94,7 +130,16 @@ def _with_protected_segments(text: str, transform) -> str:
         working = pattern.sub(claim, working)
 
     out = transform(working)
-    return _SENTINEL.sub(lambda m: segments[int(m.group(1))], out)
+    # A later pattern may claim a span that already contains an earlier
+    # sentinel (dotted.method() inside a function call, say); splicing the
+    # outer segment back reintroduces the inner sentinel, so restoration
+    # repeats until none remain -- one pass per nesting level, bounded by
+    # the segment count.
+    for _ in range(len(segments) + 1):
+        if not _SENTINEL.search(out):
+            break
+        out = _SENTINEL.sub(lambda m: segments[int(m.group(1))], out)
+    return out
 
 
 def _compress_prose(text: str) -> str:
@@ -104,8 +149,9 @@ def _compress_prose(text: str) -> str:
     s = _HEDGES.sub("", s)
     s = _FILLERS.sub("", s)
     s = _ARTICLES.sub("", s)
-    # Collapse repeated whitespace introduced by removals.
-    s = re.sub(r"[ \t]{2,}", " ", s)
+    # Collapse repeated whitespace introduced by removals -- interior runs
+    # only; a line's leading indentation is structure and stays.
+    s = re.sub(r"(?<=\S)[ \t]{2,}", " ", s)
     s = re.sub(r"\s+([,.;:!?])", r"\1", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
     # Capitalize the first letter of each sentence we may have left lowercase.
@@ -134,5 +180,7 @@ def compress(text: str) -> Compressed:
     if not isinstance(text, str) or not text:
         return Compressed(text=text if isinstance(text, str) else str(text), before=0, after=0)
     before = len(text)
+    if _looks_like_code(text):
+        return Compressed(text=text, before=before, after=before)
     compressed_text = _with_protected_segments(text, _compress_prose)
     return Compressed(text=compressed_text, before=before, after=len(compressed_text))

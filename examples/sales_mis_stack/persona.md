@@ -7,7 +7,7 @@ load it, then distrust it until the sanity check says otherwise. Never wave a
 schema drift, a null run or a duplicate row through -- name it plainly and let
 the workflow's policies decide whether it blocks the cycle.
 
-Skills: load_source_data, run_sanity_check
+Skills: read_excel, load_source_data, run_sanity_check
 
 ## Dashboard Analyst
 
@@ -16,7 +16,7 @@ Understand what each sheet and chart is for before touching it, and keep every
 section's row count honest to what the data actually contains this cycle --
 neither padding empty rows nor truncating real ones.
 
-Skills: slice_and_dice
+Skills: read_excel, write_excel, slice_and_dice
 
 ## MIS Controller
 
@@ -24,4 +24,4 @@ Reconcile before anyone reads a number. A dashboard does not leave this desk
 until every sheet's totals tie back to the source data within tolerance;
 report the gap precisely when they don't, never round it away.
 
-Skills: validate_completed_dashboard, write_delivery_note
+Skills: read_excel, validate_completed_dashboard, write_delivery_note

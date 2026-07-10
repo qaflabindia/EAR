@@ -30,6 +30,7 @@ mistaken for document structure.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -54,14 +55,26 @@ class Exchange:
     def respond(self, runtime: Any, intent_markdown: str, approval: Optional[Approval] = None) -> str:
         """Reason one intent document through the runtime and return the
         decision document. Pass the human's `approval` to release a cycle
-        an approval gate previously parked."""
+        an approval gate previously parked.
+
+        A governance stop (PermissionError) and an infrastructure stop
+        (LMError -- the provider call itself failed: auth, billing, network)
+        both land as a BLOCKED decision document rather than an unhandled
+        crash. A live trail showed why the second matters: a billing 400
+        mid-cycle destroyed the whole cycle's record -- every tool call the
+        model had already made vanished from the exchange, exactly the
+        untruthfulness the trail exists to prevent."""
+        from .llm import LMError
+
         intent = Intent.from_markdown(intent_markdown)
-        blocked: Optional[PermissionError] = None
+        blocked: Optional[Exception] = None
         decision: Any = None
         try:
             decision = runtime.reason(intent, approval=approval)
         except PermissionError as refusal:
             blocked = refusal
+        except LMError as failure:
+            blocked = failure
         return self._render(runtime, intent, decision, blocked, approval)
 
     def run(self, runtime: Any) -> list[Path]:
@@ -116,7 +129,7 @@ class Exchange:
         runtime: Any,
         intent: Intent,
         decision: Any,
-        blocked: Optional[PermissionError],
+        blocked: Optional[Exception],
         approval: Optional[Approval] = None,
     ) -> str:
         title = intent.text.partition("\n")[0].strip()
@@ -164,6 +177,7 @@ class Exchange:
             lines += [quote(str(blocked))]
         else:
             lines += [quote(str(decision))]
+            lines += _completion_summary(runtime, cycle, status, decision)
         if approval is not None and approval.verdict is not None and not parked:
             approver = approval.approver or "an unnamed approver"
             lines += ["", "## Approval", ""]
@@ -198,6 +212,45 @@ class Exchange:
                 if record.rationale:
                     lines += [f"  {record.rationale}"]
         return "\n".join(lines) + "\n"
+
+
+def _completion_summary(runtime: Any, cycle: int, status: str, decision: Any, limit: int = 4) -> list[str]:
+    """A compact user-facing completion notice for successful cycles.
+
+    The full audit trail keeps every raw tool result. This section is the
+    opposite: a small, readable notification in the decision document with
+    the cycle's status and the most useful tool-output summaries. It is
+    generated only after successful completion, so blocked and parked cycles
+    keep their refusal/approval sections as the headline."""
+    records = runtime.reasoning_log.for_cycle(cycle)
+    reported = _reported_status(decision)
+    status_text = status if not reported else f"{status} (decision reports: {reported})"
+
+    lines = ["", "## Completion summary", "", f"- Status: {status_text}"]
+    summaries = [
+        _clip_one_line(record.output, 180)
+        for record in records
+        if record.stage == "summarize" and str(record.output).strip()
+    ]
+    if summaries:
+        lines.append("- Tool output summary:")
+        for summary in summaries[-limit:]:
+            lines.append(f"  - {summary}")
+    return lines
+
+
+def _reported_status(decision: Any) -> str:
+    match = re.search(r"(?im)^\s*(?:\*\*)?Status:\s*([A-Za-z][A-Za-z0-9 _/-]*)", str(decision))
+    if not match:
+        return ""
+    return match.group(1).strip(" .*\t")
+
+
+def _clip_one_line(text: Any, limit: int) -> str:
+    one = " ".join(str(text).strip().split())
+    if len(one) <= limit:
+        return one
+    return one[: limit - 1].rstrip() + "…"
 
 
 def data_from_decision_document(markdown: str) -> dict:

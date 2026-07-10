@@ -15,3 +15,8 @@ venv/
 key.txt
 *.key
 .DS_Store
+
+# Live-run artifacts from worked examples -- reasoning traces and decision
+# documents are runtime output, not source.
+examples/*/logs/
+examples/*/decisions/

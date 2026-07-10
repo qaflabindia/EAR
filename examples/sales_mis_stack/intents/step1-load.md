@@ -2,12 +2,18 @@
 
 Parsed from `knowledge/mis-manual.md` Section 1 -- Load Data.
 
-Do step 1 of the Sales MIS Workflow this cycle only. Suppliers are ERP, CRM and APIs, and their raw source data is staged as `uploads/daily_bank_sales_data_2025.xlsx`. Extract and load the workbook, then run the small sanity check described in the manual before downstream steps trust the file. Write the staged dataset, and write an anomaly report when any anomaly is found. Report the sheets, rows and columns actually read from the workbook -- observed facts only, never assumed counts. Stop there: Step 2 is the customer.
+Do step 1, Load Data, of the Sales MIS Workflow this cycle only. Follow the manual section below as the source of truth for suppliers, inputs, process, outputs and customers. Also request these conditional outputs when the manual calls for them: `workspace/anomaly_report.md`.
+
+Manual section:
+
+Suppliers: ERP, CRM and APIs. Raw source data arrives as `daily_bank_sales_data_2025.xlsx` -- in production, extracted from the source systems into that one workbook and dropped into the sandbox's `uploads/` directory. Loading is not just an open-and-read: extract and load the data, then run a small sanity check immediately, so a schema change or a corrupt extract is caught before anything downstream trusts the file. Outputs are the staged dataset and an anomaly report when anomalies are found; Step 2 is the customer.
+
+Stop there: Step 2 is the customer.
 
 ## Context
 
-- input (uploads/daily_bank_sales_data_2025.xlsx): verified present
+- input (uploads/daily_bank_sales_data_2025.xlsx): verified present, 98,272 bytes
 - output_expected: workspace/staged_daily_sales.csv
-- output_expected_if_anomaly: workspace/anomaly_report.md
+- output_expected_if_applicable: workspace/anomaly_report.md
 
-Every required output must be written to its exact output path above -- the next step is gated on that literal filename, so a different name, however reasonable, is a failed handoff.
+Every output must be written to its exact output_expected path above -- the next step is gated on that literal filename, so a different name, however reasonable, is a failed handoff.

@@ -204,20 +204,55 @@ def attach_progress_printer(runtime) -> None:
     log.record = record_and_print
 
 
-def start_live_dashboard(runtime, port: int = 8000):
+def start_live_dashboard(runtime, port: int = 8000, status_path: Path = None):
     """Serve EAR's own Dashboard (ear/dashboard.py) live, in a background
     thread of *this* process -- reading the same `runtime` object the main
     thread is reasoning with, so the page's 3-second auto-refresh shows
     state as it happens, mid-cycle. The caller keeps the process alive
     after the cycles finish (see `main()`) until the page's Shut Down
-    button -- or Ctrl-C -- calls `server.shutdown()`."""
+    button -- or Ctrl-C -- calls `server.shutdown()`.
+
+    Every run now outlives its cycles (the dashboard stays up until a human
+    shuts it down), so a new invocation may find the previous run's server
+    still holding the port. In that case the old dashboard is asked to shut
+    itself down via its own POST /shutdown route, and the port is re-bound."""
     from ear.dashboard import create_server
 
-    server = create_server(runtime, port=port, host="127.0.0.1", refresh=3)
+    try:
+        server = create_server(runtime, port=port, host="127.0.0.1", refresh=3, status_path=status_path)
+    except OSError:
+        import urllib.request
+
+        print(f"Port {port} is held by a previous run's dashboard -- asking it to shut down…")
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/shutdown", data=b"", timeout=3)
+        except Exception:  # noqa: BLE001 - whatever holds the port, the rebind loop below decides
+            pass
+        deadline = time.time() + 5
+        while True:
+            try:
+                server = create_server(runtime, port=port, host="127.0.0.1", refresh=3, status_path=status_path)
+                break
+            except OSError:
+                if time.time() >= deadline:
+                    raise
+                time.sleep(0.3)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     print(f"Live dashboard: http://127.0.0.1:{port}/  (auto-refreshes every 3s)")
     return thread, server
+
+
+def _wait_for_dashboard(thread, server) -> None:
+    """Block until a human stops the dashboard -- the page's Shut Down
+    button or Ctrl-C here -- so the board stays readable after the run's
+    cycles end instead of vanishing with the process."""
+    try:
+        thread.join()
+    except KeyboardInterrupt:
+        print("\nCtrl-C received -- stopping the dashboard.")
+        server.shutdown()
+        thread.join()
 
 
 # -- the truth layer: verified facts about the box, never prose -----------------
@@ -251,6 +286,25 @@ def _fresh_slate(sandbox, steps, stack: Path = STACK) -> None:
                 stale.unlink()
 
 
+def _materialize_aliases(sandbox, step) -> None:
+    """A promised output that the cycle left under an equivalent internal
+    name (see INTERNAL_HANDOFF_ALIASES) is materialized at its canonical
+    path -- the handoff names are the driver's own convention, so the
+    driver honors verified work instead of failing the step over its own
+    filename. Says so out loud; the board then reports the real file."""
+    for canonical in step["produces"]:
+        if (sandbox.root / canonical).exists():
+            continue
+        for alias in INTERNAL_HANDOFF_ALIASES.get(canonical, []):
+            source = sandbox.root / alias
+            if source.exists():
+                target = sandbox.root / canonical
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(source, target)
+                print(f"Materialized {canonical} from {alias} (driver handoff alias)")
+                break
+
+
 def _missing_inputs(sandbox, step) -> list:
     """The step's required inputs that do NOT exist in the sandbox right
     now -- the gate that keeps an intent from asserting a false handoff."""
@@ -276,10 +330,24 @@ def _intent_text(sandbox, step) -> str:
 
 
 def _decision_status(decision_text: str) -> str:
-    """The status the Deliverable extracted, read from the decision document's
-    own Data section -- the single hedge-free field the workflow declares."""
-    match = re.search(r"^- status:\s*(.+)$", decision_text, flags=re.MULTILINE)
-    return match.group(1).strip() if match else "(no status field)"
+    """The cycle's status for the board, read from the decision document by
+    preference: the Deliverable's own `## Data` `- status:` field first (the
+    hedge-free business status the workflow declares), then the always-present
+    `## Completion summary` `- Status:` line, then the document's top `Status:`
+    headline. Earlier the board read only the Data field, so a cycle whose
+    model omitted that optional section printed a bare "(no status field)"
+    even though its real status sat two sections below -- filesystem truth was
+    intact, but the status column lied. Only a document carrying no status
+    anywhere reports the gap now."""
+    for pattern in (
+        r"^- status:\s*(.+)$",   # declared Data field (model-authored, preferred)
+        r"^- Status:\s*(.+)$",   # Completion summary (always written on success)
+        r"^Status:\s*(.+)$",     # document headline (present on blocked/parked too)
+    ):
+        match = re.search(pattern, decision_text, flags=re.MULTILINE)
+        if match:
+            return match.group(1).strip()
+    return "(no status field)"
 
 
 def _provider_failure(decision_text: str) -> bool:
@@ -394,10 +462,12 @@ def main() -> int:
     # Each cycle below is a focused, single-step ask -- author one script,
     # run it, read its evidence, plus room for a rerun when the first
     # attempt errors -- not a whole 4-step pipeline in one shot.
-    runtime.tool_binder.max_iterations = 15
+    runtime.tool_binder.max_iterations = 30
     attach_progress_printer(runtime)
     dashboard_thread, dashboard_server = start_live_dashboard(
-        runtime, port=int(os.environ.get("MIS_DASHBOARD_PORT", "8000"))
+        runtime,
+        port=int(os.environ.get("MIS_DASHBOARD_PORT", "8000")),
+        status_path=STACK / ".ear" / "step_status.md",
     )
 
     sandbox = runtime.sandbox
@@ -456,6 +526,7 @@ def main() -> int:
                 results[step["name"]] = {"status": _decision_status(text)}
                 if _provider_failure(text):
                     paused = True
+            _materialize_aliases(sandbox, step)
         finally:
             # The board is written no matter how the cycle ended -- a crash
             # must never leave a stale board claiming last cycle's truth.
@@ -476,8 +547,8 @@ def main() -> int:
             print("!!      python3 examples/sales_mis_guru.py --resume")
             print(f"!!  Pause marker: {marker}")
             print("!" * 72)
-            dashboard_server.shutdown()
-            dashboard_thread.join()
+            print("\nDashboard stays live for inspection -- shut it down from the page's button (Ctrl-C here also works).")
+            _wait_for_dashboard(dashboard_thread, dashboard_server)
             return 2
 
     stale_marker = STACK / ".ear" / "paused.md"
@@ -490,24 +561,22 @@ def main() -> int:
     print(f"Sandbox workspace: {sandbox.root}")
 
     if args.step is not None:
-        # Step-by-step debugging: exit cleanly so the trail and the board
-        # can be inspected between steps; the dashboard restarts with the
-        # next step's invocation.
-        print(f"\nStep run complete (--step {args.step}). Exiting; rerun with the next --step to continue.")
-        dashboard_server.shutdown()
-        dashboard_thread.join()
+        # Step-by-step debugging: the cycles are done, but the dashboard
+        # stays live until a human shuts it down -- the next --step
+        # invocation takes the port over from this process automatically.
+        print(f"\nStep run complete (--step {args.step}). Rerun with the next --step to continue.")
+        print(
+            "Dashboard stays live -- shut it down from the page's button "
+            "when you're done reading it (Ctrl-C here also works)."
+        )
+        _wait_for_dashboard(dashboard_thread, dashboard_server)
         return 0
 
     print(
         "\nRun complete. Dashboard stays live -- shut it down from the "
         "page's button when you're done reading it (Ctrl-C here also works)."
     )
-    try:
-        dashboard_thread.join()
-    except KeyboardInterrupt:
-        print("\nCtrl-C received -- stopping the dashboard.")
-        dashboard_server.shutdown()
-        dashboard_thread.join()
+    _wait_for_dashboard(dashboard_thread, dashboard_server)
     return 0
 
 

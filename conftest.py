@@ -1,11 +1,24 @@
-"""conftest -- load a local .env into the environment before tests run,
-so a credential like ANTHROPIC_API_KEY reaches the test process without
-a third-party dotenv dependency. Test-only: this file is never part of
-the shipped `ear` package (pyproject.toml's package discovery only
-includes `ear*`) and never installed -- pytest collects it from the repo
-root by its own convention. An already-set environment variable is never
-overwritten, so a real deployment's credential always wins over this
-file's."""
+"""conftest -- opt-in live-model testing.
+
+A local `.env` credential (ANTHROPIC_API_KEY) is loaded into the test
+process ONLY when `EAR_LIVE_TESTS=1` is set in the environment. Default
+`pytest` therefore makes zero API calls and spends zero money -- every
+live-LLM test skips. This is deliberate: an earlier version loaded `.env`
+unconditionally, and every "offline" full-suite run silently billed real
+model calls.
+
+To run the live tests, explicitly:
+
+    EAR_LIVE_TESTS=1 python3 -m pytest tests/ -q
+
+Re-run only what failed last time (pytest's own last-failed cache):
+
+    EAR_LIVE_TESTS=1 python3 -m pytest tests/ -q --lf
+
+Test-only: this file is never part of the shipped `ear` package
+(pyproject.toml's package discovery only includes `ear*`). An already-set
+environment variable is never overwritten, so a real deployment's
+credential always wins over this file's."""
 
 from __future__ import annotations
 
@@ -28,4 +41,5 @@ def _load_env(path: Path) -> None:
             os.environ[key] = value.strip().strip('"').strip("'")
 
 
-_load_env(_ENV_FILE)
+if os.environ.get("EAR_LIVE_TESTS") == "1":
+    _load_env(_ENV_FILE)

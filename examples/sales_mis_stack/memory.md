@@ -29,16 +29,22 @@ the runtime stays on its deterministic fallback.
 
 Reason with anthropic/claude-sonnet-5, reading the credential from
 ANTHROPIC_API_KEY, for two mechanical jobs on top of the always-on
-deterministic compressor (`ear.caveman`): squeezing a tool result further,
-and consolidating everything gathered so far into one checkpoint every 3
-tool calls, so key facts stay retained rather than diluting across a
-lengthening list of compressed entries. Absolute rules for both: no
-fabrication -- never state a fact not literally in the source; no
-shallowness -- never drop a fact that changes what the next turn should do;
-no fluff; no sloppiness -- an ambiguous shorter sentence is wrong, not
-concise; no context loss or distortion of any number, path, name, or
-outcome. Declaring no Auxiliary Model at all would leave the deterministic
-pass as the only compression, exactly as safe, just less aggressive.
+deterministic compressor (`ear.caveman`): squeezing a tool result further
+-- but only when a single result is still large after the deterministic
+pass (over ~30K characters), not on every call, since a short result the
+caveman pass already handled earns no model call -- and consolidating
+everything gathered so far into one checkpoint every 3 tool calls, so key
+facts stay retained rather than diluting across a lengthening list of
+compressed entries. A failed tool result is never summarized at any size:
+its exact text (the error type, message, line) is what the next turn must
+diagnose, so it is fed back verbatim, or truncated head+tail when very
+large, never paraphrased. Absolute rules for both jobs: no fabrication --
+never state a fact not literally in the source; no shallowness -- never
+drop a fact that changes what the next turn should do; no fluff; no
+sloppiness -- an ambiguous shorter sentence is wrong, not concise; no
+context loss or distortion of any number, path, name, or outcome. Declaring
+no Auxiliary Model at all would leave the deterministic pass as the only
+compression, exactly as safe, just less aggressive.
 
 ## Sandbox
 

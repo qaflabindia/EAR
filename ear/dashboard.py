@@ -33,6 +33,7 @@ allows.
 from __future__ import annotations
 
 import html
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -168,7 +169,12 @@ class Dashboard:
 
 
 def create_server(
-    source: Any, port: int = 8000, host: str = "127.0.0.1", refresh: int = 3, gantt: bool = False
+    source: Any,
+    port: int = 8000,
+    host: str = "127.0.0.1",
+    refresh: int = 3,
+    gantt: bool = False,
+    status_path: Optional[Union[str, Path]] = None,
 ) -> Any:
     """Build the live dashboard's HTTPServer, wired and bound, but not yet
     serving -- `serve()` below is a thin `serve_forever()` wrapper around
@@ -189,8 +195,12 @@ def create_server(
     `source` may be a Runtime, a ReasoningLog, a JSONL trail path, a
     directory of trails, or a {name: runtime} fleet; a path is reloaded
     from disk each tick, so a separate process writing the trail is watched
-    live. `gantt=True` serves the Gantt timeline. Zero dependencies --
-    this is `http.server`, nothing more."""
+    live. `gantt=True` serves the Gantt timeline. `status_path` names a
+    driver-owned status document (the Sales MIS step board, say): its text
+    is re-read from disk on every request and rendered as the page's first
+    panel with its last-written clock time -- so a run's own truth layer,
+    not just EAR's reasoning trail, is what greets the reader. Zero
+    dependencies -- this is `http.server`, nothing more."""
     import urllib.parse
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -211,8 +221,14 @@ def create_server(
         # write() (the static snapshot path) stay plain, since a file on
         # disk has no server behind /download or /shutdown to answer to.
         if not is_fleet:
-            extra = _outputs_section(_outputs_dir(source)) + _shutdown_control()
+            extra = (
+                _artifacts_section(getattr(source, "sandbox", None))
+                + _outputs_section(_outputs_dir(source))
+                + _shutdown_control()
+            )
             page = page.replace("</body>", extra + "</body>")
+        if status_path is not None:
+            page = page.replace("<body>", "<body>" + _status_section(status_path), 1)
         return page
 
     class Handler(BaseHTTPRequestHandler):
@@ -754,7 +770,8 @@ def _fleet_runs(fleet: list, summaries: list[dict]) -> str:
     cards = []
     for summary in summaries:
         cards.append(
-            f'<details class="run"><summary>{_run_card(summary)}</summary>'
+            f'<details class="run" data-key="run-{html.escape(summary["name"])}">'
+            f'<summary>{_run_card(summary)}</summary>'
             f'<div class="run-body">{summary["body"]}</div></details>'
         )
     return _panel("Runtimes", "".join(cards))
@@ -905,12 +922,14 @@ def _tools_section(records: list[ReasoningRecord]) -> str:
     for record in tools:
         name = html.escape(str(record.inputs.get("tool", "tool")))
         verdict = _verdict(record)
+        ok = verdict != "bad"
+        status = f'<span class="tool-status {"good" if ok else "bad"}">{"✓" if ok else "✗"}</span>'
         rows.append(
-            f'<tr class="v-{verdict}"><td>c{record.cycle}</td><td>{name}</td>'
+            f'<tr class="v-{verdict}"><td>c{record.cycle}</td><td>{status}</td><td>{name}</td>'
             f'<td>{html.escape(_clip(record.output, 110))}</td></tr>'
         )
     table = (
-        '<table class="grid"><thead><tr><th>Cycle</th><th>Tool</th><th>Result</th></tr>'
+        '<table class="grid"><thead><tr><th>Cycle</th><th></th><th>Tool</th><th>Result</th></tr>'
         f'</thead><tbody>{"".join(rows)}</tbody></table>'
     )
     return _panel(f"Tool calls ({len(tools)})", table)
@@ -922,9 +941,9 @@ def _cycles_section(log: ReasoningLog, cycles: list[int]) -> str:
         records = log.for_cycle(cycle)
         intent = next((r.output for r in records if r.stage == "intent"), f"Cycle {cycle}")
         chips = "".join(_stage_chip(record) for record in records)
-        details = "".join(_record_detail(record) for record in records)
+        details = "".join(_record_detail(record, index) for index, record in enumerate(records))
         blocks.append(
-            f'<details class="cycle"><summary><span class="cyc-n">#{cycle}</span>'
+            f'<details class="cycle" data-key="cycle-{cycle}"><summary><span class="cyc-n">#{cycle}</span>'
             f'<span class="cyc-t">{html.escape(_clip(intent, 90))}</span>'
             f'<span class="chips">{chips}</span></summary>'
             f'<div class="records">{details}</div></details>'
@@ -939,27 +958,60 @@ def _stage_chip(record: ReasoningRecord) -> str:
     return f'<span class="chip cat-{category} v-{verdict}" title="{html.escape(record.stage)}">{mark}{html.escape(record.stage)}</span>'
 
 
-def _record_detail(record: ReasoningRecord) -> str:
+_DETAIL_TEXT_CAP = 20_000  # a safety valve against a pathological script's output, not a normal-case limit
+
+
+def _capped(text: str, cap: int = _DETAIL_TEXT_CAP) -> str:
+    text = str(text)
+    if len(text) <= cap:
+        return text
+    return text[:cap] + f"\n…[{len(text) - cap} more characters -- see the full .ear/reasoning.md trail]"
+
+
+def _record_detail(record: ReasoningRecord, index: int = 0) -> str:
+    """One stage's full detail inside an expanded cycle: what the model
+    reasoned with (`deliberation`'s multi-line inputs -- capabilities,
+    memory, strategy, knowledge -- were previously dropped entirely by a
+    'short values only' filter; a click on a step showed none of the
+    actual reasoning material), its full response (previously clipped to
+    400 characters), and -- for a `tool` stage -- an explicit success/error
+    badge rather than only a colour on the row."""
     spent = ""
     if record.input_tokens or record.output_tokens:
         spent = f'<span class="spent">{record.input_tokens}+{record.output_tokens} tok · {record.latency_ms} ms</span>'
     model = f'<span class="model">{html.escape(record.model)}</span>' if record.model else ""
-    output = html.escape(_clip(record.output, 400)) or "<em>—</em>"
-    why = f'<div class="why">{html.escape(_clip(record.rationale, 400))}</div>' if record.rationale else ""
+    verdict = _verdict(record)
+    status = ""
+    if record.stage == "tool":
+        ok = verdict != "bad"
+        status = f'<span class="tool-status {"good" if ok else "bad"}">{"✓ success" if ok else "✗ error"}</span>'
+    output = html.escape(_capped(record.output)) or "<em>—</em>"
+    why = f'<div class="why">{html.escape(_capped(record.rationale))}</div>' if record.rationale else ""
     simple = {
         key: value
         for key, value in record.inputs.items()
         if "\n" not in str(value) and len(str(value)) < 120
     }
+    # Everything the "simple" filter above excluded -- the actual reasoning
+    # material for a deliberation record (capabilities, memory, strategy,
+    # knowledge) or any other multi-line input -- gets its own expandable
+    # field instead of being silently dropped from the dashboard.
+    full_fields = {key: value for key, value in record.inputs.items() if key not in simple and str(value).strip()}
     meta = "".join(
         f'<span class="kv"><b>{html.escape(str(key))}</b> {html.escape(_clip(str(value), 80))}</span>'
         for key, value in simple.items()
     )
+    fields_html = "".join(
+        f'<details class="field" data-key="c{record.cycle}-r{index}-{html.escape(str(key))}">'
+        f'<summary>{html.escape(str(key))}</summary>'
+        f'<pre>{html.escape(_capped(value if isinstance(value, str) else repr(value)))}</pre></details>'
+        for key, value in full_fields.items()
+    )
     return (
         f'<div class="rec"><div class="rec-h"><span class="rec-s cat-{_CATEGORY.get(record.stage, "neutral")}">'
-        f'{html.escape(record.stage)}</span>{model}{spent}</div>'
+        f'{html.escape(record.stage)}</span>{status}{model}{spent}</div>'
         f'<div class="rec-o">{output}</div>{why}'
-        f'<div class="rec-m">{meta}</div></div>'
+        f'<div class="rec-m">{meta}</div>{fields_html}</div>'
     )
 
 
@@ -1058,6 +1110,50 @@ def _list_outputs(outputs_dir: Optional[Path]) -> list[tuple[str, int]]:
     return files
 
 
+_ARTIFACT_AREAS = (
+    ("uploads", "inputs staged"),
+    ("workspace", "work in progress"),
+    ("outputs", "outputs produced"),
+)
+
+
+def _artifacts_section(sandbox: Any) -> str:
+    """The sandbox's ground truth, one line per real file: what was staged
+    into `uploads/`, what the run has actually written to `workspace/`, and
+    what landed in `outputs/` -- each with its size and last-modified clock
+    time, read from the filesystem at render time. This panel is the
+    difference between a dashboard that *narrates* progress and one that
+    *proves* it: a step can only claim its input was read or its artifact
+    produced if the file is sitting right here."""
+    if sandbox is None:
+        return ""
+    columns = []
+    for area, caption in _ARTIFACT_AREAS:
+        try:
+            base = sandbox.resolve(area)
+        except Exception:  # noqa: BLE001 - a confinement violation just means no listing
+            continue
+        rows = []
+        if base.is_dir():
+            for path in sorted(base.rglob("*")):
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+                stamp = time.strftime("%H:%M:%S", time.localtime(stat.st_mtime))
+                rows.append(
+                    f'<div class="output-row"><span>{html.escape(str(path.relative_to(base)))}</span>'
+                    f'<span class="muted">{_human_size(stat.st_size)} · {stamp}</span></div>'
+                )
+        body = "".join(rows) if rows else '<div class="output-row"><span class="muted">(empty)</span></div>'
+        columns.append(
+            f'<div class="artifact-area"><div class="artifact-h">{area}/ <span class="muted">— {caption}</span></div>'
+            f'<div class="outputs-list">{body}</div></div>'
+        )
+    if not columns:
+        return ""
+    return _panel("Sandbox artifacts — verified on disk", '<div class="artifacts">' + "".join(columns) + "</div>")
+
+
 def _outputs_section(outputs_dir: Optional[Path]) -> str:
     """A live-refreshing panel listing every file under the sandbox's
     `outputs/` as a download link -- appears the instant a step writes a
@@ -1076,6 +1172,49 @@ def _outputs_section(outputs_dir: Optional[Path]) -> str:
         )
         body = f'<div class="outputs-list">{rows}</div>'
     return _panel("Outputs", body)
+
+
+def _status_section(status_path: Union[str, Path]) -> str:
+    """The driver's own status document (a step board), rendered as the
+    page's first panel and re-read from disk on every request. `# ` names
+    the panel; each `## ` line becomes a step row with a health dot read
+    from the board's own words (verified good, missing/gated bad, not
+    reached quiet); the detail lines under it stay verbatim. The board's
+    last-written clock time rides the heading, so the reader always knows
+    how fresh the truth on screen is."""
+    path = Path(status_path)
+    title = "Run status"
+    if not path.exists():
+        return _panel(title, '<p class="muted">No status board written yet.</p>')
+    stamp = time.strftime("%H:%M:%S", time.localtime(path.stat().st_mtime))
+    blocks: list[str] = []
+    detail: list[str] = []
+
+    def flush() -> None:
+        if detail:
+            blocks.append(f'<pre class="status-detail">{html.escape(chr(10).join(detail))}</pre>')
+            detail.clear()
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("# "):
+            title = line[2:].strip()
+        elif line.startswith("## "):
+            flush()
+            text = line[3:].strip()
+            lowered = text.lower()
+            if "missing" in lowered or "gated" in lowered:
+                dot = "broken"
+            elif "not reached" in lowered:
+                dot = "quiet"
+            else:
+                dot = "healthy"
+            blocks.append(
+                f'<div class="status-step"><span class="dot {dot}"></span>{html.escape(text)}</div>'
+            )
+        elif line.strip():
+            detail.append(line)
+    flush()
+    return _panel(f"{title} — updated {stamp}", "".join(blocks))
 
 
 def _shutdown_control() -> str:
@@ -1174,6 +1313,11 @@ h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute
 .run-name{font-weight:650;display:flex;align-items:center;gap:9px}
 .dot{width:11px;height:11px;border-radius:50%;flex:none}
 .dot.healthy{background:var(--good)} .dot.attention{background:var(--warn)} .dot.broken{background:var(--bad)}
+.dot.quiet{background:var(--neutral)}
+.status-step{display:flex;align-items:center;gap:9px;font-weight:640;margin:12px 0 6px}
+.status-detail{font-size:12.5px;color:var(--muted);background:var(--card);border:1px solid var(--line);
+  border-radius:10px;padding:10px 14px;margin:0;white-space:pre-wrap;word-break:break-word;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .run-mid{min-width:0}
 .run-stats{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:12.5px}
 .run-stats b{color:var(--ink);font-weight:650}
@@ -1215,12 +1359,23 @@ tr.v-good td:first-child{box-shadow:inset 3px 0 var(--good)}
 .rec-s{font-weight:650;font-size:12.5px}
 .model{font-size:11.5px;color:var(--muted)}
 .spent{font-size:11.5px;color:var(--muted);margin-left:auto}
-.rec-o{font-size:13.5px}
-.why{font-size:12.5px;color:var(--muted);margin-top:4px}
+.rec-o{font-size:13.5px;white-space:pre-wrap;word-break:break-word;max-height:420px;overflow-y:auto}
+.why{font-size:12.5px;color:var(--muted);margin-top:4px;white-space:pre-wrap}
 .why::before{content:"why: ";font-weight:600}
 .rec-m{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:6px}
 .kv{font-size:11.5px;color:var(--muted)} .kv b{color:var(--ink);font-weight:600}
+.tool-status{font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px}
+.tool-status.good{background:rgba(47,158,68,.14);color:var(--good)}
+.tool-status.bad{background:rgba(224,49,49,.14);color:var(--bad)}
+.field{margin-top:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.field summary{cursor:pointer;padding:6px 10px;font-size:11.5px;font-weight:650;
+  color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.field pre{margin:0;padding:10px 12px;border-top:1px solid var(--line);font-size:12.5px;
+  white-space:pre-wrap;word-break:break-word;max-height:480px;overflow-y:auto;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 footer{color:var(--muted);font-size:12px;padding:26px 20px 40px;text-align:center}
+.artifacts{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.artifact-h{font-size:12.5px;font-weight:650;margin-bottom:6px}
 .outputs-list{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .output-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
   padding:11px 16px;border-bottom:1px solid var(--line)}
@@ -1236,5 +1391,46 @@ footer{color:var(--muted);font-size:12px;padding:26px 20px 40px;text-align:cente
 .stopped-banner{max-width:1080px;margin:14px auto 0;padding:12px 16px;border-radius:10px;
   background:rgba(224,49,49,.1);border:1px solid rgba(224,49,49,.3);color:var(--bad);font-weight:600}
 </style></head>
-<body>{{BODY}}</body></html>
+<body>{{BODY}}
+<script>
+/* Expanded-state cache: the page reloads itself every few seconds (and the
+   server restarts between step runs), which would collapse every <details>
+   the reader had opened. Each <details> carries a stable data-key; the set
+   of open keys lives in localStorage and is re-applied on every load, so
+   what the reader opened stays open across refreshes and restarts. */
+(function () {
+  var STORE = "ear-dash-open:" + location.pathname;
+  function keyOf(el) {
+    var parts = [], d = el;
+    while (d) {
+      if (!d.dataset.key) return null;
+      parts.unshift(d.dataset.key);
+      d = d.parentElement ? d.parentElement.closest("details[data-key]") : null;
+    }
+    return parts.join("/");
+  }
+  function load() {
+    try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return {}; }
+  }
+  function save(state) {
+    try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {}
+  }
+  var state = load();
+  document.querySelectorAll("details[data-key]").forEach(function (d) {
+    var k = keyOf(d);
+    if (k && state[k]) d.open = true;
+  });
+  /* toggle does not bubble; listen in the capture phase to hear them all */
+  document.addEventListener("toggle", function (event) {
+    var d = event.target;
+    if (!d || d.tagName !== "DETAILS") return;
+    var k = keyOf(d);
+    if (!k) return;
+    var current = load();
+    if (d.open) current[k] = 1; else delete current[k];
+    save(current);
+  }, true);
+})();
+</script>
+</body></html>
 """

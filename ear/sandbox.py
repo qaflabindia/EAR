@@ -61,6 +61,40 @@ _ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR")
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_OUTPUT = 64 * 1024
 
+# Whole tokens that mean a caller wrote shell syntax `run()` will never
+# interpret. Checked against whole argv tokens (plus a few attached forms
+# seen in real failures, like a trailing `;` glued to a filename) -- never
+# free substrings, so `grep "a;b" file.txt`, whose `a;b` sits *inside* one
+# quoted token, is never a false positive.
+_SHELL_OPERATOR_TOKENS = frozenset({"&&", "||", ";", "|", ">", ">>", "<", "<<"})
+
+
+def _shell_syntax_token(argv: list) -> Optional[str]:
+    """The first argv token that looks like shell syntax `Sandbox.run`
+    will never interpret, or None. `command` is a plain-program-plus-
+    arguments string executed via `subprocess.Popen`, never a shell.
+
+    Every check here is a failure shape observed on a real trail
+    (examples/sales_mis_stack/logs/09-*.log and its .ear/reasoning.md),
+    not speculation. `cd` leads the list because macOS ships /usr/bin/cd
+    as a POSIX shim that does nothing and exits 0 -- so `cd X && prog`
+    reported *success* while running nothing, the single most misleading
+    result a tool can return. And `rm -f a; prog b > c` executed as one
+    giant `rm` call that silently deleted every following token that
+    happened to name a real file -- including the model's own script."""
+    if argv and argv[0] == "cd":
+        return "cd"
+    for token in argv:
+        if token in _SHELL_OPERATOR_TOKENS:
+            return token
+        if len(token) > 1 and token.endswith(";"):
+            return token
+        if len(token) <= 4 and token.startswith((">", "<", "1>", "2>")):
+            return token
+        if token.startswith("$(") or "`" in token or "$?" in token:
+            return token
+    return None
+
 
 class SandboxViolation(PermissionError):
     """A path or action tried to leave the sandbox. A PermissionError, so a
@@ -225,10 +259,37 @@ class Sandbox:
         capped, the environment carries no ambient secrets, and (on POSIX)
         CPU and memory rlimits apply. A timeout kills the whole process
         group. Never raises on a failing command -- the failure is in the
-        result, so it can be handed back to the model as text."""
+        result, so it can be handed back to the model as text.
+
+        This runs one program with plain arguments via `subprocess.Popen`
+        -- never a shell (no `shell=True`), the same restriction LENS's own
+        `code_run_script` makes (`execFile`, not a shell) rather than an
+        oversight to fix by loosening it. But unlike a script-plus-
+        interpreter call, `command` here is a free-text string that *looks*
+        like shell syntax, which invites exactly the confusion a script
+        call structurally avoids: `&&`, `;`, `|`, `>` etc. are never
+        interpreted, they're passed as literal argv tokens to whatever the
+        first word names, which used to fail silently and confusingly
+        (`exit 0, no output`) rather than with a signal a model could act
+        on. `_shell_syntax_token` below catches that up front and fails
+        fast with an actionable message instead."""
         argv = shlex.split(command) if isinstance(command, str) else [str(part) for part in command]
         if not argv:
             raise SandboxViolation("empty command")
+        if isinstance(command, str):
+            operator = _shell_syntax_token(argv)
+            if operator is not None:
+                return SandboxResult(
+                    returncode=126,
+                    stderr=(
+                        f"'{operator}' was passed as a literal argument, not executed as an "
+                        "operator -- this runs one program via subprocess, never a shell: no "
+                        "&&, ||, ;, |, >, <, backticks or $(...). Run one plain command per "
+                        "call instead; chain steps by writing a script (write_file) and running "
+                        "it, or by reading a file's contents in a separate call."
+                    ),
+                    duration_ms=0,
+                )
         limit = self.timeout if timeout is None else timeout
         logger.info("sandbox '%s' running (timeout=%.0fs): %s", self.name, limit, " ".join(argv))
         started = time.monotonic()
@@ -356,15 +417,29 @@ class Sandbox:
 
     def as_tools(self) -> list:
         """The sandbox exposed as EAR tools -- confined file read/write/list
-        and a governed shell -- so a runtime's native tool loop can act
-        inside its box, every call on the trail through the logged handler.
-        A path escape surfaces as a tool failure returned to the model."""
+        and a governed single-command runner -- so a runtime's native tool
+        loop can act inside its box, every call on the trail through the
+        logged handler. A path escape surfaces as a tool failure returned
+        to the model; so does shell syntax `run_shell` cannot interpret
+        (see `Sandbox.run`'s `_shell_syntax_token` check) -- fast and
+        explicit, never a silent, confusing no-op."""
         from .tool_binder import BoundTool
 
         sandbox = self
 
         def read_file(path: str) -> str:
-            return sandbox.read_text(path)
+            try:
+                return sandbox.read_text(path)
+            except UnicodeDecodeError:
+                # A real failure shape from a live trail: the model read a
+                # .xlsx and got a bare codec exception it could only guess
+                # at. Name the situation and the way forward instead.
+                size = sandbox.resolve(path).stat().st_size
+                return (
+                    f"{path} is a binary file ({size:,} bytes), not readable as text. "
+                    "Inspect it by writing a small script (write_file) that opens it "
+                    "with the right library and prints what you need, then run_shell it."
+                )
 
         def write_file(path: str, content: str) -> str:
             written = sandbox.write_text(path, content)
@@ -391,7 +466,14 @@ class Sandbox:
             ),
             BoundTool(
                 name="run_shell",
-                description="Run a shell command inside the sandbox -- confined to the workspace and time-limited.",
+                description=(
+                    "Run ONE program with plain arguments inside the sandbox -- confined to the "
+                    "workspace and time-limited. This is not a shell: && || ; | > < backticks and "
+                    "$(...) are never interpreted and are rejected up front with a clear error, "
+                    "never silently misread as arguments. To chain steps, make separate calls -- "
+                    "write a script with write_file, then run it; or run a command, then read_file "
+                    "whatever it wrote."
+                ),
                 handler=run_shell,
             ),
         ]

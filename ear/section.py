@@ -205,18 +205,33 @@ class Section:
         keys = {normalize(key) for key in field_keys}
         body = Body()
         prose_lines: list[str] = []
+        # The list a wrapped line continues: authors wrap long bullets and
+        # numbered steps at the column limit, indenting the continuation.
+        # Treating each line independently silently truncated every wrapped
+        # item -- a workflow step lost the persona delegation at its end, a
+        # deliverable bullet lost most of its meaning. An indented line that
+        # is not itself a new item folds into the item above; a blank line
+        # or a flush-left line ends the item, exactly as markdown reads.
+        open_item: Optional[list] = None
         for line in self.lines:
             if not line.strip():
                 prose_lines.append("")
+                open_item = None
                 continue
             bullet = _BULLET.match(line)
             if bullet:
                 body.bullets.append(bullet.group(1).strip())
+                open_item = body.bullets
                 continue
             numbered = _NUMBERED.match(line)
             if numbered:
                 body.numbered.append(numbered.group(1).strip())
+                open_item = body.numbered
                 continue
+            if open_item is not None and line[:1].isspace():
+                open_item[-1] = f"{open_item[-1]} {line.strip()}"
+                continue
+            open_item = None
             if ":" in line:
                 key, _, value = line.partition(":")
                 if normalize(key) in keys:

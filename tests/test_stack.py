@@ -33,8 +33,8 @@ from ear.section import parse_document
 EXAMPLE_STACK = Path(__file__).resolve().parent.parent / "examples" / "credit_risk_stack"
 
 requires_anthropic_key = pytest.mark.skipif(
-    not os.environ.get("ANTHROPIC_API_KEY"),
-    reason="ANTHROPIC_API_KEY is not set in the environment -- live-LLM tests are skipped",
+    os.environ.get("EAR_LIVE_TESTS") != "1" or not os.environ.get("ANTHROPIC_API_KEY"),
+    reason="live-LLM tests are opt-in: set EAR_LIVE_TESTS=1 (and ANTHROPIC_API_KEY) to run them -- they bill real model calls",
 )
 
 
@@ -70,6 +70,60 @@ def test_section_body_collects_bullets_and_numbered_items():
     body = document.sections[0].body()
     assert body.numbered == ["First step.", "Second step."]
     assert body.bullets == ["a bullet"]
+
+
+def test_section_body_folds_wrapped_items_into_the_item_above():
+    """Authors wrap long bullets and numbered steps at the column limit,
+    indenting the continuation. Per-line parsing silently truncated every
+    wrapped item -- a workflow step lost the '(Persona)' delegation at its
+    end (so the step ran with no persona and half its instruction), and a
+    deliverable bullet lost most of its declared meaning. An indented
+    follow-on line folds into the item above; a blank or flush-left line
+    ends it."""
+    document = parse_document(
+        "## W\n"
+        "1. Load the raw source data -- extracts staged as the daily\n"
+        "   sales workbook -- and run the sanity check that flags anomalies\n"
+        "   as they land. (Sales MIS Guru)\n"
+        "2. Second step, single line. (Controller)\n"
+        "- status: exactly one of validated, blocked or pending -- validated\n"
+        "  only when this cycle's own step completed\n"
+        "\n"
+        "Flush-left prose after a blank line stays prose.\n"
+    )
+    body = document.sections[0].body()
+    assert body.numbered[0] == (
+        "Load the raw source data -- extracts staged as the daily "
+        "sales workbook -- and run the sanity check that flags anomalies "
+        "as they land. (Sales MIS Guru)"
+    )
+    assert body.numbered[1] == "Second step, single line. (Controller)"
+    assert body.bullets == [
+        "status: exactly one of validated, blocked or pending -- validated "
+        "only when this cycle's own step completed"
+    ]
+    assert "Flush-left prose after a blank line stays prose." in body.prose
+
+
+def test_wrapped_workflow_steps_still_delegate_to_their_persona(tmp_path):
+    """End-to-end through the Loader: a workflow step wrapped across lines
+    keeps its trailing persona delegation and full instruction text."""
+    stack = write_stack(
+        tmp_path / "stack",
+        skills="# Skills\n\n## banding\nBand the profile.\n",
+        persona="# Personas\n\n## Credit Risk Guru\n\nBand carefully.\n\nSkills: banding\n",
+        workflow=(
+            "# Workflows\n\n## W\n\n"
+            "1. Band the applicant's credit profile against every rule the\n"
+            "   manual declares, never a shortcut. (Credit Risk Guru)\n"
+        ),
+        process="# Runtime\n\n## P\n\nRuns W.\n\nWorkflows: W\n",
+    )
+    runtime = load_runtime(stack)
+    step = runtime.processes[0].workflows[0].steps[0]
+    assert step.persona is not None and step.persona.name == "Credit Risk Guru"
+    assert "never a shortcut" in step.instruction
+    assert "(Credit Risk Guru)" not in step.instruction
 
 
 def test_parse_document_handles_crlf_and_missing_title():
@@ -573,11 +627,48 @@ def test_exchange_answers_intent_documents_with_decision_documents(tmp_path):
     decision = (directory / "decisions" / "priya-raman.md").read_text(encoding="utf-8")
     assert decision.startswith("# Decision -- Underwrite a $18,500 personal loan for Priya Raman")
     assert "Status: decided" in decision
+    assert "## Completion summary" in decision
+    assert "- Status: decided" in decision
     assert "Credit Risk Guru" in decision
     assert "## Policy judgments" in decision
 
     # Idempotent: already-answered intents are not replayed.
     assert Exchange(directory).run(runtime) == []
+
+
+def test_exchange_completion_summary_reports_tool_outputs(tmp_path):
+    directory = tmp_path / "stack"
+    directory.mkdir()
+    (directory / "intent.md").write_text("# Check a file\n", encoding="utf-8")
+    runtime = Runtime(name="Tool-Summary-Runtime")
+
+    def reason(intent, approval=None):
+        runtime.reasoning_log.begin_cycle(intent)
+        runtime.reasoning_log.record(
+            stage="tool",
+            inputs={"tool": "read_file", "arguments": {"path": "missing.xlsx"}},
+            output="FAILED -- Tool 'read_file' failed: no such file",
+        )
+        runtime.reasoning_log.record(
+            stage="tool",
+            inputs={"tool": "run_shell", "arguments": {"command": "python3 probe.py"}},
+            output="rows: 907\n[exit 0, 10 ms]",
+        )
+        runtime.reasoning_log.record(
+            stage="summarize",
+            inputs={"tool": "run_shell"},
+            output="probe.py ran ok, exit 0, observed 907 rows",
+        )
+        return "Status: validated\n\nDone."
+
+    runtime.reason = reason
+    written = Exchange(directory).run(runtime)
+
+    assert [path.name for path in written] == ["decision.md"]
+    decision = (directory / "decision.md").read_text(encoding="utf-8")
+    assert "## Completion summary" in decision
+    assert "- Status: decided (decision reports: validated)" in decision
+    assert "probe.py ran ok, exit 0, observed 907 rows" in decision
 
 
 def test_exchange_writes_blocked_decision_documents(tmp_path):
@@ -594,6 +685,31 @@ def test_exchange_writes_blocked_decision_documents(tmp_path):
     assert "Status: BLOCKED" in decision
     assert "Loan Amount Cap" in decision
     assert "VIOLATED" in decision
+
+
+def test_exchange_turns_a_provider_failure_into_a_blocked_decision(tmp_path, monkeypatch):
+    """An infrastructure stop -- the provider call itself failing (billing,
+    auth, network) -- lands as a BLOCKED decision document, exactly like a
+    governance stop. The live failure this closes: a billing 400 mid-cycle
+    raised straight through Exchange.run, crashing the driver and erasing
+    the whole cycle from the exchange -- every tool call the model had
+    already made simply vanished."""
+    from ear.llm import LMError
+
+    directory = write_stack(tmp_path / "stack", **MINIMAL_STACK)
+    (directory / "intent.md").write_text("# Underwrite a loan\n\n## Context\n\n- loan_amount: 100\n", encoding="utf-8")
+    runtime = load_runtime(directory)
+
+    def fail(intent, approval=None):
+        raise LMError("LLM call to https://api.anthropic.com/v1/messages failed (400): credit balance too low")
+
+    monkeypatch.setattr(runtime, "reason", fail)
+    written = Exchange(directory).run(runtime)
+
+    assert [path.name for path in written] == ["decision.md"]
+    decision = (directory / "decision.md").read_text(encoding="utf-8")
+    assert "Status: BLOCKED" in decision
+    assert "credit balance too low" in decision
 
 
 def test_loader_defaults_session_and_audit_to_markdown(tmp_path):
@@ -2150,7 +2266,12 @@ def test_lm_retries_transient_failures_and_records_them(monkeypatch):
     assert attempts["count"] == 3
     entry = lm.history[-1]
     assert entry["retries"] == 2
-    assert entry["usage"] == {"prompt_tokens": 12, "completion_tokens": 5}
+    assert entry["usage"] == {
+        "prompt_tokens": 12,
+        "completion_tokens": 5,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+    }
     assert entry["latency_ms"] >= 0
 
 
@@ -2181,8 +2302,10 @@ class ScriptedLM:
         self.history = []
         self.prompts = []
 
-    def complete(self, prompt, system=""):
+    def complete(self, prompt, system="", cache_prefix=""):
         self.prompts.append(prompt)
+        self.cache_prefixes = getattr(self, "cache_prefixes", [])
+        self.cache_prefixes.append(cache_prefix)
         reply = self.replies.pop(0) if self.replies else "## decision\n\nok\n"
         self.history.append(
             {"usage": {"prompt_tokens": 10, "completion_tokens": 3}, "latency_ms": 7, "retries": 0}
@@ -4226,6 +4349,67 @@ def test_sandbox_run_strips_secrets_caps_time_and_captures_output(tmp_path, monk
     assert slow.timed_out is True
 
 
+def test_shell_syntax_token_flags_operators_never_quoted_content():
+    """The detector checked against whole argv tokens, never substrings --
+    the precision that keeps a legitimate quoted argument (a grep pattern
+    with a semicolon in it, say) from ever being a false positive."""
+    from ear.sandbox import _shell_syntax_token
+
+    assert _shell_syntax_token(["ls", "-la", "workspace/", "&&", "cat", "f"]) == "&&"
+    assert _shell_syntax_token(["python3", "a.py", ";", "echo", "done"]) == ";"
+    assert _shell_syntax_token(["cmd", "|", "tee", "out.txt"]) == "|"
+    assert _shell_syntax_token(["python3", "a.py", ">", "out.txt"]) == ">"
+    assert _shell_syntax_token(["python3", "a.py", "2>&1"]) == "2>&1"
+    assert _shell_syntax_token(["echo", "$(date)"]) == "$(date)"
+    assert _shell_syntax_token(["echo", "`date`"]) == "`date`"
+    # A single token that merely *contains* a shell character, quoted as
+    # part of legitimate content, is not a false positive.
+    assert _shell_syntax_token(["grep", "a;b", "file.txt"]) is None
+    assert _shell_syntax_token(["python3", "-c", "print(1 if x>1 else 0)"]) is None
+    assert _shell_syntax_token(["ls", "-la"]) is None
+
+
+def test_sandbox_run_rejects_shell_syntax_with_an_actionable_error(tmp_path):
+    """A command string with shell operators fails fast and clearly --
+    exit 126, an actionable stderr message -- instead of silently passing
+    the operator as a literal argument and returning a confusing 'exit 0,
+    no output' that used to cost several wasted turns figuring out (see
+    examples/sales_mis_stack/logs/09-*.log for the real-world case this
+    closes). Nothing is ever actually executed when this fires -- proven
+    here by checking the redirect target was never created."""
+    from ear import Sandbox
+
+    box = Sandbox.create(root=str(tmp_path / "box"), name="t")
+    result = box.run("ls -la workspace/ 2>&1 | tee out.txt; echo done")
+    assert result.returncode == 126
+    assert not result.ok
+    assert "not a shell" in result.stderr or "literal argument" in result.stderr
+    assert "&&" in result.stderr or "was passed as a literal argument" in result.stderr
+    assert not (box.root / "out.txt").exists()  # the redirect never ran
+
+    redirect = box.run("echo hi > workspace/should-not-exist.txt")
+    assert redirect.returncode == 126
+    assert not (box.root / "workspace" / "should-not-exist.txt").exists()
+
+
+def test_sandbox_run_still_runs_a_plain_command_with_shell_looking_quoted_args(tmp_path):
+    """The rejection is precise, not paranoid: a legitimate single command
+    -- even given as one string, shlex-split same as always -- whose
+    *argument* happens to contain a shell character (quoted, part of the
+    content) still runs normally, in both the list and string call forms."""
+    import sys
+
+    from ear import Sandbox
+
+    box = Sandbox.create(root=str(tmp_path / "box"), name="t")
+
+    listed = box.run([sys.executable, "-c", "print('a;b>c')"])
+    assert listed.ok and "a;b>c" in listed.stdout
+
+    stringed = box.run(f'{sys.executable} -c "print(1 if 2>1 else 0)"')
+    assert stringed.ok and stringed.stdout.strip() == "1"
+
+
 def test_sandbox_tools_run_through_the_logged_handler_and_escapes_return_as_text(tmp_path):
     from ear import Runtime, Sandbox
 
@@ -4566,6 +4750,95 @@ def test_tool_loop_recovery_budget_is_bounded_then_concludes():
     assert len(recoveries) == _MAX_TOOL_RECOVERIES  # never unbounded
 
 
+def test_tool_loop_refuses_an_identical_failed_retry_until_calibrated():
+    """Attempt discipline: a failed call (tool + identical arguments) may
+    fail only once. The unchanged retry is a blind retry by definition and
+    is refused with calibration guidance, on the record. A *different*
+    intervening call (the calibration) resets the failed-call guard."""
+    from ear.reasoner import Reasoner
+    from ear.tool_binder import BoundTool
+
+    calls = []
+
+    def run(cmd):
+        calls.append(cmd)
+        if "--fixed" in cmd:
+            return "ok [exit 0, 10 ms]"
+        return "boom [exit 1, 10 ms]"
+
+    tool = BoundTool(name="run", description="run it", handler=run)
+    runtime = Runtime(name="Discipline")
+    same = _tool_action(tool="run", args="- cmd: python3 job.py")
+    lm = ScriptedLM(
+        [
+            same,  # attempt 1 -- runs
+            same,  # unchanged failed retry -- REFUSED, never executed
+            _tool_action(tool="run", args="- cmd: python3 job.py --fixed"),  # calibrated -- runs
+            _tool_action(tool="run", args="- cmd: python3 job.py --fixed"),  # successful repeat -- runs
+            _tool_action(decision="Done after calibration"),
+        ]
+    )
+    decision = Reasoner._reason_with_tools(
+        Intent(text="go"), runtime, lm, context={}, capabilities="none", tools=[tool], max_iterations=10
+    )
+    assert decision == "Done after calibration"
+    # The unchanged failed retry never reached the handler.
+    assert calls == ["python3 job.py", "python3 job.py --fixed", "python3 job.py --fixed"]
+    refusals = [r for r in runtime.reasoning_log.for_stage("tool") if "may fail only once" in str(r.output)]
+    assert len(refusals) == 1
+    assert "Calibrate first" in refusals[0].output
+
+
+def test_tool_loop_streak_resets_after_an_intervening_calibration_call():
+    """fix -> rerun -> fix -> rerun never trips the guard: rewriting the
+    script between identical run commands is exactly the calibration the
+    discipline demands."""
+    from ear.reasoner import Reasoner
+    from ear.tool_binder import BoundTool
+
+    runs = []
+    write = BoundTool(name="write_file", description="w", handler=lambda path, content: "wrote")
+    run = BoundTool(name="run_shell", description="r", handler=lambda command: (runs.append(command), "exit 1")[1])
+    runtime = Runtime(name="Discipline2")
+    rerun = _tool_action(tool="run_shell", args="- command: python3 v.py")
+    fix = _tool_action(tool="write_file", args="- path: v.py\n- content: print(1)")
+    lm = ScriptedLM([rerun, fix, rerun, fix, rerun, _tool_action(decision="ok")])
+    decision = Reasoner._reason_with_tools(
+        Intent(text="go"), runtime, lm, context={}, capabilities="none", tools=[write, run], max_iterations=10
+    )
+    assert decision == "ok"
+    assert len(runs) == 3  # every rerun followed a calibration; none refused
+    assert not [r for r in runtime.reasoning_log.for_stage("tool") if "blind call" in str(r.output)]
+
+
+def test_tool_loop_failed_calibration_does_not_unlock_original_failed_call():
+    from ear.reasoner import Reasoner
+    from ear.tool_binder import BoundTool
+
+    runs = []
+    writes = []
+    run = BoundTool(name="run_shell", description="r", handler=lambda command: (runs.append(command), "[exit 1, 1 ms]")[1])
+    write = BoundTool(
+        name="write_file",
+        description="w",
+        handler=lambda path, content: (writes.append(path), "Tool 'write_file' failed: disk full")[1],
+    )
+    runtime = Runtime(name="Discipline3")
+    rerun = _tool_action(tool="run_shell", args="- command: python3 v.py")
+    failed_fix = _tool_action(tool="write_file", args="- path: v.py\n- content: print(1)")
+    lm = ScriptedLM([rerun, failed_fix, rerun, _tool_action(decision="blocked")])
+
+    decision = Reasoner._reason_with_tools(
+        Intent(text="go"), runtime, lm, context={}, capabilities="none", tools=[write, run], max_iterations=10
+    )
+
+    assert decision == "blocked"
+    assert runs == ["python3 v.py"]  # the original failing command was not allowed to fail twice
+    assert writes == ["v.py"]
+    refusals = [r for r in runtime.reasoning_log.for_stage("tool") if "may fail only once" in str(r.output)]
+    assert len(refusals) == 1
+
+
 # ---------------------------------------------------------------------------
 # argument_blocks: a tool call's arguments can mix short '- name: value'
 # bullets with a 'name:' + blockquote form for a value that needs more than
@@ -4695,14 +4968,14 @@ def test_a_failed_tool_call_reaches_the_model_on_the_next_prompt():
     runtime = Runtime(name="FailureFeedback")
     lm = ScriptedLM([
         _tool_action(tool="read_file", args="- path: missing.xlsx"),  # fails
-        _tool_action(tool="read_file", args="- path: missing.xlsx"),  # retried, succeeds
+        _tool_action(tool="read_file", args="- path: missing.xlsx"),  # unchanged retry refused
         _tool_action(decision="Read the file after one failed attempt."),
     ])
     decision = Reasoner._reason_with_tools(
         Intent(text="read a file"), runtime, lm, context={}, capabilities="none", tools=[tool], max_iterations=6
     )
     assert decision == "Read the file after one failed attempt."
-    assert attempts["count"] == 2
+    assert attempts["count"] == 1
 
     # The second prompt (the one the model saw right after the failure) must
     # literally contain the failure text -- this is the actual string handed
@@ -4710,6 +4983,11 @@ def test_a_failed_tool_call_reaches_the_model_on_the_next_prompt():
     second_prompt = lm.prompts[1]
     assert "Tool 'read_file' failed: boom: no such file" in second_prompt
     assert "## gathered" in second_prompt
+
+    # The unchanged retry is refused before the handler runs, so the tool
+    # only fails once in this cycle.
+    refusals = [r for r in runtime.reasoning_log.for_stage("tool") if "may fail only once" in str(r.output)]
+    assert len(refusals) == 1
 
     # And the trail's own tool-stage record shows the same failure, on the
     # audit trail an investigator would actually read.
@@ -4784,6 +5062,41 @@ def test_caveman_degrades_safely_on_empty_or_non_string_input():
 
     assert compress("").text == ""
     assert compress("").saved_pct == 0.0
+
+
+def test_caveman_returns_source_code_byte_for_byte():
+    """The real-world failure this guards: a read_file of a healthy script
+    fed back through prose compression lost `for a in anomalies:`'s loop
+    variable to the article rule and its indentation to whitespace
+    collapse -- so the next cycle 'repaired' a script that was never
+    broken, on the clock and on the bill. Text that is mostly code must
+    pass through untouched."""
+    from ear.caveman import compress
+
+    script = (
+        "import openpyxl\n"
+        "anomalies = []\n"
+        "for a in anomalies:\n"
+        "    if a is None:\n"
+        "        continue\n"
+        "    total = sum(1 for v in seen.values() if v > 1)\n"
+    )
+    assert compress(script).text == script
+
+
+def test_caveman_preserves_indented_lines_and_restores_nested_sentinels_in_mixed_text():
+    """Prose around code still compresses, but an indented line is
+    structure, not prose -- and a protected span claimed inside another
+    protected span must be spliced back fully, never left as a stray
+    sentinel index the model reads as a phantom number."""
+    from ear.caveman import compress
+
+    code_line = "    total = sum(1 for v in seen.values() if v > 1)"
+    text = f"The run just finished. Output was:\n{code_line}\nIt seems the check basically passed."
+    result = compress(text).text
+    assert code_line in result
+    assert "\x00" not in result
+    assert "basically" not in result.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -4862,7 +5175,7 @@ def test_no_auxiliary_model_still_applies_deterministic_compression():
     assert "really" not in fed_back.lower() and "just" not in fed_back.lower()
 
 
-def test_auxiliary_model_compresses_what_feeds_the_next_prompt_not_the_trail():
+def test_auxiliary_model_squeezes_only_a_still_large_result():
     from ear import ModelBinding
     from ear.reasoner import Reasoner
     from ear.tool_binder import BoundTool
@@ -4871,7 +5184,9 @@ def test_auxiliary_model_compresses_what_feeds_the_next_prompt_not_the_trail():
     aux.lm = ScriptedLM(["## summary\n\nfile read ok, 907 rows\n"])
     runtime = Runtime(name="WithAux", auxiliary_model_binding=aux)
 
-    long_result = "read uploads/data.xlsx: 907 rows, 17 columns, sheets=['Daily Sales Data', ...]"
+    # Only a result still large after the deterministic pass (over
+    # _SUMMARIZE_ABOVE_CHARS) earns the Auxiliary Model call.
+    long_result = "read uploads/data.xlsx: 907 rows, 17 columns. " + ("segment " * 5000)
     tool = BoundTool(name="read_file", description="read", handler=lambda path: long_result)
     invoke = runtime.tool_binder.logged_handler(runtime, tool)
     raw = invoke(path="uploads/data.xlsx")
@@ -4908,10 +5223,41 @@ def test_auxiliary_model_failure_falls_back_to_the_deterministic_result():
     aux.lm = BrokenLM()
     runtime = Runtime(name="AuxBroken", auxiliary_model_binding=aux)
 
-    fed_back = Reasoner._compress_tool_result(runtime, "read_file", {"path": "x"}, "the real result")
+    # A large result reaches the (now broken) Auxiliary Model; the fallback is
+    # the deterministic text, and the cycle is never blocked.
+    fed_back = Reasoner._compress_tool_result(runtime, "read_file", {"path": "x"}, "the real result " + ("segment " * 5000))
     assert "real result" in fed_back.lower()  # substance never lost, never blocked the cycle
     record = runtime.reasoning_log.for_stage("summarize")[0]
     assert "FAILED" in record.output and "summarizer is down" in record.output
+
+
+def test_auxiliary_model_is_not_called_for_a_small_result():
+    """The change that removes the per-tool-call summarize: a result the
+    deterministic pass already handles never reaches the Auxiliary Model, so
+    no summarize call is billed and no summarize record is written."""
+    from ear import ModelBinding
+    from ear.reasoner import Reasoner
+
+    class CountingLM:
+        history: list = []
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, prompt, system=""):
+            self.calls += 1
+            return "## summary\n\nshould not have been called\n"
+
+    lm = CountingLM()
+    aux = ModelBinding(provider="anthropic", model="test-haiku")
+    aux.lm = lm
+    runtime = Runtime(name="SmallResult", auxiliary_model_binding=aux)
+
+    fed_back = Reasoner._compress_tool_result(runtime, "calc", {"x": 5}, "The result is really just 6")
+    assert "6" in fed_back
+    assert "really" not in fed_back.lower() and "just" not in fed_back.lower()
+    assert lm.calls == 0  # no model call for a small result
+    assert len(runtime.reasoning_log.for_stage("summarize")) == 0
 
 
 def test_tool_loop_end_to_end_with_auxiliary_model_compression():
@@ -4922,7 +5268,7 @@ def test_tool_loop_end_to_end_with_auxiliary_model_compression():
     from ear.reasoner import Reasoner
     from ear.tool_binder import BoundTool
 
-    raw_output = "wrote 4096 characters to workspace/generate_dashboard.py"
+    raw_output = "wrote 4096 characters to workspace/generate_dashboard.py. " + ("segment " * 5000)
     tool = BoundTool(name="write_file", description="write", handler=lambda path, content: raw_output)
 
     aux = ModelBinding(provider="anthropic", model="test-haiku")
@@ -4982,13 +5328,12 @@ def test_checkpoint_consolidates_after_every_third_tool_call():
 
     tool = BoundTool(name="probe", description="probe a path", handler=probe)
 
+    # The per-call probe results are small, so none reaches the Auxiliary
+    # Model now -- only the every-3-calls checkpoint does. The script supplies
+    # just that one consolidation.
     aux = ModelBinding(provider="anthropic", model="test-sonnet")
     aux.lm = ScriptedLM([
-        "## summary\n\nprobed a, attempt 1\n",
-        "## summary\n\nprobed b, attempt 2\n",
-        "## summary\n\nprobed c, attempt 3\n",
         "## checkpoint\n\nChecked a, b, c so far -- all probed successfully, 3 attempts total.\n",
-        "## summary\n\nprobed d, attempt 4\n",
     ])
     runtime = Runtime(name="CheckpointFlow", auxiliary_model_binding=aux)
 
@@ -5036,6 +5381,112 @@ def test_checkpoint_failure_falls_back_to_joined_entries():
     assert "fact one" in result and "fact two" in result  # nothing lost on failure
     record = runtime.reasoning_log.for_stage("checkpoint")[0]
     assert "FAILED" in record.output and "checkpoint model is down" in record.output
+
+
+def test_a_failure_is_fed_back_verbatim_up_to_the_raised_bound():
+    """A failure is never summarized -- the next turn needs its exact error
+    text. The verbatim bound is now the same size a success would be
+    summarized at, so a mid-size error that the old 8000-char bound would have
+    truncated is fed back whole."""
+    from ear.reasoner import Reasoner
+
+    err = "SyntaxError: invalid syntax (line 4)\n" + ("context line\n" * 800)  # ~10K: over old 8000, under 30000
+    assert 8000 < len(err) < 30000
+    fed = Reasoner._failure_feedback(err)
+    assert fed == f"FAILED: {err.strip()}"   # whole error (trailing whitespace stripped), no truncation
+    assert "truncated" not in fed
+
+
+def test_a_giant_failure_is_truncated_head_and_tail_not_summarized():
+    """A failure larger than the bound is truncated deterministically, keeping
+    the head (first error line) and tail (final error) where the signal lives,
+    dropping the middle -- no model ever paraphrases it."""
+    from ear.reasoner import Reasoner
+
+    huge = "SyntaxError at line 4\n" + ("noise line\n" * 4000) + "FinalError: boom"
+    assert len(huge) > 30000
+    fed = Reasoner._failure_feedback(huge)
+    assert fed.startswith("FAILED:")
+    assert "SyntaxError at line 4" in fed   # head kept
+    assert "FinalError: boom" in fed        # tail kept
+    assert "truncated" in fed               # middle dropped
+    assert len(fed) < len(huge)
+
+
+def test_prune_recovered_failures_collapses_failed_entries_to_markers():
+    """Once a call succeeds, earlier failures' verbose bodies collapse to a
+    one-line marker (fact + short note kept, stack trace dropped); non-failure
+    entries pass through untouched."""
+    from ear.reasoner import Reasoner
+
+    gathered = [
+        "read_file({'path': 'x'}) -> file contents ok",
+        "run_cmd({'cmd': 'python bad.py'}) -> FAILED: SyntaxError line 4 -- " + ("noise " * 500),
+        "run_cmd({'cmd': 'python good.py'}) -> exit 0, ran fine",
+    ]
+    pruned = Reasoner._prune_recovered_failures(gathered)
+    assert pruned[0] == gathered[0]                    # success untouched
+    assert pruned[2] == gathered[2]                    # success untouched
+    assert "earlier failure, recovered" in pruned[1]   # failure collapsed
+    assert "SyntaxError line 4" in pruned[1]           # the short note survives
+    assert "full text on the trail" in pruned[1]
+    assert len(pruned[1]) < len(gathered[1])           # verbose body dropped
+
+
+# ---------------------------------------------------------------------------
+# Provider-agnostic prompt caching: a signature declares its one volatile
+# input as the cache_boundary; that input renders last so everything before it
+# is a stable, byte-identical prefix across the tool loop's iterations. The LM
+# seam marks that prefix (Anthropic cache_control) or ignores it (OpenAI-
+# compatible auto-caches) and captures cache-read/write tokens either way.
+# ---------------------------------------------------------------------------
+
+
+def test_render_without_a_boundary_is_unchanged_and_emits_no_prefix():
+    from ear.judgment import Field, Judgment
+
+    j = Judgment(instruction="do", inputs=[Field("a", "first"), Field("b", "second")])
+    prompt, prefix = j._render({"a": "x", "b": "y"})
+    assert prefix == ""                                  # nothing to cache
+    assert prompt == j.render_prompt({"a": "x", "b": "y"})  # text identical to before
+
+
+def test_choose_tool_action_emits_a_stable_cache_prefix_before_gathered():
+    from ear.signatures import ChooseToolAction
+
+    stable = {"intent": "do it", "context": "ctx", "capabilities": "caps", "tools": "read(x): reads"}
+    prompt1, prefix1 = ChooseToolAction._render({**stable, "gathered": "none yet"})
+    prompt2, prefix2 = ChooseToolAction._render({**stable, "gathered": "read(x) -> a lot more gathered now"})
+
+    assert prefix1 and prompt1.startswith(prefix1)   # a real byte-prefix of the prompt
+    assert prompt2.startswith(prefix1)               # the growing call still starts with it
+    assert prefix1 == prefix2                         # byte-stable across a changing `gathered`
+    assert "none yet" not in prefix1                  # the volatile value sits past the boundary
+    assert "gathered" in prefix1                      # the boundary heading is in the cached span
+
+
+def test_anthropic_wire_caches_the_declared_prefix_and_parses_cache_tokens():
+    from ear.llm import LM
+
+    lm = LM(model="anthropic/claude-sonnet-5", api_key="k")
+
+    _, _, body, parse = lm._anthropic("STABLE-part|volatile-part", "sys", cache_prefix="STABLE-part|")
+    content = body["messages"][0]["content"]
+    assert isinstance(content, list) and len(content) == 2
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
+    assert content[0]["text"] == "STABLE-part|" and content[1]["text"] == "volatile-part"
+
+    # No boundary -> the content stays a plain string, byte-identical to the
+    # uncached request (so caching is inert until a caller opts in).
+    _, _, body2, _ = lm._anthropic("STABLE-part|volatile-part", "sys")
+    assert body2["messages"][0]["content"] == "STABLE-part|volatile-part"
+
+    _, usage = parse({
+        "content": [{"type": "text", "text": "ok"}],
+        "usage": {"input_tokens": 10, "output_tokens": 2,
+                  "cache_read_input_tokens": 7, "cache_creation_input_tokens": 3},
+    })
+    assert usage["cache_read_tokens"] == 7 and usage["cache_write_tokens"] == 3
 
 
 # ---------------------------------------------------------------------------

@@ -69,9 +69,15 @@ class LM:
     params: dict[str, Any] = field(default_factory=dict)
     history: list[dict[str, Any]] = field(default_factory=list)
 
-    def complete(self, prompt: str, system: str = "") -> str:
+    def complete(self, prompt: str, system: str = "", cache_prefix: str = "") -> str:
+        """`cache_prefix` is the stable leading span of `prompt` that will
+        repeat across calls -- a provider-neutral hint. An adapter that caches
+        prefixes for free (OpenAI-compatible) ignores it; one that needs an
+        explicit marker (Anthropic) caches exactly that span. Empty (the
+        default) keeps every request byte-identical to the uncached form, so
+        this is inert until a caller declares a boundary."""
         if self.provider == "anthropic":
-            url, headers, body, parse = self._anthropic(prompt, system)
+            url, headers, body, parse = self._anthropic(prompt, system, cache_prefix)
         else:
             url, headers, body, parse = self._openai(prompt, system)
         logger.info("LM call starting: %s (%d prompt chars, %d system chars)", self._bare_model, len(prompt), len(system))
@@ -92,17 +98,29 @@ class LM:
 
     # -- provider wire formats ------------------------------------------------
 
-    def _anthropic(self, prompt: str, system: str):
+    def _anthropic(self, prompt: str, system: str, cache_prefix: str = ""):
         base = self.api_base or "https://api.anthropic.com"
         headers = {
             "content-type": "application/json",
             "anthropic-version": ANTHROPIC_VERSION,
             "x-api-key": self.api_key or "",
         }
+        # Anthropic caches only spans marked with cache_control. When the
+        # caller declares a stable prefix, split the user content there and
+        # mark the stable half; the provider re-reads it at ~0.1x price on the
+        # next call. A missing or non-matching boundary leaves the content a
+        # plain string -- byte-identical to the uncached request.
+        if cache_prefix and prompt.startswith(cache_prefix) and 0 < len(cache_prefix) < len(prompt):
+            content: Any = [
+                {"type": "text", "text": cache_prefix, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": prompt[len(cache_prefix):]},
+            ]
+        else:
+            content = prompt
         body: dict[str, Any] = {
             "model": self._bare_model,
             "max_tokens": self.params.get("max_tokens", DEFAULT_MAX_TOKENS),
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
         }
         if system:
             body["system"] = system
@@ -116,6 +134,8 @@ class LM:
             return text, {
                 "prompt_tokens": int(usage.get("input_tokens") or 0),
                 "completion_tokens": int(usage.get("output_tokens") or 0),
+                "cache_read_tokens": int(usage.get("cache_read_input_tokens") or 0),
+                "cache_write_tokens": int(usage.get("cache_creation_input_tokens") or 0),
             }
 
         return f"{base}/v1/messages", headers, body, parse
@@ -139,9 +159,15 @@ class LM:
             choices = data.get("choices") or [{}]
             text = (choices[0].get("message") or {}).get("content", "")
             usage = data.get("usage") or {}
+            # OpenAI-compatible providers cache prefixes automatically and
+            # report the served-from-cache count under prompt_tokens_details;
+            # there is no separate cache-write charge to report.
+            details = usage.get("prompt_tokens_details") or {}
             return text, {
                 "prompt_tokens": int(usage.get("prompt_tokens") or 0),
                 "completion_tokens": int(usage.get("completion_tokens") or 0),
+                "cache_read_tokens": int(details.get("cached_tokens") or 0),
+                "cache_write_tokens": 0,
             }
 
         return f"{base}/chat/completions", headers, body, parse

@@ -477,10 +477,14 @@ class Loader:
     # controls is reachability -- which name is bound at all -- never
     # whether the underlying capability physically exists; it always
     # does, the moment a Sandbox is open.
+    # All three run one program with plain arguments via subprocess -- never
+    # a shell. && || ; | > < backticks and $(...) are rejected up front with
+    # a clear error (Sandbox.run's _shell_syntax_token), never silently
+    # misread as arguments -- chain steps with separate calls instead.
     _SHELL_TOOLSET_NAMES = {
-        "terminal": "Run a shell command inside the sandbox -- confined to the workspace and time-limited.",
-        "code_executor": "Compile and/or run code inside the sandbox -- confined to the workspace and time-limited.",
-        "environment_admin": "Provision the environment (install a package, set up a toolchain) inside the sandbox -- confined to the workspace and time-limited.",
+        "terminal": "Run ONE plain command inside the sandbox -- confined to the workspace and time-limited. Not a shell: no && || ; | > < backticks or $(...).",
+        "code_executor": "Compile and/or run ONE program inside the sandbox -- confined to the workspace and time-limited. Not a shell: no && || ; | > < backticks or $(...).",
+        "environment_admin": "Provision the environment (install a package, set up a toolchain) with ONE plain command inside the sandbox -- confined to the workspace and time-limited. Not a shell: no && || ; | > < backticks or $(...).",
     }
 
     def _bind_basic_toolsets(self, runtime: Runtime, strategy: Strategy) -> None:

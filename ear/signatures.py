@@ -406,7 +406,13 @@ ChooseToolAction = Judgment(
         "first. Read the tools and what you have gathered so far. If a tool "
         "would help, call exactly one -- name it and give its arguments. "
         "Otherwise, give the final decision. Never invent a tool that is not "
-        "listed. When an argument's value needs more than one line -- the "
+        "listed. No blind calls: every call must be aimed at a specific fact "
+        "or output. When an attempt fails, the unchanged action may fail "
+        "only once: do not simply fire it again. Diagnose the actual failure "
+        "from the result you already have, change the input (the arguments, "
+        "the script, the approach), and only then retry; an unchanged failed "
+        "call will be refused before it runs again. "
+        "When an argument's value needs more than one line -- the "
         "source of a script, a whole file's content -- write it as a "
         "blockquote rather than cramming it onto one bullet line; see the "
         "arguments field below for exactly how."
@@ -418,6 +424,10 @@ ChooseToolAction = Judgment(
         Field("tools", "One 'name(parameters): description' line per available tool"),
         Field("gathered", "Results of tool calls made so far, or 'none yet'"),
     ],
+    # `gathered` is the one input that grows across the tool loop's otherwise-
+    # identical calls; rendering it last makes intent+context+capabilities+tools
+    # a stable prefix the provider re-reads from cache each iteration.
+    cache_boundary="gathered",
     outputs=[
         Field("tool", "The name of the one tool to call now, or empty to decide instead", "str"),
         Field(

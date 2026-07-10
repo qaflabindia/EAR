@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Optional
 
 from .section import argument_blocks, coerce, normalize, parse_document
 
@@ -76,14 +76,32 @@ class Judgment:
     inputs: list[Field] = field(default_factory=list)
     outputs: list[Field] = field(default_factory=list)
     demos: list[dict[str, Any]] = field(default_factory=list)
+    # The name of the one input whose value is volatile across otherwise-
+    # identical calls (a growing tool-result log, say). When set, that input
+    # renders last so everything before it is a stable, cacheable prefix, and
+    # `run` passes that prefix to the LM as a provider-neutral cache hint.
+    # None (the default) leaves rendering and calls exactly as before.
+    cache_boundary: Optional[str] = None
 
     def run(self, lm: Any, **values: Any) -> SimpleNamespace:
-        reply = lm.complete(self.render_prompt(values), system=self.instruction)
+        prompt, cache_prefix = self._render(values)
+        # Pass the cache hint only when a boundary actually produced one, so an
+        # LM whose `complete` predates the parameter is called exactly as before.
+        if cache_prefix:
+            reply = lm.complete(prompt, system=self.instruction, cache_prefix=cache_prefix)
+        else:
+            reply = lm.complete(prompt, system=self.instruction)
         return self.parse_reply(reply)
 
     # -- prompt ---------------------------------------------------------------
 
     def render_prompt(self, values: dict[str, Any]) -> str:
+        return self._render(values)[0]
+
+    def _render(self, values: dict[str, Any]) -> tuple[str, str]:
+        """Render the prompt and, when a `cache_boundary` input is declared,
+        the stable leading span that precedes its value (a byte-prefix of the
+        prompt). With no boundary the span is empty and rendering is unchanged."""
         lines: list[str] = [self.instruction, ""]
         for number, demo in enumerate(self.demos, start=1):
             lines += [f"Worked example {number}:", ""]
@@ -92,8 +110,18 @@ class Judgment:
                     lines += [f"## {spec.heading}", "", str(demo[spec.name]).strip(), ""]
         if self.demos:
             lines += ["Now the task at hand:", ""]
-        for spec in self.inputs:
-            lines += [f"## {spec.heading}", "", str(values.get(spec.name, "")).strip(), ""]
+        ordered = self.inputs
+        if self.cache_boundary:
+            ordered = [s for s in self.inputs if s.name != self.cache_boundary]
+            ordered += [s for s in self.inputs if s.name == self.cache_boundary]
+        cache_prefix = ""
+        for spec in ordered:
+            lines += [f"## {spec.heading}", ""]
+            if self.cache_boundary and spec.name == self.cache_boundary and not cache_prefix:
+                # Everything rendered up to (not including) this value repeats
+                # across calls; the value itself and the footer are the tail.
+                cache_prefix = "\n".join(lines)
+            lines += [str(values.get(spec.name, "")).strip(), ""]
         lines += [
             "Respond using exactly the following markdown sections, each a"
             " level-2 heading (`## Name`) followed by its value. Add nothing"
@@ -104,7 +132,7 @@ class Judgment:
             guidance = _KIND_GUIDANCE.get(spec.kind, _KIND_GUIDANCE["text"])
             detail = f"{spec.desc} -- {guidance}" if spec.desc else guidance
             lines += [f"## {spec.heading}", f"({detail})", ""]
-        return "\n".join(lines)
+        return "\n".join(lines), cache_prefix
 
     # -- parsing --------------------------------------------------------------
 

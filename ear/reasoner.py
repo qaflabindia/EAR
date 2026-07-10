@@ -27,12 +27,29 @@ from .skill_selector import SkillSelector
 # retrying and concludes with what it has. Recovery mechanics, not judgment.
 _MAX_TOOL_RECOVERIES = 2
 
+# How many times the *same successful* call -- same tool, identical arguments
+# -- may run consecutively before the loop refuses it. A failed call is
+# stricter: the unchanged retry is refused immediately, because the model
+# already has the failure text and must calibrate before trying again.
+_MAX_IDENTICAL_ATTEMPTS = 2
+
 # How many tool calls accumulate in `gathered` before the loop checkpoints:
 # consolidates every entry gathered so far into one verified statement of
 # what still matters, then continues from that alone. Bounds context growth
 # and re-grounds the model in the accumulated facts instead of leaving them
 # to dilute across a lengthening list of independently-compressed entries.
 _CONTEXT_CHECKPOINT_EVERY = 3
+
+# The size at which a single tool result is large enough to earn a model
+# call to shrink it. Below this, the always-on deterministic caveman pass is
+# the only compression -- a per-successful-call Auxiliary Model summarize was
+# roughly one model call per tool call (the loop's dominant token cost) and
+# the one place a generative summarizer could distort a number it was meant
+# to preserve. Above it, one summarize call earns its tokens by shrinking a
+# result that would otherwise ride every remaining iteration. Failures are
+# never summarized at any size -- their exact text is what the next turn must
+# diagnose, so they are truncated deterministically (head+tail) instead.
+_SUMMARIZE_ABOVE_CHARS = 30_000
 
 
 @dataclass
@@ -144,6 +161,8 @@ class Reasoner:
         from .signatures import ChooseToolAction, ReasonAboutIntent
         from .tool_binder import ToolBinder
 
+        import json
+
         binder = getattr(runtime, "tool_binder", None)
         by_key = {ToolBinder.tool_key(tool.name): tool for tool in tools}
         catalogue = "\n".join(f"{tool.name}({', '.join(tool.parameters)}): {tool.description}" for tool in tools)
@@ -151,6 +170,20 @@ class Reasoner:
         gathered: list[str] = []
         tool_calls = 0
         recoveries = 0
+        # Attempt discipline: a failed call (tool + identical arguments) may
+        # fail only once before calibration. If the next turn repeats the
+        # exact same failing action, refuse it before execution and put that
+        # refusal in `gathered`, so the model sees both the actual failure
+        # and the required next move. Any *successful* different call in
+        # between (rewriting the script, changing an argument, reading new
+        # evidence) is the calibration that resets the failed-call guard, so
+        # a legitimate fix-then-rerun still works.
+        failed_call_notes: dict[str, str] = {}
+        # Successful identical calls are still bounded too: the third
+        # consecutive identical success is usually stale looping rather than
+        # progress.
+        streak_key = ""
+        streak = 0
         for _ in range(max_iterations):
             action = ChooseToolAction.run(
                 lm,
@@ -180,16 +213,63 @@ class Reasoner:
                     continue
                 break  # recoveries spent -- conclude with the gathered facts
             arguments = ToolBinder.parse_arguments(action.arguments)
+            call_key = f"{ToolBinder.tool_key(chosen.name)}::{json.dumps(arguments, sort_keys=True, default=str)}"
+            if call_key in failed_call_notes:
+                note = (
+                    f"refused: the previous identical {chosen.name} call already failed, and a tool "
+                    "may fail only once per unchanged action. The actual failure is already shown "
+                    f"above ({failed_call_notes[call_key]}). Calibrate first: diagnose that error, then change "
+                    "the input (arguments, script content, or approach) before trying again, or give "
+                    "your final decision."
+                )
+                gathered.append(f"({note})")
+                Reasoner._record_tool_recovery(runtime, chosen.name, note)
+                continue
+            if call_key == streak_key:
+                if streak >= _MAX_IDENTICAL_ATTEMPTS:
+                    note = (
+                        f"refused: this exact {chosen.name} call has already run "
+                        f"{streak} times with the results shown above -- a third "
+                        "identical attempt is a blind call. Calibrate first: diagnose "
+                        "the failure from the evidence already gathered, then change "
+                        "the input (the arguments, the script's content, the approach) "
+                        "before trying again, or give your final decision."
+                    )
+                    gathered.append(f"({note})")
+                    Reasoner._record_tool_recovery(runtime, chosen.name, note)
+                    continue
+            else:
+                streak_key, streak = call_key, 0
+            streak += 1
             invoke = binder.logged_handler(runtime, chosen) if binder is not None else chosen.handler
             result = invoke(**arguments)
+            failed = Reasoner._tool_result_failed(result)
             # The full result already landed on the trail via the tool-stage
             # record `invoke` just wrote (ToolBinder._logged) -- nothing an
             # investigator reads is shortened. Only the copy re-entering
             # `gathered`, which grows every remaining iteration of this
-            # loop, may be compressed, and only when the stack declares an
-            # Auxiliary Model; otherwise this is the raw result, unchanged.
-            fed_back = Reasoner._compress_tool_result(runtime, chosen.name, arguments, result)
+            # loop, may be compressed -- except failures. Failed output is
+            # fed back verbatim (bounded only for prompt size) so the next
+            # reasoning turn sees the actual error text, not a possibly
+            # softened summary.
+            fed_back = (
+                Reasoner._failure_feedback(result)
+                if failed
+                else Reasoner._compress_tool_result(runtime, chosen.name, arguments, result)
+            )
             gathered.append(f"{chosen.name}({arguments}) -> {fed_back}")
+            if failed:
+                failed_call_notes[call_key] = Reasoner._failure_note(result)
+            else:
+                # A call just succeeded, so every earlier failure in this loop
+                # has been recovered from. Their verbose text was diagnostic
+                # scaffolding the next turn no longer needs -- collapse each to
+                # a one-line marker (the fact + short note stay; the stack
+                # trace drops) so resolved errors don't ride every remaining
+                # iteration. The full text remains on the reasoning trail.
+                if failed_call_notes:
+                    gathered = Reasoner._prune_recovered_failures(gathered)
+                failed_call_notes.clear()
             tool_calls += 1
             if tool_calls % _CONTEXT_CHECKPOINT_EVERY == 0:
                 gathered = [Reasoner._checkpoint_gathered_context(runtime, gathered)]
@@ -200,6 +280,86 @@ class Reasoner:
             enriched["_tool_results"] = "\n".join(gathered)
         result = ReasonAboutIntent.run(lm, intent=intent.text, context=enriched, capabilities=capabilities)
         return result.decision
+
+    @staticmethod
+    def _tool_result_failed(result: Any) -> bool:
+        """Whether a tool result is a failure the model must not repeat
+        unchanged. ToolBinder exception strings, sandbox non-zero exits and
+        timeout renders, and binary-read guidance all count. This is
+        intentionally textual because every tool boundary normalises
+        failures to text for the native loop."""
+        import re
+
+        text = str(result)
+        lowered = text.lower()
+        if lowered.startswith("tool '") and " failed:" in lowered:
+            return True
+        if lowered.startswith("failed --"):
+            return True
+        if "binary file" in lowered and "not readable as text" in lowered:
+            return True
+        if re.search(r"\[timed out(?:,|\])", lowered):
+            return True
+        bracketed_exit = re.search(r"\[exit\s+(-?\d+)(?:,|\])", lowered)
+        if bracketed_exit is not None:
+            return int(bracketed_exit.group(1)) != 0
+        plain_exit = re.search(r"\bexit(?:ed)?\s+(-?\d+)\b", lowered)
+        if plain_exit is not None:
+            return int(plain_exit.group(1)) != 0
+        return False
+
+    @staticmethod
+    def _prune_recovered_failures(gathered: list) -> list:
+        """Collapse the body of every failed entry in `gathered` to a
+        one-line marker. Called the moment a tool call succeeds after prior
+        failures: the model has moved past those errors, so the working
+        context keeps only the fact that they happened and their short note --
+        the decision-relevant signal -- while the verbose failure output (a
+        full stderr or truncated stack trace, still preserved verbatim on the
+        reasoning trail) stops being re-sent every iteration. Non-failure
+        entries pass through untouched."""
+        marker = " -> FAILED:"
+        pruned = []
+        for entry in gathered:
+            index = entry.find(marker)
+            if index == -1:
+                pruned.append(entry)
+                continue
+            head = entry[:index]  # "tool({args})"
+            body = entry[index + len(marker):]
+            note = Reasoner._failure_note(body, limit=120)
+            pruned.append(f"{head} -> (earlier failure, recovered: {note}; full text on the trail)")
+        return pruned
+
+    @staticmethod
+    def _failure_note(result: Any, limit: int = 240) -> str:
+        text = " ".join(str(result).strip().split())
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1].rstrip() + "…"
+
+    @staticmethod
+    def _failure_feedback(result: Any, limit: int = _SUMMARIZE_ABOVE_CHARS) -> str:
+        # A failure is fed back verbatim up to the same size a success would
+        # be summarized at -- the next reasoning turn has to diagnose the
+        # actual error (the exact type, message, line), so nothing here is
+        # ever paraphrased by a model. A failure larger than the bound is a
+        # rare giant stderr; it is truncated head+tail, where an error's
+        # signal lives (the first error line, the traceback tail), with the
+        # middle dropped and the full text preserved on the reasoning trail.
+        text = str(result).strip()
+        if not text:
+            return "FAILED: tool returned an empty failure result"
+        if len(text) <= limit:
+            return f"FAILED: {text}"
+        head = text[: int(limit * 0.65)].rstrip()
+        tail = text[-int(limit * 0.25) :].lstrip()
+        return (
+            "FAILED: "
+            + head
+            + "\n...[failure output truncated for this prompt; full tool result is in the reasoning trail]...\n"
+            + tail
+        )
 
     @staticmethod
     def _compress_tool_result(runtime: Any, tool_name: str, arguments: dict, result: Any) -> str:
@@ -221,14 +381,26 @@ class Reasoner:
 
         If the stack additionally declares an Auxiliary Model (memory.md),
         that cheaper model may compress the *already deterministically
-        compressed* text further -- an opt-in extra squeeze layered on top
-        of the safe default, never a replacement for it. Any failure at
-        either stage falls back to the best text already in hand; this is
-        a context-cost optimisation and must never break the cycle."""
+        compressed* text further -- but only when the result is still large
+        after caveman (`_SUMMARIZE_ABOVE_CHARS`). It was previously invoked on
+        every successful tool call, which made it the loop's dominant token
+        cost for no benefit on the common case (a short result the
+        deterministic pass already handles). Reserving it for genuinely large
+        results keeps the safe default everywhere and spends a model call only
+        where one earns its tokens. Any failure at either stage falls back to
+        the best text already in hand; this is a context-cost optimisation and
+        must never break the cycle."""
         from . import caveman
 
         raw = str(result)
         squeezed = caveman.compress(raw).text or raw
+
+        # Below the threshold the deterministic pass is the whole compression
+        # -- no model call. This is the change that removes the per-tool-call
+        # summarize; only a still-large result falls through to the Auxiliary
+        # Model below.
+        if len(squeezed) <= _SUMMARIZE_ABOVE_CHARS:
+            return squeezed
 
         binding = getattr(runtime, "auxiliary_model_binding", None)
         if binding is None:
