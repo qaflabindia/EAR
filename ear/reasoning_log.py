@@ -133,6 +133,8 @@ class ReasoningRecord:
     model: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     latency_ms: int = 0
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -142,6 +144,8 @@ class ReasoningRecord:
             line += f"  ({self.model})"
         if self.input_tokens or self.output_tokens:
             line += f"  [{self.input_tokens}+{self.output_tokens} tok, {self.latency_ms} ms]"
+            if self.cache_read_tokens or self.cache_write_tokens:
+                line += f" (cache {self.cache_read_tokens}r/{self.cache_write_tokens}w)"
         if self.rationale:
             line += f"\n    why: {_clip(self.rationale, width)}"
         return line
@@ -158,6 +162,8 @@ class ReasoningRecord:
                 "rationale": self.rationale,
                 "input_tokens": self.input_tokens,
                 "output_tokens": self.output_tokens,
+                "cache_read_tokens": self.cache_read_tokens,
+                "cache_write_tokens": self.cache_write_tokens,
                 "latency_ms": self.latency_ms,
             },
             default=str,
@@ -185,7 +191,10 @@ class ReasoningRecord:
         if "\n" in self.output or len(self.output) > 80:
             lines += ["Output:", quote(self.output), ""]
         if self.input_tokens or self.output_tokens:
-            lines += [f"Spent: {self.input_tokens}+{self.output_tokens} tokens, {self.latency_ms} ms", ""]
+            spent = f"Spent: {self.input_tokens}+{self.output_tokens} tokens, {self.latency_ms} ms"
+            if self.cache_read_tokens or self.cache_write_tokens:
+                spent += f" (cache {self.cache_read_tokens} read, {self.cache_write_tokens} write)"
+            lines += [spent, ""]
         return "\n".join(lines)
 
 
@@ -279,6 +288,8 @@ class ReasoningLog:
             model=model,
             input_tokens=int((usage or {}).get("input_tokens") or 0),
             output_tokens=int((usage or {}).get("output_tokens") or 0),
+            cache_read_tokens=int((usage or {}).get("cache_read_tokens") or 0),
+            cache_write_tokens=int((usage or {}).get("cache_write_tokens") or 0),
             latency_ms=int((usage or {}).get("latency_ms") or 0),
         )
         self.records.append(entry)
@@ -383,6 +394,8 @@ class ReasoningLog:
                         model=str(data.get("model", "")),
                         input_tokens=int(data.get("input_tokens") or 0),
                         output_tokens=int(data.get("output_tokens") or 0),
+                        cache_read_tokens=int(data.get("cache_read_tokens") or 0),
+                        cache_write_tokens=int(data.get("cache_write_tokens") or 0),
                         latency_ms=int(data.get("latency_ms") or 0),
                         timestamp=when,
                     )
@@ -431,9 +444,11 @@ class ReasoningLog:
             billed = [r for r in records if r.input_tokens or r.output_tokens]
             in_tokens = sum(r.input_tokens for r in records)
             out_tokens = sum(r.output_tokens for r in records)
+            cache_read = sum(r.cache_read_tokens for r in records)
+            cache_write = sum(r.cache_write_tokens for r in records)
             latency = sum(r.latency_ms for r in records)
             tools = sum(1 for r in records if r.stage == "tool")
-            dollars = strategy.dollars(in_tokens, out_tokens) if strategy is not None else None
+            dollars = strategy.dollars(in_tokens, out_tokens, cache_read, cache_write) if strategy is not None else None
             totals["calls"] += len(billed)
             totals["in"] += in_tokens
             totals["out"] += out_tokens

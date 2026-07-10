@@ -2345,6 +2345,46 @@ def test_pricing_is_declared_in_prose_and_prices_usage():
     assert Strategy().dollars(1000, 1000) is None  # undeclared -> never invented
 
 
+def test_dollars_prices_cached_input_at_read_and_write_multipliers():
+    strategy = Strategy.from_markdown(
+        "## Pricing\n\nInput tokens cost $3 per million; output tokens cost $15 per million.\n"
+    )
+    # 1M uncached input ($3) + 1M cache reads (0.1x -> $0.30) + 1M cache writes
+    # (1.25x -> $3.75) + 200k output ($3) = $10.05. The three input counts are
+    # distinct, so nothing double-bills.
+    cost = strategy.dollars(1_000_000, 200_000, 1_000_000, 1_000_000)
+    assert cost == pytest.approx(3.0 + 0.30 + 3.75 + 3.0)
+    # A cache read is an order of magnitude cheaper than the same tokens uncached.
+    assert strategy.dollars(0, 0, 1_000_000, 0) == pytest.approx(0.30)
+    # Defaulted cache args keep the old two-arg call byte-for-byte unchanged.
+    assert strategy.dollars(1_000_000, 200_000) == pytest.approx(6.0)
+
+
+def test_reasoning_record_round_trips_cache_tokens():
+    from ear.reasoning_log import ReasoningLog
+
+    log = ReasoningLog()
+    log.record(
+        stage="selection",
+        output="chose a tool",
+        model="anthropic/claude-sonnet-5",
+        usage={"input_tokens": 40, "output_tokens": 8, "cache_read_tokens": 900, "cache_write_tokens": 60},
+    )
+    entry = log.records[-1]
+    assert entry.cache_read_tokens == 900 and entry.cache_write_tokens == 60
+
+    # Survives the JSONL trail round-trip (to_json -> from_trail).
+    import json
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
+        handle.write(entry.to_json() + "\n")
+        path = handle.name
+    restored = ReasoningLog.from_trail(path).records[-1]
+    assert restored.cache_read_tokens == 900 and restored.cache_write_tokens == 60
+    assert "cache_read_tokens" in json.loads(entry.to_json())
+
+
 def test_usage_record_carries_dollars_only_when_priced():
     from ear import ModelBinding
 

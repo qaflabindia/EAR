@@ -355,15 +355,21 @@ class Runtime:
         lm = self.model_binding.lm if self.model_binding is not None else None
         history = getattr(lm, "history", None) or []
         cycle_calls = history[calls_before:]
-        input_tokens = output_tokens = retries = 0
+        input_tokens = output_tokens = cache_read = cache_write = retries = 0
         for call in cycle_calls:
             usage = call.get("usage") or {} if isinstance(call, dict) else {}
             input_tokens += int(usage.get("prompt_tokens") or 0)
             output_tokens += int(usage.get("completion_tokens") or 0)
+            cache_read += int(usage.get("cache_read_tokens") or 0)
+            cache_write += int(usage.get("cache_write_tokens") or 0)
             retries += int(call.get("retries") or 0) if isinstance(call, dict) else 0
         # Dollars only when the author declared Pricing in memory.md -- a
         # figure nobody declared is never invented.
-        cost = self.strategy.dollars(input_tokens, output_tokens) if self.strategy is not None else None
+        cost = (
+            self.strategy.dollars(input_tokens, output_tokens, cache_read, cache_write)
+            if self.strategy is not None
+            else None
+        )
         if cycle_calls:
             summary = f"{len(cycle_calls)} model calls, {input_tokens}+{output_tokens} tokens"
             if cost is not None:

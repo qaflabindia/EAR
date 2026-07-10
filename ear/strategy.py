@@ -379,14 +379,26 @@ class Strategy:
             if "output" in words:
                 self.output_rate_per_million = rate
 
-    def dollars(self, input_tokens: int, output_tokens: int) -> Optional[float]:
+    def dollars(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+    ) -> Optional[float]:
         """The declared cost of a token spend, or None when no pricing was
-        authored -- a dollar figure nobody declared is never invented."""
+        authored -- a dollar figure nobody declared is never invented. Cached
+        input is priced off the input rate at the provider-standard multipliers
+        (a cache read ~0.1x, a cache write ~1.25x); `input_tokens` is the
+        uncached remainder, so the three input counts never double-bill."""
         if self.input_rate_per_million is None and self.output_rate_per_million is None:
             return None
         cost = 0.0
         if self.input_rate_per_million is not None:
-            cost += input_tokens * self.input_rate_per_million / 1_000_000
+            rate = self.input_rate_per_million / 1_000_000
+            cost += input_tokens * rate
+            cost += cache_read_tokens * rate * 0.1
+            cost += cache_write_tokens * rate * 1.25
         if self.output_rate_per_million is not None:
             cost += output_tokens * self.output_rate_per_million / 1_000_000
         return cost

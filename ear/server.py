@@ -402,7 +402,10 @@ class Server:
             "cycles": len(cycles),
             "tokens": tokens,
             "dollars": strategy.dollars(
-                sum(r.input_tokens for r in records), sum(r.output_tokens for r in records)
+                sum(r.input_tokens for r in records),
+                sum(r.output_tokens for r in records),
+                sum(r.cache_read_tokens for r in records),
+                sum(r.cache_write_tokens for r in records),
             )
             if strategy is not None
             else None,

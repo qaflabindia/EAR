@@ -637,10 +637,12 @@ def _cycle_row(log: ReasoningLog, strategy: Any, cycle: int) -> dict:
     records = log.for_cycle(cycle)
     in_tokens = sum(record.input_tokens for record in records)
     out_tokens = sum(record.output_tokens for record in records)
+    cache_read = sum(record.cache_read_tokens for record in records)
+    cache_write = sum(record.cache_write_tokens for record in records)
     latency = sum(record.latency_ms for record in records)
     calls = sum(1 for record in records if record.input_tokens or record.output_tokens)
     tools = sum(1 for record in records if record.stage == "tool")
-    dollars = strategy.dollars(in_tokens, out_tokens) if strategy is not None else None
+    dollars = strategy.dollars(in_tokens, out_tokens, cache_read, cache_write) if strategy is not None else None
     intent = next((record.output for record in records if record.stage == "intent"), "")
     blocked = _cycle_status(records) == "bad"
     return {
@@ -649,6 +651,8 @@ def _cycle_row(log: ReasoningLog, strategy: Any, cycle: int) -> dict:
         "in": in_tokens,
         "out": out_tokens,
         "tokens": in_tokens + out_tokens,
+        "cache_read": cache_read,
+        "cache_write": cache_write,
         "latency": latency,
         "calls": calls,
         "tools": tools,
@@ -663,6 +667,8 @@ def _totals(rows: list[dict]) -> dict:
         "cycles": len(rows),
         "calls": sum(row["calls"] for row in rows),
         "tokens": sum(row["tokens"] for row in rows),
+        "cache_read": sum(row.get("cache_read", 0) for row in rows),
+        "cache_write": sum(row.get("cache_write", 0) for row in rows),
         "latency": sum(row["latency"] for row in rows),
         "tools": sum(row["tools"] for row in rows),
         "dollars": sum(priced) if priced else None,
@@ -843,6 +849,10 @@ def _header(name: str, totals: dict, integrity: Optional[tuple[bool, str]], cycl
         ("Latency", f"{totals['latency']:,} ms"),
         ("Tool calls", str(totals["tools"])),
     ]
+    # Only worth a tile once caching is actually in play -- a run against a
+    # provider with no prefix caching keeps the header uncluttered.
+    if totals.get("cache_read") or totals.get("cache_write"):
+        tiles.append(("Cache read", f"{totals['cache_read']:,} tok"))
     tile_html = "".join(
         f'<div class="tile"><div class="tile-v">{html.escape(value)}</div>'
         f'<div class="tile-k">{html.escape(label)}</div></div>'
