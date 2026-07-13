@@ -75,6 +75,7 @@ from .delegator import Delegator
 from .deliberator import Deliberator
 from .discoverer import Discoverer
 from .evidence import Evidence
+from .evolution import EvolutionChange, EvolutionDenied, EvolutionPolicy, Evolver
 from .examiner import Comparison, CriterionResult, Examination, EvaluationResult, Examiner, PreferenceResult
 from .exchange import Exchange
 from .executor import Executor
@@ -170,6 +171,10 @@ __all__ = [
     "Experience",
     "Adaptation",
     "AdaptationBank",
+    "EvolutionPolicy",
+    "EvolutionChange",
+    "EvolutionDenied",
+    "Evolver",
     "Reasoner",
     "Governor",
     "Initializer",

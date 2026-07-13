@@ -141,6 +141,14 @@ class Runtime:
     # ear/acquirer.py) -- standalone, like the Optimizer, not a per-cycle
     # pipeline stage.
     acquirer: Any = None
+    # Governed self-modification (see ear/evolution.py). None -- the
+    # default -- refuses every proposed change: evolution is off unless
+    # enable_evolution is called with an EvolutionPolicy (or memory.md
+    # declares an Evolution section the Loader applies).
+    evolution_policy: Optional[Any] = None
+    # The gate proposed changes walk through -- standalone, like the
+    # Optimizer and the Acquirer, not a per-cycle pipeline stage.
+    evolver: Any = None
     # Where self-declared tools persist (`.ear/tools.md`), wired by the
     # Loader; None for a hand-built Runtime never loaded from a directory,
     # in which case acquisition stays session-only.
@@ -158,6 +166,42 @@ class Runtime:
             from .acquirer import Acquirer
 
             self.acquirer = Acquirer()
+        if self.evolver is None:
+            from .evolution import Evolver
+
+            self.evolver = Evolver()
+
+    def enable_evolution(self, policy: Any) -> "Runtime":
+        """Turn governed self-modification on, fenced by the given
+        EvolutionPolicy (see ear/evolution.py). Off by default: a runtime
+        that never enabled evolution refuses every proposed change, and
+        enabling it also puts the existing self-extension surfaces (the
+        Acquirer's create_tool/retire_tool) under the same policy. The
+        enablement itself is an `evolution` trail record -- the fences are
+        reviewable, not ambient."""
+        self.evolution_policy = policy
+        self.reasoning_log.record(
+            stage="evolution",
+            inputs={"policy": policy.describe()},
+            output=f"evolution enabled -- {policy.describe()}",
+        )
+        return self
+
+    def evolve(
+        self,
+        change: Any,
+        apply: Any,
+        rollback: Any = None,
+        approval: Any = None,
+        evaluate: Any = None,
+    ) -> str:
+        """Propose one self-modification (an EvolutionChange) through the
+        Evolver's gates: the policy judges the kind, code enforces the
+        sandbox/explanation/approval/rollback/evaluation requirements, and
+        the promotion -- or the refusal -- lands on the trail."""
+        return self.evolver.propose(
+            self, change, apply, rollback=rollback, approval=approval, evaluate=evaluate
+        )
 
     def connect_mcp(self, name: Optional[str] = None, client: Any = None) -> list:
         """Connect a declared MCP server and bind its tools into the cycle's

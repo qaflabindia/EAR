@@ -132,6 +132,9 @@ class Acquirer:
         strategy = getattr(runtime, "strategy", None)
         if strategy is None:
             raise ValueError("create_tool needs a runtime with a loaded strategy")
+        refused = self._evolution_refusal(runtime, "create_tool", {"name": name})
+        if refused:
+            return refused
         key = normalize(name)
         if any(normalize(existing.name) == key for existing in strategy.tools):
             return f"A tool named '{name}' is already declared -- choose a different name or view it instead."
@@ -158,6 +161,9 @@ class Acquirer:
         strategy = getattr(runtime, "strategy", None)
         if strategy is None:
             raise ValueError("retire_tool needs a runtime with a loaded strategy")
+        refused = self._evolution_refusal(runtime, "retire_tool", {"name": name})
+        if refused:
+            return refused
         key = normalize(name)
         match = next((tool for tool in strategy.tools if normalize(tool.name) == key), None)
         if match is None:
@@ -285,6 +291,23 @@ class Acquirer:
         cls._write(sandbox, relpath, "\n".join(out).rstrip() + "\n")
 
     # -- helpers -------------------------------------------------------------
+
+    def _evolution_refusal(self, runtime: Any, action: str, inputs: dict) -> str:
+        """When an EvolutionPolicy governs this runtime (enable_evolution
+        was called), growing or shrinking the toolset is a `tool_adapter`
+        change and the policy's verdict applies here too -- the
+        tools-that-create-tools loop never outruns the fence. With no
+        policy enabled, acquisition behaves exactly as before: the fence
+        exists only once the operator raises it. The refusal returns to
+        the model as text, like a tool failure, and goes on the record."""
+        policy = getattr(runtime, "evolution_policy", None)
+        if policy is None:
+            return ""
+        refusal = policy.refusal("tool_adapter")
+        if refusal is None:
+            return ""
+        self._record(runtime, action, inputs, f"refused by the evolution policy -- {refusal}")
+        return f"Refused by the evolution policy: {refusal}"
 
     @staticmethod
     def _store(runtime: Any) -> tuple:

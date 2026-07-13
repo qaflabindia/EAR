@@ -236,6 +236,13 @@ class Strategy:
     sandbox_ephemeral: bool = False
     sandbox_tools: bool = False
 
+    # Evolution -> governed self-modification (see ear/evolution.py).
+    # Absent, or authored with disabling language, leaves the policy None
+    # and the runtime refusing every proposed change -- evolution is off
+    # unless the author raises the fence and says what fits inside it.
+    evolution: str = ""
+    evolution_policy: Optional[object] = None
+
     # Ontological settings -> the reasoning vocabulary.
     ontology: Ontology = field(default_factory=Ontology)
 
@@ -276,6 +283,8 @@ class Strategy:
                 strategy._read_execution(prose)
             elif "sandbox" in heading or "isolat" in heading or "workspace" in heading:
                 strategy._read_sandbox(prose)
+            elif "evol" in heading or "self-modif" in heading or "self modif" in heading:
+                strategy._read_evolution(body)
             elif "mcp" in heading:
                 strategy._read_mcp(body)
             elif "discover" in heading:
@@ -425,6 +434,26 @@ class Strategy:
             word in lowered
             for word in ("shell", "bash", "command", "file tool", "read and write", "read/write", "expose")
         )
+
+    def _read_evolution(self, body: Body) -> None:
+        """Read the Evolution declaration: which kinds of self-modification
+        are allowed, prohibited, or human-approval-gated, and which of the
+        four requirements (sandbox, evaluation, explanation, rollback) the
+        author relaxed -- all default on. Explicit off language ("evolution
+        is disabled", "never evolve") leaves the policy None, exactly as if
+        the section were absent; the general _DISABLED vocabulary is *not*
+        used here because a healthy Evolution section legitimately says
+        "prohibited" and "never" about individual kinds."""
+        self.evolution = _full_text(body)
+        if re.search(
+            r"\bevolution\s+is\s+(?:disabled|off|forbidden)\b|\b(?:do not|don't|never)\s+evolve\b|\bno\s+evolution\b",
+            body.prose,
+            re.IGNORECASE,
+        ):
+            return
+        from .evolution import EvolutionPolicy
+
+        self.evolution_policy = EvolutionPolicy.from_prose(body)
 
     def _read_catalogue_store(self, prose: str) -> None:
         """Read the catalogue store declaration: 'Store: true' opts into a

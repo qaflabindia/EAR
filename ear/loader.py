@@ -431,6 +431,12 @@ class Loader:
         if strategy.sandbox_enabled:
             self._open_sandbox(runtime, strategy)
 
+        if strategy.evolution_policy is not None:
+            # An Evolution section in memory.md is the authored form of
+            # enable_evolution: governed self-modification, on the record
+            # from the moment the stack loads.
+            runtime.enable_evolution(strategy.evolution_policy)
+
         if strategy.knowledge_sources:
             runtime.librarian.knowledge = self._load_knowledge(runtime, strategy)
 

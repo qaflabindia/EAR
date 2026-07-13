@@ -566,6 +566,70 @@ An approved verdict from someone off the list waives nothing: the gate
 stays parked and the record says who was refused and why. Who may waive is
 authored governance, enforced in code.
 
+### Evolution — governed self-modification, opt-in
+
+EAR already lets a runtime change itself in narrow, recorded ways (the
+Acquirer declares tools mid-deliberation, the Optimizer refines skill
+prompts). `enable_evolution` is the governance layer over all of it — an
+`EvolutionPolicy` says which *kinds* of change are allowed, which are off
+the table entirely, and what every permitted change must carry:
+
+```python
+runtime.enable_evolution(EvolutionPolicy(
+    allowed_changes=["skill_prompt", "skill_creation", "strategy",
+                     "workflow_branch", "validation_rule", "tool_adapter"],
+    prohibited_changes=["hard_policy", "approval_authority",
+                        "audit_logging", "data_access_boundary"],
+    require_sandbox=True,          # trial inside the runtime's Sandbox
+    require_evaluation=True,       # pass an evaluation before promotion
+    require_explanation=True,      # an explanation on the record, always
+    require_human_approval_for=["generated_code", "workflow_structure",
+                                "production_promotion"],
+    rollback_required=True,        # no change is a one-way door
+))
+
+runtime.evolve(
+    EvolutionChange(kind="skill_prompt", name="risk_grade",
+                    explanation="Tightens the grading prose against last week's misses."),
+    apply=promote, rollback=restore, evaluate=lambda: Examiner().examine(runtime, "evaluations"),
+)
+```
+
+The posture is default-deny three times over: a runtime that never
+enabled evolution refuses every proposed change; an unlisted kind is
+refused, never inferred to be fine; and a prohibited kind is refused even
+when the allow-list also names it — so the governance machinery itself
+(hard policies, approval authority, audit logging, data-access
+boundaries) stays fenced off no matter what the allow-list says. The
+split of labor is the usual one: the change may be model-proposed, but
+whether it lands is enforced in code — the `Evolver` walks the gates in
+order, applies only once every gate passes, rolls back on a failed
+evaluation or a crashed apply, and human approval rides the same
+`Approval`/`ApprovalRequired` machinery as policy.md's gates, so the
+model never waives its own gate. Every refusal, park and promotion is an
+`evolution` trail record. Enabling evolution also puts the Acquirer's
+`create_tool`/`retire_tool` under the same policy (a `tool_adapter`
+change), so the tools-that-create-tools loop cannot outrun the fence.
+
+Like everything else, the policy is authorable in memory.md — an
+`## Evolution` section the Loader applies on load:
+
+```markdown
+## Evolution
+
+Trial every change in the sandbox, evaluate it before promotion, explain
+it on the record, and keep a rollback.
+
+- Allowed: skill prompt, skill creation, strategy, workflow branch, validation rule, tool adapter
+- Prohibited: hard policy, approval authority, audit logging, data access boundary
+- Approval required: generated code, workflow structure, production promotion
+```
+
+The four requirements default on — only explicit relaxing prose ("no
+sandbox needed", "the evaluation is optional") turns one off, and a
+section authored with disabling language ("evolution is disabled") leaves
+the runtime exactly as if the section were absent: refusing every change.
+
 ### Tool-scoped policies — deny a tool by policy
 
 A policy scoped `Applies to: tools` is judged against a tool's name and
@@ -1163,6 +1227,8 @@ ear/
   memory.py        Memory        — persistent memory (working + compressed layers)
   experience.py    Experience    — the pattern aggregated from repeated Memory entries
   adaptation.py    Adaptation    — learned adaptations distilled from Experience
+  evolution.py     EvolutionPolicy — governed self-modification: allowed/prohibited change kinds,
+                                   sandbox/evaluation/explanation/approval/rollback gates, walked by the Evolver
   reasoner.py      Reasoner      — the deliberation step, with the native tool loop
   signatures.py    the native Judgments shared across the LLM-judged stages
   governor.py      Governor      — govern: enforce Policy gates

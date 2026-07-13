@@ -8,6 +8,27 @@ has not yet made a versioned release, so entries accumulate under
 ## [Unreleased]
 
 ### Added
+- `ear/evolution.py`: governed self-modification, configured, never
+  assumed. `EvolutionPolicy` declares which *kinds* of change a runtime
+  may make to itself (`allowed_changes`), which it may never make
+  (`prohibited_changes` -- the prohibition always wins, even over the
+  allow-list), and what every permitted change must carry: a sandbox to
+  trial in, an evaluation to pass, an explanation on the record, a human
+  approval for the sensitive kinds (`require_human_approval_for`, riding
+  the same `Approval`/`ApprovalRequired` machinery as policy.md's gates),
+  and a rollback so no change is a one-way door. `Runtime.enable_evolution`
+  raises the fence (off by default: a runtime that never enabled evolution
+  refuses every proposed change); `Runtime.evolve` walks an
+  `EvolutionChange` through the `Evolver`'s gates in order, applies it only
+  once every gate passes, rolls back on a failed evaluation or a crashed
+  apply, and records every refusal, park and promotion as an `evolution`
+  trail record. Enabling evolution also puts the Acquirer's
+  `create_tool`/`retire_tool` under the same policy (a `tool_adapter`
+  change), so the tools-that-create-tools loop cannot outrun the fence.
+  The policy is also authorable in memory.md: an `## Evolution` section
+  (`- Allowed:`/`- Prohibited:`/`- Approval required:` bullets, the four
+  requirements defaulting on and relaxed only by explicit prose) is read
+  by `Strategy` and applied by the Loader on `load_runtime`.
 - `ear/caveman.py`: a deterministic, zero-dependency prose compressor
   (ported, MIT license, from github.com/JuliusBrussee/caveman's
   `caveman-shrink` MCP middleware) that always compresses a tool result
