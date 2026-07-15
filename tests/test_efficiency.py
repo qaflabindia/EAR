@@ -387,3 +387,72 @@ def test_resource_report_omits_carbon_without_a_grid():
     EnergyMeter(strategy=strategy, rapl_root=Path("/nope")).stop(tokens=1000, runtime=runtime)
     report = runtime.reasoning_log.resource_report()
     assert "not computed" in report
+
+
+# ---------------------------------------------------------------------------
+# GPU power sampling and GPU energy.
+# ---------------------------------------------------------------------------
+
+_GPU_CSV = (
+    "NVIDIA A100-SXM4-80GB, 85.32, 400.00, 45, 12000, 81920\n"
+    "NVIDIA A100-SXM4-80GB, 250.10, 400.00, 90, 40000, 81920"
+)
+
+
+def test_sample_gpus_parses_nvidia_smi():
+    from ear.hardware import sample_gpus
+
+    samples = sample_gpus(runner=lambda: _GPU_CSV)
+    assert len(samples) == 2
+    assert samples[0].power_w == pytest.approx(85.32)
+    assert samples[0].util_pct == 45
+    assert samples[1].mem_used_mb == 40000
+
+
+def test_gpu_power_watts_sums_all_gpus():
+    from ear.hardware import gpu_power_watts
+
+    assert gpu_power_watts(runner=lambda: _GPU_CSV) == pytest.approx(335.42)
+
+
+def test_gpu_fields_na_are_none_not_zero():
+    from ear.hardware import gpu_power_watts, sample_gpus
+
+    csv = "Tesla T4, [N/A], 70.00, [Not Supported], 500, 15360"
+    sample = sample_gpus(runner=lambda: csv)[0]
+    assert sample.power_w is None
+    assert sample.util_pct is None
+    assert gpu_power_watts(runner=lambda: csv) is None  # no power -> None, never a guessed 0
+
+
+def test_no_gpu_yields_empty():
+    from ear.hardware import gpu_power_watts, sample_gpus
+
+    assert sample_gpus(runner=lambda: "") == []
+    assert gpu_power_watts(runner=lambda: None) is None
+
+
+def test_energy_meter_integrates_gpu_power():
+    import time as _time
+
+    # 300 W constant over ~0.15 s -> ~45 J.
+    meter = EnergyMeter(gpu_runner=lambda: "A100, 300.0, 400.0, 90, 40000, 81920", rapl_root=Path("/nope")).start()
+    _time.sleep(0.15)
+    reading = meter.stop(tokens=1000)
+    assert reading.gpu_joules == pytest.approx(45, abs=15)  # trapezoidal, timing-tolerant
+    assert reading.measured_joules == reading.gpu_joules
+    assert "GPU via power integral" in reading.basis
+
+
+def test_gpu_energy_off_by_default():
+    reading = EnergyMeter(rapl_root=Path("/nope")).start().stop(tokens=100)
+    assert reading.gpu_joules is None
+
+
+def test_energy_section_parses_gpu_flag():
+    on = Strategy.from_markdown(
+        "# M\n\n## Energy\n\nReasoning costs 0.4 watt-hours per thousand tokens. Measure GPU power each cycle.\n"
+    )
+    off = Strategy.from_markdown("# M\n\n## Energy\n\nReasoning costs 0.4 watt-hours per thousand tokens.\n")
+    assert on.measure_gpu is True
+    assert off.measure_gpu is False

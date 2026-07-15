@@ -104,7 +104,7 @@ from .experience import Experience
 from .explainer import Explainer
 from .goal import Goal, GoalEvaluation, GoalKeeper, GoalOutcome
 from .governor import Governor
-from .hardware import Battery, HardwareProfile
+from .hardware import Battery, GpuSample, HardwareProfile, gpu_power_watts, sample_gpus
 from .identity import Claim, TenantBoundaryViolation
 from .initializer import Initializer
 from .intent import Intent
@@ -319,6 +319,9 @@ __all__ = [
     "parallel_values",
     "HardwareProfile",
     "Battery",
+    "GpuSample",
+    "sample_gpus",
+    "gpu_power_watts",
     "EnergyMeter",
     "EnergyReading",
     "EnergyBudget",

@@ -47,7 +47,14 @@ Two sources of truth, never confused:
   reads real joules across the interval, **wrap-safe** (a wrapped counter adds
   its max range back), summed across package zones. RAPL meters the whole
   package, and the reading says so — an honest whole-machine figure beats a
-  fabricated per-process one.
+  fabricated per-process one. **GPU energy** is measured too when declared
+  (`measure GPU power` in the `## Energy` section): the meter samples
+  `nvidia-smi` power draw at start and stop and integrates it over the
+  interval (avg power × elapsed — a trapezoidal estimate, named as such),
+  because RAPL sees only the CPU package and on an inference node the GPU is
+  where the energy actually goes. Off by default (it shells out per cycle);
+  `HardwareProfile.sample_gpus()` / `gpu_power_watts()` expose the raw
+  readings, with any `[N/A]` field left `None`, never a guessed zero.
 - **Declared estimate** — an `## Energy` section in `memory.md` ("reasoning
   costs about 0.4 watt-hours per thousand tokens") converts the token spend at
   the author's rate, exactly as `## Pricing` converts to dollars. The rate is

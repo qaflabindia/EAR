@@ -46,6 +46,15 @@ has not yet made a versioned release, so entries accumulate under
     Fields the host does not expose stay `None`. `recommended_workers()` sizes
     an I/O-bound pool, tempered by load and **halved on battery**. Probe
     functions take injectable roots (tested against fixture `/sys` trees).
+    **GPU power sampling**: `sample_gpus()` (name, power, limit, utilization,
+    memory per GPU) and `gpu_power_watts()` parse `nvidia-smi` through an
+    injectable runner; a `[N/A]` field stays `None`, never a guessed zero.
+  - **GPU energy measurement**: when `## Energy` declares `measure GPU power`,
+    the `EnergyMeter` samples GPU power at start and stop and integrates it
+    over the interval (avg x elapsed, labelled a power integral) into the
+    cycle's measured joules -- RAPL sees only the CPU package, so on an
+    inference node this is where the energy actually is. Off by default (it
+    shells out per cycle); `EnergyReading.gpu_joules` carries the GPU share.
   - `ear/energy.py`: `EnergyMeter` measures real joules from RAPL counters
     (wrap-safe, summed across package zones) when the host exposes them, or
     estimates watt-hours from a declared rate otherwise, or reports

@@ -24,6 +24,7 @@ and the spend is summed from the one audit spine -- the trail is the ledger.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -66,11 +67,13 @@ class EnergyReading:
     tokens: int = 0
     basis: str = "unmetered"
     carbon_grams: Optional[float] = None
+    gpu_joules: Optional[float] = None
 
     @property
     def watt_hours(self) -> Optional[float]:
-        """The best available figure: measured first, estimate second,
-        None when neither exists."""
+        """The best available figure: measured first (CPU package via RAPL
+        plus GPU via the power integral, whichever the host exposes),
+        estimate second, None when neither exists."""
         if self.measured_joules is not None:
             return self.measured_joules / 3600
         return self.estimated_wh
@@ -80,6 +83,8 @@ class EnergyReading:
         if wh is None:
             return "unmetered -- no RAPL counters and no declared energy rate"
         line = f"{wh:.4f} Wh ({self.basis}, {self.tokens} tokens)"
+        if self.gpu_joules is not None:
+            line += f", GPU {self.gpu_joules / 3600:.4f} Wh"
         if self.carbon_grams is not None:
             line += f", {self.carbon_grams:.3f} gCO2"
         return line
@@ -95,7 +100,15 @@ class EnergyMeter:
     strategy: Any = None
     rapl_root: Path = _RAPL
     grid: Any = None
+    # GPU energy: when set, the meter samples GPU power at start and stop and
+    # integrates it over the interval (RAPL sees only the CPU package, so on
+    # a GPU inference node the GPU is where the energy actually goes). `True`
+    # uses the real nvidia-smi; a callable is an injectable CSV source for
+    # tests or an alternative reader.
+    gpu_runner: Any = None
     _start_uj: dict[str, int] = field(default_factory=dict)
+    _start_time: Optional[float] = None
+    _start_gpu_w: Optional[float] = None
 
     def measurable(self) -> bool:
         return bool(_rapl_zones(self.rapl_root))
@@ -106,21 +119,36 @@ class EnergyMeter:
             value = _read_int(zone / "energy_uj")
             if value is not None:
                 self._start_uj[str(zone)] = value
+        self._start_time = time.monotonic()
+        self._start_gpu_w = self._gpu_power()
         return self
 
     def stop(self, tokens: int = 0, runtime: Any = None) -> EnergyReading:
-        measured = self._measure()
+        rapl_joules = self._measure()
+        gpu_joules = self._measure_gpu()
+        measured: Optional[float] = None
+        if rapl_joules is not None or gpu_joules is not None:
+            measured = (rapl_joules or 0.0) + (gpu_joules or 0.0)
         estimated = None
         if self.strategy is not None:
             estimated = self.strategy.watt_hours(tokens)
         if measured is not None:
-            basis = "measured, whole-machine RAPL over the interval"
+            parts = []
+            if rapl_joules is not None:
+                parts.append("CPU package via RAPL")
+            if gpu_joules is not None:
+                parts.append("GPU via power integral")
+            basis = "measured (" + " + ".join(parts) + ") over the interval"
         elif estimated is not None:
             basis = "declared estimate from the authored energy rate"
         else:
             basis = "unmetered"
         reading = EnergyReading(
-            measured_joules=measured, estimated_wh=estimated, tokens=tokens, basis=basis
+            measured_joules=measured,
+            estimated_wh=estimated,
+            tokens=tokens,
+            basis=basis,
+            gpu_joules=gpu_joules,
         )
         # Carbon only when both the watt-hours and a grid intensity are known
         # -- a gram nobody could compute is never written down.
@@ -144,6 +172,30 @@ class EnergyMeter:
                 rationale=basis,
             )
         return reading
+
+    def _gpu_power(self) -> Optional[float]:
+        """Instantaneous total GPU power draw (watts), or None when GPU
+        metering is off or no GPU reports power."""
+        if self.gpu_runner is None:
+            return None
+        from .hardware import gpu_power_watts
+
+        runner = self.gpu_runner if callable(self.gpu_runner) else None
+        return gpu_power_watts(runner)
+
+    def _measure_gpu(self) -> Optional[float]:
+        """GPU energy over the interval, in joules: average of the start and
+        stop power draw times the elapsed seconds (a trapezoidal estimate of
+        the power integral -- honest given instantaneous samples, and named
+        as an integral in the basis). None when GPU metering is off or a
+        sample is missing."""
+        if self._start_gpu_w is None or self._start_time is None:
+            return None
+        end_w = self._gpu_power()
+        if end_w is None:
+            return None
+        elapsed = max(0.0, time.monotonic() - self._start_time)
+        return ((self._start_gpu_w + end_w) / 2.0) * elapsed
 
     def _measure(self) -> Optional[float]:
         """Joules burned since `start()`, summed across package zones and

@@ -24,7 +24,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 _CGROUP2 = Path("/sys/fs/cgroup")
 _CGROUP1_CPU = Path("/sys/fs/cgroup/cpu")
@@ -147,25 +147,91 @@ def rapl_available(rapl: Path = _RAPL) -> bool:
         return False
 
 
-def gpu_names(timeout: float = 3.0) -> list[str]:
-    """The host's NVIDIA GPUs by name, via `nvidia-smi` when present --
-    the one probe that shells out, and only when the binary exists. Any
-    failure reads as 'no GPUs visible', never an exception."""
+_GPU_QUERY = "name,power.draw,power.limit,utilization.gpu,memory.used,memory.total"
+
+
+@dataclass
+class GpuSample:
+    """One reading of one GPU: its name, instantaneous power draw and limit
+    (watts), utilization (%) and memory (MiB). A field the driver reports as
+    `[N/A]` / `[Not Supported]` stays None -- reported, never invented, the
+    same rule as the rest of the profile. Integrating power over an interval
+    (`ear/energy.py`) is how GPU *energy* is measured, since RAPL sees only
+    the CPU package."""
+
+    name: str = ""
+    power_w: Optional[float] = None
+    power_limit_w: Optional[float] = None
+    util_pct: Optional[float] = None
+    mem_used_mb: Optional[float] = None
+    mem_total_mb: Optional[float] = None
+
+
+def _nvidia_smi(timeout: float = 3.0) -> Optional[str]:
+    """The raw nvidia-smi CSV, or None when the binary is absent or the call
+    fails -- the one probe that shells out, and only when the binary exists."""
     binary = shutil.which("nvidia-smi")
     if binary is None:
-        return []
+        return None
     try:
         result = subprocess.run(
-            [binary, "--query-gpu=name", "--format=csv,noheader"],
+            [binary, f"--query-gpu={_GPU_QUERY}", "--format=csv,noheader,nounits"],
             capture_output=True,
             text=True,
             timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _num(parts: list[str], index: int) -> Optional[float]:
+    """A CSV field parsed as a float, or None for a missing / `[N/A]` /
+    `[Not Supported]` value -- never a guessed zero."""
+    try:
+        return float(parts[index])
+    except (IndexError, ValueError):
+        return None
+
+
+def sample_gpus(runner: Optional[Any] = None) -> list[GpuSample]:
+    """One reading per NVIDIA GPU. `runner` is an injectable callable
+    returning the nvidia-smi CSV text (used in tests and to wire a different
+    source); absent, the real `nvidia-smi` is queried. No GPUs, no binary, or
+    any failure yields an empty list, never an exception."""
+    text = runner() if runner is not None else _nvidia_smi()
+    if not text:
         return []
-    if result.returncode != 0:
-        return []
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    samples: list[GpuSample] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split(",")]
+        samples.append(
+            GpuSample(
+                name=parts[0] if parts and parts[0] else "",
+                power_w=_num(parts, 1),
+                power_limit_w=_num(parts, 2),
+                util_pct=_num(parts, 3),
+                mem_used_mb=_num(parts, 4),
+                mem_total_mb=_num(parts, 5),
+            )
+        )
+    return samples
+
+
+def gpu_names(runner: Optional[Any] = None) -> list[str]:
+    """The host's NVIDIA GPUs by name (empty when none are visible)."""
+    return [sample.name for sample in sample_gpus(runner) if sample.name]
+
+
+def gpu_power_watts(runner: Optional[Any] = None) -> Optional[float]:
+    """Total instantaneous GPU power draw across all GPUs, in watts, or None
+    when no GPU reports power -- the number the energy meter integrates over
+    an interval to get GPU joules."""
+    powers = [sample.power_w for sample in sample_gpus(runner) if sample.power_w is not None]
+    return sum(powers) if powers else None
 
 
 @dataclass

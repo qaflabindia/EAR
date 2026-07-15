@@ -229,6 +229,10 @@ class Strategy:
     energy: str = ""
     wh_per_thousand_tokens: Optional[float] = None
     energy_budget_wh: Optional[float] = None
+    # Opt-in: measure GPU energy by sampling nvidia-smi power over each cycle
+    # (a subprocess call, so declared, not default). Set by prose like
+    # "measure GPU power" in the ## Energy section.
+    measure_gpu: bool = False
 
     # Carbon / grid intensity -> when deferrable heavy work should run (see
     # ear/carbon.py). A declared clean-hours window and/or a gCO2/kWh
@@ -419,6 +423,9 @@ class Strategy:
         split only on a period followed by whitespace (or end of text), so
         a decimal rate like '0.4 watt-hours' never splits in half."""
         self.energy = prose
+        lowered = prose.lower()
+        if "gpu" in lowered and ("measure" in lowered or "power" in lowered or "sample" in lowered):
+            self.measure_gpu = True
         for sentence in re.split(r"[;.](?:\s+|$)", prose):
             lowered = sentence.lower()
             if "watt" not in lowered and " wh" not in f" {lowered}":
