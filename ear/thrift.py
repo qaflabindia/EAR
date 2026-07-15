@@ -63,7 +63,12 @@ class ModelThrift:
         if log is not None:
             log.record(
                 stage="thrift",
-                inputs={"intent": intent.text, "context": dict(intent.context)},
+                inputs={
+                    "intent": intent.text,
+                    "context": dict(intent.context),
+                    "tier": choice.tier,
+                    "model": self._model_name(choice.binding),
+                },
                 output=f"{choice.tier} model ({self._model_name(choice.binding)})",
                 rationale=f"{choice.rationale} [{choice.basis}]",
             )

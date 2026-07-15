@@ -8,6 +8,14 @@ has not yet made a versioned release, so entries accumulate under
 ## [Unreleased]
 
 ### Added
+- **Resource report** (`ReasoningLog.resource_report`) -- the physical
+  counterpart to `usage_report`'s dollars: energy (Wh), carbon (gCO2, counted
+  measured/estimated/unmetered) and compute-thrift routing (light vs heavy
+  share) rolled up from the trail's structured `energy` and `thrift` records
+  as a markdown document. Sums only real figures -- an unmetered cycle or
+  carbon with no known grid intensity is left out, never invented. The
+  `energy` and `thrift` trail records now carry structured `watt_hours` /
+  `carbon_grams` / `tier` fields for this.
 - **Carbon-aware scheduling** (`ear/carbon.py`, the `## Carbon` strategy
   section, Kernel task deferral) -- run heavy work when the energy is clean
   and plentiful (`docs/EFFICIENCY.md`).

@@ -345,3 +345,45 @@ def test_kernel_max_workers_zero_auto_sizes():
     resolved = kernel._resolved_workers()
     assert resolved >= 1
     assert kernel.max_workers == resolved  # resolved once, stable after
+
+
+# ---------------------------------------------------------------------------
+# The resource report -- energy, carbon and thrift rolled up from the trail.
+# ---------------------------------------------------------------------------
+
+
+def test_resource_report_rolls_up_energy_carbon_and_thrift():
+    from ear.energy import EnergyMeter
+
+    runtime = Runtime(name="R")
+    strategy = Strategy.from_markdown(
+        "# M\n\n## Energy\n\nReasoning costs 0.4 watt-hours per thousand tokens.\n\n"
+        "## Carbon\n\nGrid intensity is about 250 gCO2/kWh.\n"
+    )
+    grid = strategy.grid_signal()
+    for tokens in (1000, 2000, 3000):
+        EnergyMeter(strategy=strategy, grid=grid, rapl_root=Path("/nope")).stop(tokens=tokens, runtime=runtime)
+    ladder = _ladder()
+    ladder.choose(Intent(text="short", context={}), runtime=runtime)
+    ladder.choose(Intent(text="word " * 200, context={}), runtime=runtime)
+
+    report = runtime.reasoning_log.resource_report()
+    assert "2.4000 Wh" in report      # 6000 tokens * 0.4 Wh/1k
+    assert "0.600 gCO2" in report     # 2.4 Wh @ 250 gCO2/kWh
+    assert "1 light, 1 heavy" in report
+
+
+def test_resource_report_is_honest_when_nothing_metered():
+    report = Runtime(name="R").reasoning_log.resource_report()
+    assert "no energy recorded" in report
+    assert "no thrift routing recorded" in report
+
+
+def test_resource_report_omits_carbon_without_a_grid():
+    from ear.energy import EnergyMeter
+
+    runtime = Runtime(name="R")
+    strategy = Strategy.from_markdown("# M\n\n## Energy\n\nReasoning costs 0.4 watt-hours per thousand tokens.\n")
+    EnergyMeter(strategy=strategy, rapl_root=Path("/nope")).stop(tokens=1000, runtime=runtime)
+    report = runtime.reasoning_log.resource_report()
+    assert "not computed" in report

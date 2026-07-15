@@ -171,6 +171,31 @@ clean and the charge is plentiful (carbon) → on a fleet sized to the metal
 (hardware). Measured where the host allows, estimated where the author
 declares, and honest — `None` — where neither can speak.
 
+## Seeing it — the resource report
+
+`ReasoningLog.resource_report()` is the physical counterpart to
+`usage_report()`'s dollars: rolled up from the trail's structured `energy` and
+`thrift` records, it reports the watt-hours and gCO2 the run cost (measured /
+estimated / unmetered counted separately) and how thrift routed the work
+(light vs heavy share) — a markdown document like every other EAR artifact.
+It sums only real figures; an unmetered cycle, or carbon with no known grid
+intensity, is left out rather than invented.
+
+```
+# Resource Report
+
+## Energy & Carbon
+
+- cycles metered: 3 (0 measured, 3 estimated, 0 unmetered)
+- total energy: 2.4000 Wh
+- total carbon: 0.600 gCO2
+
+## Compute Thrift
+
+- routed: 3 intents (2 light, 1 heavy)
+- light-tier share: 67%
+```
+
 ## The one rule, extended once more
 
 **The model judges; code measures, enforces, and records.** Complexity is the

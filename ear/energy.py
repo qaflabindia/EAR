@@ -134,7 +134,12 @@ class EnergyMeter:
         if log is not None:
             log.record(
                 stage="energy",
-                inputs={"tokens": tokens},
+                inputs={
+                    "tokens": tokens,
+                    "watt_hours": reading.watt_hours,
+                    "carbon_grams": reading.carbon_grams,
+                    "basis": basis,
+                },
                 output=reading.describe(),
                 rationale=basis,
             )

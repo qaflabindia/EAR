@@ -468,6 +468,52 @@ class ReasoningLog:
         )
         return "\n".join(header) + "\n"
 
+    def resource_report(self) -> str:
+        """The resource ledger, rendered from the trail: the energy and
+        carbon each cycle cost and how compute-thrift routed the work -- the
+        physical counterpart to `usage_report`'s dollars. Read from the
+        structured `energy` and `thrift` records, so it sums real figures,
+        never re-parses prose; a figure that was never metered (unmetered
+        cycles, carbon with no grid intensity) is left out, never invented."""
+
+        def _number(value: Any) -> float:
+            return float(value) if isinstance(value, (int, float)) else 0.0
+
+        energy = self.for_stage("energy")
+        thrift = self.for_stage("thrift")
+        lines = ["# Resource Report", ""]
+
+        lines += ["## Energy & Carbon", ""]
+        if not energy:
+            lines.append("- no energy recorded (no `## Energy` section declared)")
+        else:
+            total_wh = sum(_number(r.inputs.get("watt_hours")) for r in energy)
+            total_co2 = sum(_number(r.inputs.get("carbon_grams")) for r in energy)
+            measured = sum(1 for r in energy if "measured" in str(r.inputs.get("basis") or ""))
+            estimated = sum(1 for r in energy if "estimate" in str(r.inputs.get("basis") or ""))
+            unmetered = sum(1 for r in energy if "unmetered" in str(r.inputs.get("basis") or ""))
+            lines.append(
+                f"- cycles metered: {len(energy)} "
+                f"({measured} measured, {estimated} estimated, {unmetered} unmetered)"
+            )
+            lines.append(f"- total energy: {total_wh:.4f} Wh")
+            if total_co2:
+                lines.append(f"- total carbon: {total_co2:.3f} gCO2")
+            else:
+                lines.append("- total carbon: not computed (no grid intensity was known)")
+        lines.append("")
+
+        lines += ["## Compute Thrift", ""]
+        if not thrift:
+            lines.append("- no thrift routing recorded (no model ladder enabled)")
+        else:
+            light = sum(1 for r in thrift if str(r.inputs.get("tier")) == "light")
+            heavy = sum(1 for r in thrift if str(r.inputs.get("tier")) == "heavy")
+            lines.append(f"- routed: {len(thrift)} intents ({light} light, {heavy} heavy)")
+            lines.append(f"- light-tier share: {light / len(thrift) * 100:.0f}%")
+        lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
     def rotate(self, retention_days: float, now: Optional[datetime] = None) -> int:
         """Retention as rotation, never silent deletion: cycles whose
         records are all older than the window are replaced by a single
