@@ -431,6 +431,17 @@ class Loader:
         if strategy.sandbox_enabled:
             self._open_sandbox(runtime, strategy)
 
+        if strategy.energy:
+            # A memory.md `## Energy` section turns metering on: every cycle
+            # records its watt-hours (measured from RAPL when the host
+            # exposes it, estimated from the declared rate otherwise), and a
+            # declared daily budget refuses a cycle before it overspends.
+            from .energy import EnergyBudget, EnergyMeter
+
+            runtime.energy_meter = EnergyMeter(strategy=strategy)
+            if strategy.energy_budget_wh is not None:
+                runtime.energy_budget = EnergyBudget(strategy=strategy)
+
         if strategy.evolution_policy is not None:
             # An Evolution section in memory.md is the authored form of
             # enable_evolution: governed self-modification, on the record

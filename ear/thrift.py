@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from .intent import Intent
+from .llm import LMError
 
 LIGHT = "light"
 HEAVY = "heavy"
@@ -71,17 +72,36 @@ class ModelThrift:
     def bind(self, runtime: Any, intent: Intent) -> ThriftChoice:
         """Choose a tier for `intent` and set it as the runtime's model
         binding for the coming cycle -- the one-line way to make a whole
-        stack thrift-routed per intent."""
+        stack thrift-routed per intent. When the chosen tier is not reachable
+        (no resolvable credential and no local endpoint), the runtime is left
+        on its deterministic fallback rather than pointed at an
+        unconfigured endpoint -- the same posture the Loader takes."""
         choice = self.choose(intent, runtime=runtime)
-        runtime.model_binding = choice.binding
+        runtime.model_binding = choice.binding if self._reachable(choice.binding) else None
         return choice
+
+    @staticmethod
+    def _reachable(binding: Any) -> bool:
+        if binding is None:
+            return False
+        resolve = getattr(binding, "resolve_api_key", None)
+        if callable(resolve) and resolve() is not None:
+            return True
+        return bool(getattr(binding, "api_base", ""))
 
     # -- the two paths --------------------------------------------------------
 
     def _decide(self, intent: Intent) -> ThriftChoice:
         lm = self._light_lm()
         if lm is not None:
-            return self._judge(lm, intent)
+            try:
+                return self._judge(lm, intent)
+            except LMError:
+                # A routing call that fails (a dead endpoint, a provider
+                # error) degrades to the deterministic fallback -- routing
+                # must never take the cycle down, and the fallback says it
+                # was the model that was unavailable, not that none existed.
+                return self._fallback(intent, unavailable=True)
         return self._fallback(intent)
 
     def _light_lm(self) -> Optional[Any]:
@@ -111,7 +131,12 @@ class ModelThrift:
             return ThriftChoice(HEAVY, self.heavy, "judged by the light model", rationale)
         return ThriftChoice(LIGHT, self.light, "judged by the light model", rationale)
 
-    def _fallback(self, intent: Intent) -> ThriftChoice:
+    def _fallback(self, intent: Intent, unavailable: bool = False) -> ThriftChoice:
+        basis = (
+            "deterministic fallback (light model unavailable)"
+            if unavailable
+            else "deterministic fallback (no model to judge)"
+        )
         words = len(intent.text.split()) + sum(
             len(str(key).split()) + len(str(value).split()) for key, value in intent.context.items()
         )
@@ -119,13 +144,13 @@ class ModelThrift:
             return ThriftChoice(
                 HEAVY,
                 self.heavy,
-                "deterministic fallback (no model to judge)",
+                basis,
                 f"{words} words of intent and context exceed the {FALLBACK_WORD_THRESHOLD}-word threshold",
             )
         return ThriftChoice(
             LIGHT,
             self.light,
-            "deterministic fallback (no model to judge)",
+            basis,
             f"{words} words of intent and context fit the light tier",
         )
 

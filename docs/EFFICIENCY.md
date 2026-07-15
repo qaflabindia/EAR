@@ -98,6 +98,26 @@ thrift = ModelThrift(
 thrift.bind(runtime, intent)   # sets the smallest adequate model for this cycle
 ```
 
+## Wired into the reasoning loop
+
+The plane is not just a set of seams beside the runtime — it runs *inside*
+`Runtime.reason()`, off unless declared:
+
+- **Thrift routes first.** If a runtime has a thrift ladder
+  (`runtime.enable_thrift(light, heavy)`), each intent is routed to the
+  smallest adequate model *before* the cycle's accounting begins, so token
+  and energy figures are read against the binding actually used. When the
+  chosen tier isn't reachable, the cycle degrades to deterministic reasoning
+  rather than pointing at an unconfigured endpoint; a failed routing call
+  degrades the same way — routing never takes the cycle down.
+- **The energy budget is a gate.** A cycle that would exceed the declared
+  daily watt-hours is refused before any work (`EnergyBudgetExceeded`), on the
+  record — the same posture as a governance stop.
+- **Every cycle is metered.** With a `## Energy` section declared, the Loader
+  wires an `EnergyMeter`/`EnergyBudget` onto the runtime, and each cycle
+  records its watt-hours (measured or estimated) against the exact tokens the
+  usage record accounts — a blocked or parked cycle's energy is recorded too.
+
 ## How the plane composes
 
 The three layers reinforce each other, all on the one spine:

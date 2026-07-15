@@ -154,6 +154,18 @@ class Runtime:
     # in which case acquisition stays session-only.
     tools_path: Optional[str] = None
 
+    # The resource plane (ear/hardware.py, ear/energy.py, ear/thrift.py),
+    # all off unless declared/wired. `thrift` routes each intent to the
+    # smallest adequate model before the cycle reasons; `energy_meter`
+    # meters the cycle's watt-hours (measured or estimated) onto the trail;
+    # `energy_budget` refuses a cycle that would blow the declared daily cap
+    # before any work happens. The Loader wires the two energy objects from
+    # a memory.md `## Energy` section; `thrift` is set with `enable_thrift`.
+    thrift: Any = None
+    energy_meter: Any = None
+    energy_budget: Any = None
+    _cycle_energy: Any = None
+
     # Live MCP connections opened by connect_mcp, closed by disconnect_mcp.
     _mcp_clients: list = field(default_factory=list)
 
@@ -292,9 +304,20 @@ class Runtime:
         the cycle refuses before anything is recorded."""
         if claim is not None:
             claim.require(self.tenant.org_id)
+        # Thrift routing runs first, so `calls_before` is measured against
+        # the binding this cycle will actually reason with.
+        self._route_model(intent)
         started = time.monotonic()
         calls_before = self._model_calls_so_far()
         self.reasoning_log.begin_cycle(intent)
+
+        # The energy budget is a gate like governance: a cycle that would
+        # exceed the declared daily watt-hours is refused before any work,
+        # on the record. Metering the cycle's own energy begins here and
+        # closes in `_record_usage`, so a blocked cycle's energy is recorded
+        # too.
+        self._check_energy_budget()
+        self._begin_energy()
 
         violations = self.governor.govern(self, intent, approval=approval)
         self._enforce(violations, approval, started, calls_before, scope="Policy")
@@ -382,6 +405,47 @@ class Runtime:
         self.reasoning_log.flush()
         raise ApprovalRequired(pending)
 
+    def enable_thrift(self, light: Any, heavy: Any) -> "Runtime":
+        """Route every cycle to the smallest adequate model: `light` and
+        `heavy` are two ModelBindings, and each intent's complexity is judged
+        on the light one before the cycle reasons (see `ear/thrift.py`)."""
+        from .thrift import ModelThrift
+
+        self.thrift = ModelThrift(light=light, heavy=heavy)
+        return self
+
+    def _route_model(self, intent: Intent) -> None:
+        """Thrift-route this intent's model when a ladder is configured --
+        setting the cycle's `model_binding` before any accounting or
+        reasoning. A no-op on a runtime with no thrift ladder."""
+        if self.thrift is not None:
+            self.thrift.bind(self, intent)
+
+    def _check_energy_budget(self) -> None:
+        """Refuse the cycle before any work if the declared daily energy
+        budget is spent -- loudly, on the record and flushed, like every
+        other governance stop. A no-op when no `## Energy` budget is set."""
+        if self.energy_budget is None:
+            return
+        try:
+            self.energy_budget.check(self.reasoning_log, runtime=self)
+        except Exception:
+            self.reasoning_log.flush()
+            raise
+
+    def _begin_energy(self) -> None:
+        if self.energy_meter is not None:
+            self._cycle_energy = self.energy_meter.start()
+
+    def _close_energy(self, tokens: int) -> None:
+        """Close the cycle's energy meter with the tokens it spent, recording
+        the watt-hours (measured or estimated) on the trail. Called from
+        `_record_usage`, so it fires on every exit -- completed, blocked, or
+        parked."""
+        if self._cycle_energy is not None:
+            self._cycle_energy.stop(tokens=tokens, runtime=self)
+            self._cycle_energy = None
+
     def _model_calls_so_far(self) -> int:
         """How many calls the bound LM's history holds before this cycle,
         so the cycle's usage is the delta. A binding not yet activated has
@@ -441,6 +505,10 @@ class Runtime:
             output=summary,
             model=model_name(self.model_binding),
         )
+        # Close the cycle's energy meter with the tokens it just accounted --
+        # the same token figure the usage record carries, so dollars and
+        # watt-hours are read off the identical spend.
+        self._close_energy(input_tokens + output_tokens)
 
     def spawn(self, persona: Any, intent: Any) -> Any:
         """Spawn a subagent runtime scoped to one Persona and reason the

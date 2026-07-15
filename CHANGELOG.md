@@ -37,6 +37,15 @@ has not yet made a versioned release, so entries accumulate under
     Every choice records on the spine (stage `thrift`).
   - `Kernel(max_workers=0)` auto-sizes the fleet pool from `HardwareProfile`
     once, on first use.
+  - **Wired into `Runtime.reason()`** (off unless declared): thrift routes the
+    intent's model *before* the cycle's accounting (so tokens/energy are read
+    against the binding actually used, degrading to deterministic reasoning
+    when a tier is unreachable or a routing call fails); the energy budget
+    refuses a cycle before any work if the declared daily watt-hours are spent;
+    and every cycle records its energy against the exact tokens the usage
+    record accounts (a blocked/parked cycle's energy is recorded too). The
+    Loader wires `EnergyMeter`/`EnergyBudget` from a `## Energy` section;
+    `Runtime.enable_thrift(light, heavy)` attaches the model ladder.
 - **Concurrency & parallelism** (`ear/parallel.py`, Kernel fleet pool) --
   the decided model is *single-writer actors, thread parallelism, one ordered
   spine* (`docs/CONCURRENCY.md`).

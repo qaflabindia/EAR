@@ -236,10 +236,23 @@ def test_choice_lands_on_the_spine():
     assert "light" in records[0].output
 
 
-def test_bind_sets_the_runtime_binding_for_the_cycle():
+def test_bind_sets_a_reachable_binding_for_the_cycle():
+    # A reachable tier (here via a local api_base) is set as the cycle's
+    # binding; an unreachable one would leave the runtime on its
+    # deterministic fallback instead of pointing at an unconfigured endpoint.
+    reachable = ModelThrift(
+        light=ModelBinding(provider="openai", model="local-small", api_base="http://localhost:11434/v1"),
+        heavy=ModelBinding(provider="openai", model="local-big", api_base="http://localhost:11434/v1"),
+    )
     runtime = Runtime(name="E")
-    choice = _ladder().bind(runtime, Intent(text="short", context={}))
+    choice = reachable.bind(runtime, Intent(text="short", context={}))
     assert runtime.model_binding is choice.binding
+
+
+def test_bind_degrades_to_deterministic_when_unreachable():
+    runtime = Runtime(name="E")
+    _ladder().bind(runtime, Intent(text="short", context={}))  # anthropic, no key here
+    assert runtime.model_binding is None
 
 
 @requires_anthropic_key
@@ -259,6 +272,65 @@ def test_light_model_judges_complexity_live():
     assert simple.basis == "judged by the light model"
     assert simple.tier == LIGHT
     assert hard.tier == HEAVY
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: the resource plane wired into reason().
+# ---------------------------------------------------------------------------
+
+
+def _energy_stack(tmp_path: Path) -> Path:
+    (tmp_path / "process.md").write_text("# R\n\n## Do\n\nHandle the request.\n")
+    (tmp_path / "memory.md").write_text(ENERGY_STACK)
+    return tmp_path
+
+
+def test_loader_wires_energy_from_the_section(tmp_path):
+    from ear import load_runtime
+
+    runtime = load_runtime(_energy_stack(tmp_path))
+    assert runtime.energy_meter is not None
+    assert runtime.energy_budget is not None
+
+
+def test_a_cycle_records_its_energy(tmp_path):
+    from ear import load_runtime
+
+    runtime = load_runtime(_energy_stack(tmp_path))
+    runtime.reason(Intent(text="hello", context={}))
+    energy = runtime.reasoning_log.for_stage("energy")
+    assert len(energy) == 1  # one energy record per cycle
+
+
+def test_a_cycle_is_refused_when_the_daily_budget_is_spent(tmp_path):
+    from ear import load_runtime
+
+    runtime = load_runtime(_energy_stack(tmp_path))
+    # Pre-load the trail with a spend beyond the 50 Wh/day budget.
+    runtime.reasoning_log.record(
+        stage="deliberation", output="x", usage={"input_tokens": 130_000, "output_tokens": 10_000}
+    )
+    with pytest.raises(EnergyBudgetExceeded):
+        runtime.reason(Intent(text="again", context={}))
+
+
+def test_thrift_wired_into_reason_records_and_degrades():
+    from ear import Process, Workflow
+
+    runtime = Runtime(name="T")
+    process = Process(name="p")
+    process.add_workflow(Workflow(name="w"))
+    runtime.add_process(process)
+    runtime.enable_thrift(
+        ModelBinding(provider="anthropic", model="claude-haiku-4-5"),
+        ModelBinding(provider="anthropic", model="claude-opus-4-8"),
+    )
+    runtime.reason(Intent(text="a short routine task", context={}))
+    thrift = runtime.reasoning_log.for_stage("thrift")
+    assert len(thrift) == 1
+    assert "light" in thrift[0].output
+    # Unreachable here -> the cycle degraded to deterministic reasoning.
+    assert runtime.model_binding is None
 
 
 # ---------------------------------------------------------------------------
