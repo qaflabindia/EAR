@@ -74,6 +74,17 @@ from .decider import Decider
 from .delegator import Delegator
 from .deliberator import Deliberator
 from .discoverer import Discoverer
+from .enterprise import (
+    Binding,
+    CommandCentre,
+    CommandCentreBackend,
+    Constitution,
+    ConstitutionalRule,
+    Verdict,
+    bind_command_centres,
+    load_command_centres,
+    plane_of,
+)
 from .evidence import Evidence
 from .evolution import EvolutionChange, EvolutionDenied, EvolutionPolicy, Evolver
 from .examiner import Comparison, CriterionResult, Examination, EvaluationResult, Examiner, PreferenceResult
@@ -267,5 +278,14 @@ __all__ = [
     "TaskDefinition",
     "Claim",
     "TenantBoundaryViolation",
+    "CommandCentre",
+    "CommandCentreBackend",
+    "Constitution",
+    "ConstitutionalRule",
+    "Verdict",
+    "Binding",
+    "load_command_centres",
+    "bind_command_centres",
+    "plane_of",
     "__version__",
 ]

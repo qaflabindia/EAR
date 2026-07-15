@@ -1,0 +1,2 @@
+{"timestamp": "2026-07-14T09:12:00Z", "agent": "credit-risk-guru", "action": "underwrite-loan", "verdict": "EXECUTE", "rationale": "production confidence 0.88, within tier"}
+{"timestamp": "2026-07-14T11:41:00Z", "agent": "sales-mis-guru", "action": "publish-mis-summary", "verdict": "DEFER", "rationale": "confidence 0.71 below 0.75 threshold, parked for review"}

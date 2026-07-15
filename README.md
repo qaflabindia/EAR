@@ -980,6 +980,38 @@ isn't part of running a cycle, so it sits outside this pipeline and is
 called directly (see *Optimization — the trail is the training corpus*
 above).
 
+## Enterprise AGI — constitutions become policies
+
+EAR is the execution substrate; the
+[`acc-skills`](https://github.com/qaflabindia/acc-skills) command centres
+are the constitutional substrate. `ear/enterprise.py` binds them:
+`CommandCentre.load(centre).bind(runtime)` reads a centre's
+`references/constitutional_rules.md` and attaches each rule onto the
+runtime as an enforceable `Policy` — the rule's prose is the statement an
+LLM judges, any mechanically checkable clause is its `Fallback:`, and the
+AGCC verdict (`HALT`/`DEFER`/`ESCALATE`/…) decides the gate. Enforcement
+flows through the same `Governor.govern` choke point every other intent
+clears, and a centre's `state/*.json` sits behind the one `CatalogueBackend`
+store abstraction (`CommandCentreBackend`).
+
+```python
+from ear import CommandCentre, Runtime, Intent, Governor
+
+agcc = CommandCentre.load("path/to/acc-skills/agcc")
+runtime = Runtime(name="Enterprise")
+agcc.bind(runtime)   # its constitution (CR-AG01..08) is now runtime governance
+
+# a policy mutation under critical urgency violates CR-AG03 (HALT):
+intent = Intent(text="mutate policy", context={"policy_mutation": True, "urgency": "critical"})
+Governor().govern(runtime, intent)   # -> the CR-AG03 policy, blocked
+```
+
+A constitution compiles to a `policy.md` the existing `Loader` reads
+unchanged (`Constitution.to_policy_markdown`), so English stays the source
+of truth and nothing an author wrote is dropped. See
+[`docs/ENTERPRISE_AGI.md`](docs/ENTERPRISE_AGI.md) for the full architecture
+and phasing.
+
 ## Roadmap
 
 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) is the native
@@ -1258,6 +1290,7 @@ ear/
   strategy.py      Strategy      — the memory.md operating strategy, read from plain English
   tenant.py        Tenant        — the org this stack belongs to, stacked from tenant.md: org_id, fiscal year bounds, timezone
   identity.py      Claim         — who is calling and which Tenant org_id(s) they may act as; Runtime.reason/Kernel.submit refuse a Claim not authorized for the instance's tenant
+  enterprise.py    CommandCentre  — Enterprise AGI binding: acc-skills constitutions → EAR policies, AGCC verdict → gate, state behind CatalogueBackend (see docs/ENTERPRISE_AGI.md)
   exchange.py      Exchange      — the markdown boundary: intents/*.md in, decisions/*.md out
   reasoning_log.py ReasoningLog  — the reasoning audit trail (markdown/JSONL); hash-chained + verify(), retention rotation, usage ledger
   dashboard.py     Dashboard     — self-contained HTML runtime board from the trail (TensorBoard-equivalent): render_fleet, live auto-ticking render_gantt, zero deps

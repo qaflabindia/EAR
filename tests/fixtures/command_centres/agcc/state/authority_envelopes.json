@@ -1,0 +1,18 @@
+{
+  "envelopes": [
+    {
+      "agent": "credit-risk-guru",
+      "certified": true,
+      "scopes": ["read:applications", "reason:credit"],
+      "max_autonomy_tier": 2,
+      "status": "active"
+    },
+    {
+      "agent": "sales-mis-guru",
+      "certified": true,
+      "scopes": ["read:sales", "summarize:mis"],
+      "max_autonomy_tier": 1,
+      "status": "probation"
+    }
+  ]
+}

@@ -8,6 +8,44 @@ has not yet made a versioned release, so entries accumulate under
 ## [Unreleased]
 
 ### Added
+- `ear/enterprise.py`: the **Enterprise AGI** binding layer -- Phase 1 of
+  the framework architecture (`docs/ENTERPRISE_AGI.md`), binding the
+  thirteen `acc-skills` constitutional command centres onto EAR's execution
+  substrate, "least invasion first."
+  - **Constitutions become policies.** `Constitution.from_directory` reads a
+    centre's `references/constitutional_rules.md`; each rule compiles to an
+    EAR `Policy` (`ConstitutionalRule.to_policy`) -- the rule's prose is the
+    `statement` an LLM judges, any mechanically checkable clause is the
+    policy's `Fallback:` deterministic expression, and the declared scope
+    becomes `Applies to:`. `Constitution.to_policy_markdown` renders a
+    `policy.md` the existing `Loader` reads back unchanged, so English stays
+    the source of truth and nothing an author wrote is dropped in
+    compilation (a compiled constitution round-trips to the same policies it
+    started as).
+  - **AGCC verdicts map onto the one policy gate.** `Verdict` translates the
+    AGCC verdict vocabulary onto `Governor.govern` behaviour: `HALT` is a
+    hard, unwaivable block; `DEFER`/`ESCALATE` park the cycle for a human
+    (riding the same `Approval`/`ApprovalRequired` machinery, `ESCALATE`
+    with a declared deadline); advisory verdicts (`CONSTRAIN`,
+    `EXECUTE_WITH_ADVISORY`) ride the reasoning log rather than block.
+    Enforcement flows through the same choke point every other intent
+    clears -- there is no private governance path.
+  - **State behind one store abstraction.** `CommandCentreBackend` exposes a
+    centre's `state/*.json` through EAR's `CatalogueBackend` protocol
+    (`list/exists/read/write/delete`, `read_json`/`write_json`), satisfied
+    structurally. Phase 1 is an adapter: the JSON files stay the source of
+    truth, zero changes to acc-skills. The append-only `audit_trail.jsonl`
+    is never adapted as state -- `CommandCentre.mirror_audit` folds it onto
+    EAR's one audit spine.
+  - `CommandCentre.load` / `.bind` load a centre and attach its constitution
+    onto a runtime at the declared scope (runtime, tools, or a named
+    workflow); `load_command_centres`/`bind_command_centres` load and bind a
+    whole acc-skills root, governance plane first (the governance plane
+    governs the operational and cognitive planes). `COMMAND_CENTRES`/
+    `plane_of` carry the thirteen-centre plane assignment.
+  - Fixture `tests/fixtures/command_centres/agcc` (AGCC, CR-AG01..08 with
+    state and a ledger) makes the whole binding demonstrable and the suite
+    self-contained -- no reach to the acc-skills repo.
 - `ear/evolution.py`: governed self-modification, configured, never
   assumed. `EvolutionPolicy` declares which *kinds* of change a runtime
   may make to itself (`allowed_changes`), which it may never make
