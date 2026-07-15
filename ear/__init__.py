@@ -98,10 +98,12 @@ from .evolution import EvolutionChange, EvolutionDenied, EvolutionPolicy, Evolve
 from .examiner import Comparison, CriterionResult, Examination, EvaluationResult, Examiner, PreferenceResult
 from .exchange import Exchange
 from .executor import Executor
+from .energy import EnergyBudget, EnergyBudgetExceeded, EnergyMeter, EnergyReading
 from .experience import Experience
 from .explainer import Explainer
 from .goal import Goal, GoalEvaluation, GoalKeeper, GoalOutcome
 from .governor import Governor
+from .hardware import Battery, HardwareProfile
 from .identity import Claim, TenantBoundaryViolation
 from .initializer import Initializer
 from .intent import Intent
@@ -147,6 +149,7 @@ from .step import Step
 from .store import PersonaStore, PolicyStore, ProcessStore, SkillStore, Store, Stores, TaskStore, WorkflowStore
 from .strategy import Strategy
 from .task import TaskDefinition
+from .thrift import ModelThrift, ThriftChoice
 from .tool import Tool
 from .tool_binder import BoundTool, ToolBinder
 from .validator import Validator
@@ -313,5 +316,13 @@ __all__ = [
     "JudgedReducer",
     "Result",
     "parallel_values",
+    "HardwareProfile",
+    "Battery",
+    "EnergyMeter",
+    "EnergyReading",
+    "EnergyBudget",
+    "EnergyBudgetExceeded",
+    "ModelThrift",
+    "ThriftChoice",
     "__version__",
 ]

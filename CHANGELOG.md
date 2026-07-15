@@ -8,6 +8,35 @@ has not yet made a versioned release, so entries accumulate under
 ## [Unreleased]
 
 ### Added
+- **Hardware, energy & compute efficiency** (`ear/hardware.py`,
+  `ear/energy.py`, `ear/thrift.py`, the `## Energy` strategy section, Kernel
+  auto-sizing) -- the physical resource plane (`docs/EFFICIENCY.md`). Honest
+  throughout: a figure nobody measured or declared is never invented.
+  - `ear/hardware.py`: `HardwareProfile.detect()` reads what the process may
+    *actually* use -- CPU confined by cgroup quota (v2 `cpu.max`, v1
+    `cfs_quota/period`), memory capped by the cgroup, load, battery (charge +
+    whether discharging), RAPL presence, and GPUs (`nvidia-smi` when present).
+    Fields the host does not expose stay `None`. `recommended_workers()` sizes
+    an I/O-bound pool, tempered by load and **halved on battery**. Probe
+    functions take injectable roots (tested against fixture `/sys` trees).
+  - `ear/energy.py`: `EnergyMeter` measures real joules from RAPL counters
+    (wrap-safe, summed across package zones) when the host exposes them, or
+    estimates watt-hours from a declared rate otherwise, or reports
+    `unmetered` -- each reading labelled and recorded on the one audit spine
+    (stage `energy`). `EnergyBudget` enforces a prose-declared daily cap
+    before a cycle starts, summing spend from the trail's own token records,
+    raising `EnergyBudgetExceeded` (a `PermissionError`) loudly on the record.
+    A new `## Energy` section in `memory.md` declares the rate and budget the
+    way `## Pricing` declares dollar rates (`Strategy._read_energy` /
+    `watt_hours`).
+  - `ear/thrift.py`: `ModelThrift(light, heavy)` routes each intent to the
+    smallest adequate model by complexity judged *on the light model itself*
+    (`JudgeTaskComplexity`, new in `ear/signatures.py`), so the routing costs
+    a cheap call; an uncertain judge escalates to heavy. Offline / unreachable
+    light model degrades to a deterministic, labelled size-based fallback.
+    Every choice records on the spine (stage `thrift`).
+  - `Kernel(max_workers=0)` auto-sizes the fleet pool from `HardwareProfile`
+    once, on first use.
 - **Concurrency & parallelism** (`ear/parallel.py`, Kernel fleet pool) --
   the decided model is *single-writer actors, thread parallelism, one ordered
   spine* (`docs/CONCURRENCY.md`).

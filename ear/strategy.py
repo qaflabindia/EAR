@@ -221,6 +221,15 @@ class Strategy:
     input_rate_per_million: Optional[float] = None
     output_rate_per_million: Optional[float] = None
 
+    # Energy -> watt-hours on usage records (see ear/energy.py). Like
+    # pricing, the rate is the author's declaration ("reasoning costs about
+    # 0.4 watt-hours per thousand tokens"), never a table shipped in code;
+    # an optional daily budget ("keep within 50 watt-hours per day") is
+    # enforced deterministically before a cycle starts -- budgets are code.
+    energy: str = ""
+    wh_per_thousand_tokens: Optional[float] = None
+    energy_budget_wh: Optional[float] = None
+
     # Execution resilience -> the Journey's leg retry budget, unless a
     # workflow declares its own.
     execution: str = ""
@@ -279,6 +288,8 @@ class Strategy:
                 strategy._read_knowledge(body)
             elif "pricing" in heading or "price" in heading or "cost" in heading:
                 strategy._read_pricing(prose)
+            elif "energy" in heading or "power" in heading or "sustainab" in heading:
+                strategy._read_energy(prose)
             elif "retry" in heading or "retries" in heading or "resilien" in heading or "execution" in heading:
                 strategy._read_execution(prose)
             elif "sandbox" in heading or "isolat" in heading or "workspace" in heading:
@@ -387,6 +398,48 @@ class Strategy:
                 self.input_rate_per_million = rate
             if "output" in words:
                 self.output_rate_per_million = rate
+
+    def _read_energy(self, prose: str) -> None:
+        """Read energy declarations from prose, the way `_read_pricing`
+        reads dollar rates. The reliable forms: a rate -- 'Reasoning costs
+        about 0.4 watt-hours per thousand tokens.' -- and an optional daily
+        budget -- 'Keep within 50 watt-hours per day.' Each sentence names
+        watt-hours, an amount, and (for the rate) a scale word. Sentences
+        split only on a period followed by whitespace (or end of text), so
+        a decimal rate like '0.4 watt-hours' never splits in half."""
+        self.energy = prose
+        for sentence in re.split(r"[;.](?:\s+|$)", prose):
+            lowered = sentence.lower()
+            if "watt" not in lowered and " wh" not in f" {lowered}":
+                continue
+            words = lowered.split()
+            amount: Optional[float] = None
+            for word in words:
+                try:
+                    amount = float(word.strip("$,()~"))
+                    break
+                except ValueError:
+                    continue
+            if amount is None:
+                continue
+            if "budget" in lowered or "per day" in lowered or "a day" in lowered or "daily" in lowered:
+                self.energy_budget_wh = amount
+                continue
+            rate = amount
+            if "million" in words or "1m" in words:
+                rate /= 1000
+            elif "token" in lowered and "thousand" not in words and "1k" not in words:
+                rate *= 1000
+            self.wh_per_thousand_tokens = rate
+
+    def watt_hours(self, tokens: int) -> Optional[float]:
+        """The declared energy of a token spend, or None when no energy
+        rate was authored -- an energy figure nobody declared is never
+        invented (measured RAPL joules, when the host exposes them, come
+        from `ear/energy.py` instead of this estimate)."""
+        if self.wh_per_thousand_tokens is None:
+            return None
+        return tokens * self.wh_per_thousand_tokens / 1000
 
     def dollars(
         self,

@@ -1319,6 +1319,9 @@ ear/
   monitor.py       Monitor       — the premium live TUI: the whole fleet as a factory assembly line, pure ANSI truecolor, zero deps
   kernel.py        Kernel        — EAR as an OS scheduler: process table of instances, a run queue, the run-or-sleep idle loop; max_workers>1 runs instances concurrently (one cycle per instance)
   parallel.py      parallel_map  — native joblib-shaped parallel map / map_reduce over ThreadPoolExecutor: input-ordered results, per-unit isolation, judged reduce (see docs/CONCURRENCY.md)
+  hardware.py      HardwareProfile — honest host reading: cgroup CPU/memory limits, load, battery, RAPL, GPUs; recommended_workers() (see docs/EFFICIENCY.md)
+  energy.py        EnergyMeter   — measured RAPL joules or declared watt-hour estimate on the trail; EnergyBudget enforces a prose daily cap before a cycle runs
+  thrift.py        ModelThrift   — route each intent to the smallest adequate model, complexity judged on the light model, with a deterministic fallback
   server.py        Server        — the control plane: a stdlib HTTP service over the Kernel (token auth, confined stack loading), zero deps
   k8s.py           KubeProvider  — run instances as K8s Jobs/CronJobs, spoken natively over the REST API (stdlib, no SDK); the Kernel's execution seam
   run.py           (entrypoint)  — python -m ear.run <stack>: run one cycle in a pod from EAR_INTENT/EAR_CONTEXT, exit code = outcome

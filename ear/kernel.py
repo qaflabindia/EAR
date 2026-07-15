@@ -106,7 +106,10 @@ class Kernel:
     # actor invariant, so an instance's memory and hash-chained audit spine
     # never have two writers. The default (1) is the historical serial
     # scheduler, unchanged. Threads (not processes) because a cycle is
-    # I/O-bound on the model call, which releases the GIL.
+    # I/O-bound on the model call, which releases the GIL. `0` means
+    # hardware-aware: size the pool from the detected machine (cgroup CPU
+    # quota, current load, battery state -- see HardwareProfile
+    # .recommended_workers), resolved once on first use.
     max_workers: int = 1
     _wake: Any = field(default_factory=threading.Event)
     _lock: Any = field(default_factory=threading.Lock)
@@ -222,7 +225,7 @@ class Kernel:
         synchronous way to advance a parallel kernel (tests drive it
         directly). Falls back to the serial `drain` when `max_workers <= 1`,
         so the default kernel is unchanged."""
-        if self.max_workers <= 1:
+        if self._resolved_workers() <= 1:
             return self.drain(max_units)
         pool = self._ensure_pool()
         dispatched: list = []
@@ -289,8 +292,17 @@ class Kernel:
 
     def _ensure_pool(self):
         if self._pool is None:
-            self._pool = ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="ear-kernel")
+            self._pool = ThreadPoolExecutor(max_workers=self._resolved_workers(), thread_name_prefix="ear-kernel")
         return self._pool
+
+    def _resolved_workers(self) -> int:
+        """The pool size, resolving `max_workers=0` to a hardware-aware
+        recommendation once (cgroup quota, load, battery)."""
+        if self.max_workers == 0:
+            from .hardware import HardwareProfile
+
+            self.max_workers = HardwareProfile.detect(probe_gpus=False).recommended_workers()
+        return max(1, self.max_workers)
 
     def _dispatch(self, task: Task, now: float) -> Dispatch:
         """run_work(): run the task on its instance through the normal
@@ -349,8 +361,9 @@ class Kernel:
         work across the pool (one cycle per instance) and only sleeps when
         nothing is ready and nothing is in flight."""
         self.running = True
+        parallel = self._resolved_workers() > 1
         while self.running:
-            if self.max_workers > 1:
+            if parallel:
                 if self._submit_ready() == 0 and not self._busy():
                     self._sleep_until_interrupt()
             elif self.tick() is None:

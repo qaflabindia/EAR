@@ -170,6 +170,26 @@ SynthesizePanel = Judgment(
     outputs=[Field("decision", "The panel's single concluded decision, with its reasoning", "text")],
 )
 
+JudgeTaskComplexity = Judgment(
+    instruction=(
+        "Decide whether this task genuinely needs a large, expensive model, "
+        "or whether a small fast one is adequate -- the way a pragmatic lead "
+        "assigns work. Simple lookups, formatting, extraction, routine "
+        "classification and short summaries are light work; multi-step "
+        "reasoning, nuanced judgment, high-stakes decisions and long-form "
+        "synthesis are heavy. When honestly uncertain, say heavy -- a wasted "
+        "large call costs money; a botched hard task costs more."
+    ),
+    inputs=[
+        Field("intent_text", "The task being routed"),
+        Field("context", "The intent's context values"),
+    ],
+    outputs=[
+        Field("heavy", "True if the task needs the large model", "bool"),
+        Field("rationale", "One sentence naming why", "text"),
+    ],
+)
+
 SynthesizeParallel = Judgment(
     instruction=(
         "Fold several independent partial results -- each produced in "
