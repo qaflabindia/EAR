@@ -7,6 +7,31 @@ has not yet made a versioned release, so entries accumulate under
 
 ## [Unreleased]
 
+### Added
+- **Concurrency & parallelism** (`ear/parallel.py`, Kernel fleet pool) --
+  the decided model is *single-writer actors, thread parallelism, one ordered
+  spine* (`docs/CONCURRENCY.md`).
+  - `ear/parallel.py`: a native, dependency-free `joblib`-shaped engine over
+    `concurrent.futures.ThreadPoolExecutor` (threads because a cycle is
+    I/O-bound on the model call, which releases the GIL). `parallel_map(fn,
+    items)` returns one `Result` per item **in input order** regardless of
+    completion order, with per-unit error isolation (a unit that raises
+    captures its error; the batch still returns a full ordered set;
+    `values(..., on_error=...)` chooses partial-tolerance). A **backend seam**
+    (`serial` / `threads`) is where an out-of-process backend attaches later;
+    nesting is **depth-guarded** so a bounded pool can never deadlock or
+    explode. `map_reduce(items, map_fn, reduce_fn)` scatters in parallel and
+    folds; `JudgedReducer` reduces *by judgment* -- the model synthesizes the
+    parts (`SynthesizeParallel`, new in `ear/signatures.py`) with a
+    deterministic fallback offline.
+  - Kernel fleet pool: `Kernel(max_workers=N)`. With `N > 1` the loop runs
+    work for **different** instances concurrently on a bounded pool while
+    holding **at most one in-flight cycle per instance** (the single-writer
+    actor invariant, so an instance's memory and hash-chained audit spine
+    never have two writers); `drain_concurrent` advances it synchronously for
+    tests. `max_workers=1` (the default) is the historical serial scheduler,
+    unchanged -- `tick`/`drain` are untouched.
+
 ### Changed
 - **Reason-first governance** (correcting Phase 3 to EAR's own rule -- the
   model judges, code enforces and records, and a deterministic path is only

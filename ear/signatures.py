@@ -170,6 +170,21 @@ SynthesizePanel = Judgment(
     outputs=[Field("decision", "The panel's single concluded decision, with its reasoning", "text")],
 )
 
+SynthesizeParallel = Judgment(
+    instruction=(
+        "Fold several independent partial results -- each produced in "
+        "parallel over a part of one task -- into a single coherent answer. "
+        "Reconcile disagreements and remove redundancy the way a careful "
+        "editor would; do not merely concatenate the parts, and do not drop a "
+        "part's substance. State the one combined result."
+    ),
+    inputs=[
+        Field("task", "What the parallel work was solving, as one line"),
+        Field("parts", "The partial results, one per line, each 'part N: ...'"),
+    ],
+    outputs=[Field("synthesis", "The single combined result", "text")],
+)
+
 FlagForAdversarialReview = Judgment(
     instruction=(
         "Decide whether an intent warrants an adversarial safety review "

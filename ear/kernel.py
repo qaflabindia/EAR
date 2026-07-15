@@ -36,6 +36,7 @@ from __future__ import annotations
 import itertools
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Optional, Union
 
@@ -99,9 +100,19 @@ class Kernel:
     # KubeProvider.as_dispatcher(), each firing runs on the cluster instead,
     # while the Kernel stays the single scheduler.
     dispatcher: Any = None
+    # Fleet parallelism: with `max_workers > 1` the loop runs work for
+    # *different* instances concurrently on a bounded thread pool, while
+    # keeping at most one in-flight cycle *per instance* -- the single-writer
+    # actor invariant, so an instance's memory and hash-chained audit spine
+    # never have two writers. The default (1) is the historical serial
+    # scheduler, unchanged. Threads (not processes) because a cycle is
+    # I/O-bound on the model call, which releases the GIL.
+    max_workers: int = 1
     _wake: Any = field(default_factory=threading.Event)
     _lock: Any = field(default_factory=threading.Lock)
     _thread: Any = None
+    _pool: Any = None
+    _in_flight: set = field(default_factory=set)
 
     # -- the process table ----------------------------------------------------
 
@@ -203,6 +214,84 @@ class Kernel:
                 self.queue.remove(task)
             return task
 
+    # -- fleet parallelism: many instances at once, one cycle per instance ----
+
+    def drain_concurrent(self, max_units: int = 10_000) -> list:
+        """Run every ready task, fanning out across *different* instances on
+        the pool while serializing work *within* an instance -- the
+        synchronous way to advance a parallel kernel (tests drive it
+        directly). Falls back to the serial `drain` when `max_workers <= 1`,
+        so the default kernel is unchanged."""
+        if self.max_workers <= 1:
+            return self.drain(max_units)
+        pool = self._ensure_pool()
+        dispatched: list = []
+        while len(dispatched) < max_units:
+            futures = []
+            while True:
+                task = self._take_ready_free(time.monotonic())
+                if task is None:
+                    break
+                futures.append(pool.submit(self._dispatch_and_release, task))
+            if not futures:
+                break
+            for future in futures:
+                dispatched.append(future.result())
+        return dispatched
+
+    def _take_ready_free(self, now: float) -> Optional[Task]:
+        """The soonest-due ready task *whose instance is not already running*,
+        atomically reserving that instance in-flight -- at most one cycle per
+        instance keeps each a single writer of its own memory and trail."""
+        with self._lock:
+            ready = sorted(
+                (
+                    task
+                    for task in self.queue
+                    if task.due <= now and task.instance not in self._in_flight
+                ),
+                key=lambda task: task.due,
+            )
+            if not ready:
+                return None
+            task = ready[0]
+            if task.recurring:
+                task.due = now + task.every
+            else:
+                self.queue.remove(task)
+            self._in_flight.add(task.instance)  # atomic take + reserve
+            return task
+
+    def _dispatch_and_release(self, task: Task) -> Dispatch:
+        try:
+            return self._dispatch(task, time.monotonic())
+        finally:
+            with self._lock:
+                self._in_flight.discard(task.instance)
+
+    def _submit_ready(self) -> int:
+        """Submit every ready, free-instance task to the pool without
+        blocking, returning how many were submitted. The non-blocking step
+        the parallel idle loop is built from."""
+        pool = self._ensure_pool()
+        submitted = 0
+        while True:
+            task = self._take_ready_free(time.monotonic())
+            if task is None:
+                break
+            pool.submit(self._dispatch_and_release, task)
+            submitted += 1
+        return submitted
+
+    def _busy(self) -> bool:
+        with self._lock:
+            return bool(self._in_flight)
+
+    def _ensure_pool(self):
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="ear-kernel")
+        return self._pool
+
     def _dispatch(self, task: Task, now: float) -> Dispatch:
         """run_work(): run the task on its instance through the normal
         cycle. A governance stop parks it (blocked), an error fails it --
@@ -256,10 +345,15 @@ class Kernel:
 
     def run_forever(self) -> None:  # pragma: no cover - blocking loop
         """while running: if there is work, run it; else sleep until an
-        interrupt. The kernel's idle loop, verbatim."""
+        interrupt. Serial by default; with `max_workers > 1` it fans ready
+        work across the pool (one cycle per instance) and only sleeps when
+        nothing is ready and nothing is in flight."""
         self.running = True
         while self.running:
-            if self.tick() is None:
+            if self.max_workers > 1:
+                if self._submit_ready() == 0 and not self._busy():
+                    self._sleep_until_interrupt()
+            elif self.tick() is None:
                 self._sleep_until_interrupt()
 
     def _sleep_until_interrupt(self) -> None:  # pragma: no cover - blocks
@@ -286,6 +380,9 @@ class Kernel:
         if self._thread is not None:
             self._thread.join(timeout=timeout)
             self._thread = None
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
 
     def __enter__(self) -> "Kernel":
         return self.start()

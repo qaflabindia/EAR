@@ -123,6 +123,7 @@ from .monitor import Monitor
 from .model_binding import ModelBinding
 from .ontology import Ontology
 from .optimizer import Example, Optimizer, SearchOutcome
+from .parallel import JudgedReducer, Result, map_reduce, parallel_map, values as parallel_values
 from .orchestrator import Orchestrator
 from .panel import Panel, Turn
 from .performer import Performer
@@ -307,5 +308,10 @@ __all__ = [
     "AdversarialReview",
     "ReviewOutcome",
     "is_flagged",
+    "parallel_map",
+    "map_reduce",
+    "JudgedReducer",
+    "Result",
+    "parallel_values",
     "__version__",
 ]
