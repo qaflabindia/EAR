@@ -438,7 +438,7 @@ class Loader:
             # declared daily budget refuses a cycle before it overspends.
             from .energy import EnergyBudget, EnergyMeter
 
-            runtime.energy_meter = EnergyMeter(strategy=strategy)
+            runtime.energy_meter = EnergyMeter(strategy=strategy, grid=strategy.grid_signal())
             if strategy.energy_budget_wh is not None:
                 runtime.energy_budget = EnergyBudget(strategy=strategy)
 

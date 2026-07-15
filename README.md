@@ -1322,6 +1322,7 @@ ear/
   hardware.py      HardwareProfile — honest host reading: cgroup CPU/memory limits, load, battery, RAPL, GPUs; recommended_workers() (see docs/EFFICIENCY.md)
   energy.py        EnergyMeter   — measured RAPL joules or declared watt-hour estimate on the trail; EnergyBudget enforces a prose daily cap before a cycle runs
   thrift.py        ModelThrift   — route each intent to the smallest adequate model, complexity judged on the light model, with a deterministic fallback
+  carbon.py        GridSignal    — carbon-aware scheduling: defer heavy work to a clean grid window / off-battery moment; gCO2 on the energy trail (see docs/EFFICIENCY.md)
   server.py        Server        — the control plane: a stdlib HTTP service over the Kernel (token auth, confined stack loading), zero deps
   k8s.py           KubeProvider  — run instances as K8s Jobs/CronJobs, spoken natively over the REST API (stdlib, no SDK); the Kernel's execution seam
   run.py           (entrypoint)  — python -m ear.run <stack>: run one cycle in a pod from EAR_INTENT/EAR_CONTEXT, exit code = outcome

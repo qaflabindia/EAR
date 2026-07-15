@@ -118,9 +118,44 @@ The plane is not just a set of seams beside the runtime — it runs *inside*
   records its watt-hours (measured or estimated) against the exact tokens the
   usage record accounts — a blocked or parked cycle's energy is recorded too.
 
+## 4. Carbon-aware scheduling — `ear/carbon.py`
+
+The energy layer governs *how much* a cycle burns; carbon governs *when*.
+`GridSignal` answers one question for the scheduler — is now clean enough to
+run deferrable heavy work? — from, in order of preference:
+
+- a **live grid provider** (a callable returning gCO2/kWh — WattTime,
+  Electricity Maps, a national grid API — wired in code through the seam, so
+  the zero-dependency core stays clean);
+- a declared **clean-hours window** ("cleanest between 22:00 and 06:00")
+  and/or a **threshold** ("defer heavy work above 300 gCO2/kWh") and/or a
+  fixed declared intensity, from a `## Carbon` section in `memory.md`;
+- otherwise **`None`** — unknown, and an unknown verdict *never* defers work.
+
+**Stored energy** folds in: when the machine is on battery and discharging
+(`HardwareProfile.on_battery`), deferrable work waits, so an off-grid or
+laptop node spends its charge on what is due now.
+
+Only tasks explicitly marked `deferrable=True` are ever held, and only when
+the Kernel has a `grid` signal — a dirty-grid or on-battery deferrable task is
+rescheduled to `next_clean()` (or a fixed backoff when no window is
+predictable) and recorded as a `deferred` dispatch. Everything else runs when
+due, exactly as before.
+
+And carbon rides the energy record: when the watt-hours *and* a grid intensity
+are both known, `EnergyMeter` writes the **gCO2** those watt-hours cost onto
+the same trail line — a gram nobody could compute is never written down.
+
+```markdown
+## Carbon
+
+The grid is cleanest between 22:00 and 06:00. Defer heavy work above 300
+gCO2/kWh.
+```
+
 ## How the plane composes
 
-The three layers reinforce each other, all on the one spine:
+The four layers reinforce each other, all on the one spine:
 
 1. **Hardware** sizes the fleet (`Kernel(max_workers=0)`) and tempers
    parallel width on battery/load.
@@ -128,8 +163,11 @@ The three layers reinforce each other, all on the one spine:
    at the source.
 3. **Energy** meters (or estimates) the watt-hours those tokens cost and
    refuses a cycle that would blow the day's budget.
+4. **Carbon** defers heavy, deferrable work to a clean grid window or an
+   off-battery moment, and prices the watt-hours in gCO2.
 
-Fewer tokens (thrift) → fewer watt-hours (energy) → a fleet sized to the metal
+Fewer tokens (thrift) → fewer watt-hours (energy) → run them when the grid is
+clean and the charge is plentiful (carbon) → on a fleet sized to the metal
 (hardware). Measured where the host allows, estimated where the author
 declares, and honest — `None` — where neither can speak.
 

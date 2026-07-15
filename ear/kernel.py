@@ -38,6 +38,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Optional, Union
 
 _task_ids = itertools.count(1)
@@ -68,6 +69,11 @@ class Task:
     runs: int = 0
     approval: Any = None
     claim: Any = None
+    # Deferrable work may wait for a clean grid / off-battery window (see
+    # ear/carbon.py). Only deferrable tasks are ever held back, and only
+    # when the kernel has a grid signal; everything else runs when due.
+    deferrable: bool = False
+    deferrals: int = 0
 
     @property
     def recurring(self) -> bool:
@@ -111,11 +117,18 @@ class Kernel:
     # quota, current load, battery state -- see HardwareProfile
     # .recommended_workers), resolved once on first use.
     max_workers: int = 1
+    # Carbon-aware scheduling: with a `grid` (an ear.carbon.GridSignal) set,
+    # a task marked `deferrable` waits when the grid is dirty or the machine
+    # is on battery, rescheduled to the next clean window. Off (None) leaves
+    # every task running when due, exactly as before.
+    grid: Any = None
+    carbon_backoff: float = 900.0  # fallback wait (s) when no clean window is predictable
     _wake: Any = field(default_factory=threading.Event)
     _lock: Any = field(default_factory=threading.Lock)
     _thread: Any = None
     _pool: Any = None
     _in_flight: set = field(default_factory=set)
+    _hardware: Any = None
 
     # -- the process table ----------------------------------------------------
 
@@ -140,13 +153,16 @@ class Kernel:
         delay: float = 0.0,
         approval: Any = None,
         claim: Any = None,
+        deferrable: bool = False,
     ) -> Task:
         """Enqueue work for an instance and wake the loop -- a syscall
         raising an interrupt. `every` makes it recur on that period;
         `delay` defers its first run. `approval` releases a cycle an
         approval-gated policy previously parked (see `Task.approval`).
         `claim` (an `ear.identity.Claim`) is checked against the target
-        instance's tenant at dispatch time (see `Task.claim`)."""
+        instance's tenant at dispatch time (see `Task.claim`). `deferrable`
+        lets carbon-aware scheduling hold the task for a cleaner grid window
+        when the kernel has a grid signal (see `ear/carbon.py`)."""
         task = Task(
             instance=instance,
             intent=intent,
@@ -155,6 +171,7 @@ class Kernel:
             due=time.monotonic() + delay,
             approval=approval,
             claim=claim,
+            deferrable=deferrable,
         )
         with self._lock:
             self.queue.append(task)
@@ -205,17 +222,50 @@ class Kernel:
 
     def _take_ready(self, now: float) -> Optional[Task]:
         """The soonest-due task whose time has come, removed from the queue
-        (or rescheduled if recurring). None when nothing is ready."""
+        (or rescheduled if recurring). None when nothing is ready -- a
+        deferrable task the grid holds back is pushed to its next clean
+        window and skipped, not taken."""
         with self._lock:
             ready = sorted((task for task in self.queue if task.due <= now), key=lambda task: task.due)
-            if not ready:
-                return None
-            task = ready[0]
-            if task.recurring:
-                task.due = now + task.every
-            else:
-                self.queue.remove(task)
-            return task
+            for task in ready:
+                if self._deferred(task, now):
+                    continue
+                if task.recurring:
+                    task.due = now + task.every
+                else:
+                    self.queue.remove(task)
+                return task
+            return None
+
+    def _deferred(self, task: Task, now: float) -> bool:
+        """Whether a deferrable task should wait for a cleaner window. Only
+        deferrable tasks, only when a grid signal is set. When held back, the
+        task's due time is pushed to the next clean window (converting the
+        wall-clock window into the kernel's monotonic clock) or a fixed
+        backoff, and a `deferred` dispatch is recorded. Called while holding
+        `self._lock`."""
+        if self.grid is None or not task.deferrable:
+            return False
+        wall = datetime.now()
+        runs, reason = self.grid.deferrable_runs_now(now=wall, profile=self._hardware_profile())
+        if runs:
+            return False
+        next_clean = self.grid.next_clean(wall)
+        delay = (next_clean - wall).total_seconds() if next_clean is not None else self.carbon_backoff
+        task.due = now + max(0.0, delay)
+        task.deferrals += 1
+        self.history.append(Dispatch(task.id, task.instance, "deferred", reason[:240]))
+        return True
+
+    def _hardware_profile(self) -> Any:
+        """A fresh battery reading for the deferral decision, or None when the
+        grid does not consider battery -- re-read each time so a machine that
+        goes on battery mid-run is honoured, not a stale snapshot."""
+        if self.grid is None or not getattr(self.grid, "defer_on_battery", False):
+            return None
+        from .hardware import HardwareProfile, read_battery
+
+        return HardwareProfile(battery=read_battery())
 
     # -- fleet parallelism: many instances at once, one cycle per instance ----
 
@@ -255,15 +305,16 @@ class Kernel:
                 ),
                 key=lambda task: task.due,
             )
-            if not ready:
-                return None
-            task = ready[0]
-            if task.recurring:
-                task.due = now + task.every
-            else:
-                self.queue.remove(task)
-            self._in_flight.add(task.instance)  # atomic take + reserve
-            return task
+            for task in ready:
+                if self._deferred(task, now):
+                    continue
+                if task.recurring:
+                    task.due = now + task.every
+                else:
+                    self.queue.remove(task)
+                self._in_flight.add(task.instance)  # atomic take + reserve
+                return task
+            return None
 
     def _dispatch_and_release(self, task: Task) -> Dispatch:
         try:

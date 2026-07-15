@@ -57,13 +57,15 @@ def _read_int(path: Path) -> Optional[int]:
 class EnergyReading:
     """One interval's energy: measured joules (whole machine, when RAPL is
     exposed), an estimated watt-hours figure (when a rate was declared),
-    and the basis -- so no reader ever mistakes an estimate for a
-    measurement or vice versa."""
+    the carbon those watt-hours cost (when a grid intensity is known), and
+    the basis -- so no reader ever mistakes an estimate for a measurement or
+    vice versa."""
 
     measured_joules: Optional[float] = None
     estimated_wh: Optional[float] = None
     tokens: int = 0
     basis: str = "unmetered"
+    carbon_grams: Optional[float] = None
 
     @property
     def watt_hours(self) -> Optional[float]:
@@ -77,7 +79,10 @@ class EnergyReading:
         wh = self.watt_hours
         if wh is None:
             return "unmetered -- no RAPL counters and no declared energy rate"
-        return f"{wh:.4f} Wh ({self.basis}, {self.tokens} tokens)"
+        line = f"{wh:.4f} Wh ({self.basis}, {self.tokens} tokens)"
+        if self.carbon_grams is not None:
+            line += f", {self.carbon_grams:.3f} gCO2"
+        return line
 
 
 @dataclass
@@ -89,6 +94,7 @@ class EnergyMeter:
 
     strategy: Any = None
     rapl_root: Path = _RAPL
+    grid: Any = None
     _start_uj: dict[str, int] = field(default_factory=dict)
 
     def measurable(self) -> bool:
@@ -116,6 +122,14 @@ class EnergyMeter:
         reading = EnergyReading(
             measured_joules=measured, estimated_wh=estimated, tokens=tokens, basis=basis
         )
+        # Carbon only when both the watt-hours and a grid intensity are known
+        # -- a gram nobody could compute is never written down.
+        if self.grid is not None and reading.watt_hours is not None:
+            from .carbon import carbon_grams
+
+            intensity = self.grid.intensity()
+            if intensity.gco2_per_kwh is not None:
+                reading.carbon_grams = carbon_grams(reading.watt_hours, intensity.gco2_per_kwh)
         log = getattr(runtime, "reasoning_log", None)
         if log is not None:
             log.record(

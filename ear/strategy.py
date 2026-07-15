@@ -230,6 +230,15 @@ class Strategy:
     wh_per_thousand_tokens: Optional[float] = None
     energy_budget_wh: Optional[float] = None
 
+    # Carbon / grid intensity -> when deferrable heavy work should run (see
+    # ear/carbon.py). A declared clean-hours window and/or a gCO2/kWh
+    # threshold and/or a fixed declared intensity; a live grid provider is
+    # wired in code, not prose.
+    carbon: str = ""
+    carbon_threshold_gco2: Optional[float] = None
+    carbon_intensity_gco2: Optional[float] = None
+    clean_hours: Optional[tuple] = None
+
     # Execution resilience -> the Journey's leg retry budget, unless a
     # workflow declares its own.
     execution: str = ""
@@ -290,6 +299,8 @@ class Strategy:
                 strategy._read_pricing(prose)
             elif "energy" in heading or "power" in heading or "sustainab" in heading:
                 strategy._read_energy(prose)
+            elif "carbon" in heading or "grid" in heading or "emission" in heading:
+                strategy._read_carbon(prose)
             elif "retry" in heading or "retries" in heading or "resilien" in heading or "execution" in heading:
                 strategy._read_execution(prose)
             elif "sandbox" in heading or "isolat" in heading or "workspace" in heading:
@@ -431,6 +442,48 @@ class Strategy:
             elif "token" in lowered and "thousand" not in words and "1k" not in words:
                 rate *= 1000
             self.wh_per_thousand_tokens = rate
+
+    def _read_carbon(self, prose: str) -> None:
+        """Read grid declarations from prose: a clean-hours window
+        ('cleanest between 22:00 and 06:00'), a defer threshold ('defer heavy
+        work above 300 gCO2/kWh'), and/or a fixed intensity ('grid intensity
+        is about 250 gCO2/kWh'). Each is optional; a live provider is wired
+        in code, never named in prose."""
+        self.carbon = prose
+        lowered = prose.lower()
+        hours = re.findall(r"(\d{1,2}):\d{2}", prose)
+        if len(hours) >= 2 and ("clean" in lowered or "green" in lowered or "between" in lowered):
+            self.clean_hours = (int(hours[0]) % 24, int(hours[1]) % 24)
+        for sentence in re.split(r"[;.](?:\s+|$)", prose):
+            low = sentence.lower()
+            if "gco2" not in low and "gramme" not in low and "gram" not in low and "intensity" not in low:
+                continue
+            amounts = [
+                float(word.strip("$,()~"))
+                for word in low.replace("/", " ").split()
+                if word.strip("$,()~").replace(".", "", 1).isdigit()
+            ]
+            if not amounts:
+                continue
+            if "above" in low or "over" in low or "exceed" in low or "threshold" in low or "defer" in low:
+                self.carbon_threshold_gco2 = amounts[0]
+            else:
+                self.carbon_intensity_gco2 = amounts[0]
+
+    def grid_signal(self, provider: Any = None) -> Optional[Any]:
+        """A `GridSignal` from the declared carbon settings, or None when no
+        `## Carbon` section was authored (and no live provider given). The
+        provider seam lets a deployment wire a live grid API in code."""
+        if not self.carbon and provider is None:
+            return None
+        from .carbon import GridSignal
+
+        return GridSignal(
+            provider=provider,
+            declared_intensity=self.carbon_intensity_gco2,
+            threshold=self.carbon_threshold_gco2,
+            clean_hours=self.clean_hours,
+        )
 
     def watt_hours(self, tokens: int) -> Optional[float]:
         """The declared energy of a token spend, or None when no energy

@@ -8,6 +8,25 @@ has not yet made a versioned release, so entries accumulate under
 ## [Unreleased]
 
 ### Added
+- **Carbon-aware scheduling** (`ear/carbon.py`, the `## Carbon` strategy
+  section, Kernel task deferral) -- run heavy work when the energy is clean
+  and plentiful (`docs/EFFICIENCY.md`).
+  - `GridSignal` answers "is now clean enough to run deferrable work?" from a
+    live grid `provider` seam (gCO2/kWh, wired in code), a declared clean-hours
+    window and/or gCO2/kWh threshold and/or fixed intensity (from `## Carbon`
+    in memory.md), or `None` -- an unknown verdict never defers work, and a
+    dead provider reads as unknown, not fatal. On battery + discharging,
+    deferrable work waits (stored energy). `next_clean()` predicts the next
+    window; `carbon_grams` converts Wh x gCO2/kWh.
+  - Kernel: a task submitted `deferrable=True` is held when the grid is dirty
+    or the machine is on battery (only when a `grid` signal is set), pushed to
+    the next clean window (or a fixed `carbon_backoff`) and recorded as a
+    `deferred` dispatch. Non-deferrable work, and a kernel with no grid, run
+    exactly as before.
+  - `EnergyMeter` records the **gCO2** a cycle cost on the energy trail line
+    when both the watt-hours and a grid intensity are known (`EnergyReading
+    .carbon_grams`); absent either, no carbon is invented. `Strategy
+    ._read_carbon` / `grid_signal()`; the Loader wires the grid onto the meter.
 - **Hardware, energy & compute efficiency** (`ear/hardware.py`,
   `ear/energy.py`, `ear/thrift.py`, the `## Energy` strategy section, Kernel
   auto-sizing) -- the physical resource plane (`docs/EFFICIENCY.md`). Honest
