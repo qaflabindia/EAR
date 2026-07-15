@@ -170,6 +170,31 @@ SynthesizePanel = Judgment(
     outputs=[Field("decision", "The panel's single concluded decision, with its reasoning", "text")],
 )
 
+AdversarialChallenge = Judgment(
+    instruction=(
+        "Stress-test a flagged intent the way a rigorous red team would. "
+        "First argue, as a determined adversary, the strongest concrete case "
+        "that carrying out this action would cause harm, breach a control, or "
+        "be exploited -- the challenge. Then argue, as the defender, why the "
+        "action is nonetheless sound and safe to proceed -- the defense. Then "
+        "return a single verdict: 'uphold' if the defense clearly answers the "
+        "challenge, 'escalate' if a human must decide, 'overturn' if the "
+        "challenge stands and the action should not proceed."
+    ),
+    inputs=[
+        Field("intent_text", "The flagged action under adversarial review"),
+        Field("context", "The intent's context values"),
+        Field("concern", "Why the intent was flagged for adversarial review"),
+        Field("decision", "The decision reached so far, if any, to stress-test"),
+    ],
+    outputs=[
+        Field("challenge", "The strongest adversarial case against proceeding", "text"),
+        Field("defense", "The case that the action is sound and safe", "text"),
+        Field("verdict", "One of: uphold, escalate, overturn", "str"),
+        Field("rationale", "One sentence explaining the verdict", "text"),
+    ],
+)
+
 RecallRelevantMemory = Judgment(
     instruction=(
         "From the runtime's remembered history, recall what is genuinely "

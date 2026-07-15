@@ -1,6 +1,6 @@
 # Enterprise AGI — binding constitutions onto the runtime
 
-**Status:** Phases 1–2 shipped (`ear/enterprise.py`, `ear/compiler.py`, `ear/mcp_command_centre.py`) ·
+**Status:** Phases 1–3 shipped (`ear/enterprise.py`, `ear/compiler.py`, `ear/mcp_command_centre.py`, `ear/authority.py`, `ear/adversary.py`) ·
 **Repos:** [`qaflabindia/EAR`](https://github.com/qaflabindia/EAR) ·
 [`qaflabindia/acc-skills`](https://github.com/qaflabindia/acc-skills)
 
@@ -143,9 +143,56 @@ rules *are* runtime policies, judged and recorded exactly like any other.
 |---|---|---|
 | 1 | `CommandCentreBackend` (Store adapter over `state/`), constitutional-rules → `policy.md` compiler, AGCC verdict → gate mapping, bound at runtime scope | **shipped** |
 | 2 | Centre → EAR-stack compiler for one operational centre end-to-end (AFCC), MCP packaging, single audit spine | **shipped** |
-| 3 | AECC capability-envelope enforcement (a runtime-scope policy over `identity`/`signatures`), ATC adversarial-deliberation hook | planned |
+| 3 | AECC capability-envelope enforcement (a runtime-scope policy over `identity`/`signatures`), ATC adversarial-deliberation hook | **shipped** |
 | 4 | Cognitive plane: AKC-governed knowledge ingestion, ALCC → evolution loop under AAWDFC/AGCC gates | planned |
 | 5 | State migration to canonical per-`Tenant` `Store`; multi-tenant rollout | planned |
+
+## 6c. Phase 3 — who may act (AECC), and the red team (ATC)
+
+Phase 1 gated *whether* an action is allowed; Phase 3 gates *who may act at
+all*, and stress-tests the actions that warrant it.
+
+**AECC capability envelopes** (`ear/authority.py`, architecture §4). Every
+non-human actor — a spawned persona, an MCP-attached centre, an evolved
+workflow — must hold a **certified capability envelope** before
+`Governor.govern` passes its intents. `EnvelopeRegistry` loads the envelopes
+from a centre's `state/authority_envelopes.json` (the Phase-1 backend) and
+owns the state transitions — `certify`, `set_trust`, `probation`,
+`suspend`, `revoke`, `reinstate` — each recorded on the one audit spine and
+persisted back to state. `enforce_envelopes(runtime, registry)` attaches an
+`EnvelopePolicy` (a `Policy` subclass) at runtime scope; its judgment
+consults the **live** registry, so:
+
+- a human-initiated intent (no agent in context) is *not applicable* — the
+  same "off unless declared" posture as `Claim`/`Tenant`;
+- an agent-initiated intent blocks unless the agent holds an active,
+  in-scope, in-tier envelope;
+- **revocation is immediate** — `registry.revoke(agent)` updates state, and
+  the very next `Governor.govern` fails the gate, no reload or re-attach.
+
+Each envelope carries a `hashlib` content signature over its
+authority-bearing fields, so a record edited on disk (a standing flipped
+back to `active` by hand) no longer verifies and is refused — the
+tamper-evidence `identity`/`signatures` backing. A signing secret, when
+used, is named by environment variable only.
+
+**ATC adversarial pass** (`ear/adversary.py`, architecture §5). A *flagged*
+intent takes an adversarial pass before it executes. `is_flagged` triggers
+on a high-stakes/irreversible/adversarial context value, or on an acting
+agent AECC has placed on **probation** (the standing that
+authorizes-but-watches). `AdversarialReview.review` then argues the
+strongest case against the action, argues the defense, and returns a verdict
+— `uphold`, `escalate`, or `overturn` — via the native `AdversarialChallenge`
+judgment when a model is bound, and a conservative deterministic fallback
+offline (a flagged, low-confidence action escalates rather than being
+silently upheld; an unparseable verdict escalates, never guesses an uphold).
+The challenge, defense and verdict land on the one audit spine. It is
+deliberation *when triggered* — an unflagged intent is never delayed.
+
+Binding the governance-plane centres wires both automatically:
+`CommandCentre.load("…/aecc").bind(runtime)` attaches envelope enforcement
+and exposes `runtime.envelope_registry`; binding ATC exposes
+`runtime.adversarial_review`.
 
 ## 6a. Phase 2 — the whole centre compiles to a stack
 

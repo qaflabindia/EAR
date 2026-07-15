@@ -1,0 +1,6 @@
+{
+  "reviews": [
+    {"intent": "wire $80,000 to a new vendor", "concern": "high stakes, unregistered vendor", "verdict": "overturn"},
+    {"intent": "publish MIS summary early", "concern": "acting agent on probation", "verdict": "escalate"}
+  ]
+}

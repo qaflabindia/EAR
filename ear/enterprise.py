@@ -491,20 +491,33 @@ class CommandCentreBackend:
 @dataclass
 class Binding:
     """The result of binding a command centre onto a runtime: which
-    constitutional policies were attached and enforced, and which advisory
-    rules were recorded rather than gated. Returned so a caller (and the
-    audit trail) sees exactly what the binding did."""
+    constitutional policies were attached and enforced, which advisory rules
+    were recorded rather than gated, and any governance-plane specialization
+    the centre carries (AECC envelope enforcement, an ATC adversarial hook).
+    Returned so a caller (and the audit trail) sees exactly what the binding
+    did."""
 
     centre: str
     plane: str
     enforced: list[Policy] = field(default_factory=list)
     advisories: list[ConstitutionalRule] = field(default_factory=list)
+    envelope_registry: Any = None
+    envelope_policy: Any = None
+    adversarial_review: Any = None
 
     def summary(self) -> str:
-        return (
+        line = (
             f"{self.centre} ({self.plane} plane): "
             f"{len(self.enforced)} enforced, {len(self.advisories)} advisory"
         )
+        extras = []
+        if self.envelope_policy is not None:
+            extras.append(f"envelope enforcement ({len(self.envelope_registry.envelopes)} agents)")
+        if self.adversarial_review is not None:
+            extras.append("adversarial review hook")
+        if extras:
+            line += " + " + ", ".join(extras)
+        return line
 
 
 @dataclass
@@ -590,7 +603,34 @@ class CommandCentre:
                     output=f"advisory ({rule.verdict})",
                     rule=rule,
                 )
+        self._bind_specializations(runtime, binding)
         return binding
+
+    def _bind_specializations(self, runtime: Any, binding: Binding) -> None:
+        """Attach the governance-plane bindings a centre carries beyond its
+        constitution. AECC contributes capability-envelope enforcement (Phase
+        3): a runtime-scope policy gating every agent-initiated cycle on the
+        acting agent's live envelope. ATC contributes the adversarial-review
+        hook: an adversarial pass a caller runs over flagged intents. Both
+        are additive -- the constitution has already bound above."""
+        slug = normalize(self.slug).replace("-", "").replace("_", "")
+        if slug == "aecc" and self.state.exists("authority_envelopes"):
+            from .authority import EnvelopeRegistry, enforce_envelopes
+
+            registry = EnvelopeRegistry.from_centre(
+                self, reasoning_log=getattr(runtime, "reasoning_log", None)
+            )
+            binding.envelope_registry = registry
+            binding.envelope_policy = enforce_envelopes(runtime, registry)
+            # The registry is reachable on the runtime so operators and the
+            # ATC hook can consult (and transition) it.
+            runtime.envelope_registry = registry
+        if slug == "atc":
+            from .adversary import AdversarialReview
+
+            review = AdversarialReview()
+            binding.adversarial_review = review
+            runtime.adversarial_review = review
 
     @staticmethod
     def _attach(runtime: Any, policy: Policy, scope: str) -> None:

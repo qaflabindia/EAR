@@ -65,7 +65,14 @@ import logging
 from .acquirer import Acquirer
 from .adaptation import Adaptation, AdaptationBank
 from .adapter import Adapter
+from .adversary import AdversarialReview, ReviewOutcome, is_flagged
 from .approval import Approval, ApprovalRequired
+from .authority import (
+    CapabilityEnvelope,
+    EnvelopePolicy,
+    EnvelopeRegistry,
+    enforce_envelopes,
+)
 from .auditor import Auditor
 from .compiler import CompiledStack, StackCompiler, compile_command_centre
 from .composer import Composer
@@ -293,5 +300,12 @@ __all__ = [
     "CompiledStack",
     "compile_command_centre",
     "CommandCentreServer",
+    "CapabilityEnvelope",
+    "EnvelopeRegistry",
+    "EnvelopePolicy",
+    "enforce_envelopes",
+    "AdversarialReview",
+    "ReviewOutcome",
+    "is_flagged",
     "__version__",
 ]

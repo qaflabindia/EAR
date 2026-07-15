@@ -1,0 +1,28 @@
+{
+  "envelopes": [
+    {
+      "agent": "credit-risk-guru",
+      "certified": true,
+      "scopes": ["read:applications", "reason:credit", "decide:underwriting"],
+      "max_autonomy_tier": 2,
+      "status": "active",
+      "trust_score": 0.91
+    },
+    {
+      "agent": "sales-mis-guru",
+      "certified": true,
+      "scopes": ["read:sales", "summarize:mis"],
+      "max_autonomy_tier": 1,
+      "status": "probation",
+      "trust_score": 0.66
+    },
+    {
+      "agent": "rogue-agent",
+      "certified": true,
+      "scopes": ["read:applications"],
+      "max_autonomy_tier": 1,
+      "status": "revoked",
+      "trust_score": 0.12
+    }
+  ]
+}

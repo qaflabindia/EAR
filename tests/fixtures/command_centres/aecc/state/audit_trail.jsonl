@@ -1,0 +1,2 @@
+{"timestamp": "2026-07-10T08:00:00Z", "agent": "credit-risk-guru", "event": "certified", "rationale": "passed evaluation suite at tier 2"}
+{"timestamp": "2026-07-12T14:30:00Z", "agent": "rogue-agent", "event": "revoked", "rationale": "behavioural anomaly above 0.85, envelope withdrawn"}

@@ -8,6 +8,43 @@ has not yet made a versioned release, so entries accumulate under
 ## [Unreleased]
 
 ### Added
+- `ear/authority.py` + `ear/adversary.py`: **Enterprise AGI Phase 3** --
+  who may act (AECC capability envelopes), and the red team on the intent
+  path (ATC adversarial deliberation).
+  - **AECC capability-envelope enforcement.** `CapabilityEnvelope` is a
+    non-human actor's authority record (certified, scopes, max autonomy
+    tier, standing active/probation/suspended/revoked, trust score, and a
+    `hashlib` content signature over its authority fields so an on-disk edit
+    no longer verifies). `EnvelopeRegistry` loads envelopes from a centre's
+    `state/authority_envelopes.json` through the Phase-1 backend and owns
+    the transitions -- `certify`, `set_trust`, `probation`, `suspend`,
+    `revoke`, `reinstate` -- each recorded on the one audit spine and
+    persisted back to state. `enforce_envelopes(runtime, registry)` attaches
+    an `EnvelopePolicy` (a `Policy` subclass) at runtime scope whose
+    judgment consults the *live* registry: a human-initiated intent (no
+    agent in context) is not applicable; an agent-initiated one blocks
+    unless the agent holds an active, in-scope, in-tier envelope; and
+    **revocation is immediate** -- the next `Governor.govern` fails the gate
+    with no reload. A signing secret, when used, is named by environment
+    variable only.
+  - **ATC adversarial-deliberation hook.** `is_flagged` triggers an
+    adversarial pass on a high-stakes/irreversible/adversarial context
+    value, or on an acting agent AECC has placed on probation.
+    `AdversarialReview.review` argues the case against the action, the
+    defense, and a verdict -- `uphold` / `escalate` / `overturn` -- via the
+    new native `AdversarialChallenge` judgment when a model is bound, and a
+    conservative deterministic fallback offline (a flagged low-confidence
+    action escalates rather than being silently upheld; an unparseable
+    verdict escalates, never guesses an uphold). Challenge, defense and
+    verdict land on the one audit spine; an unflagged intent is never
+    delayed. `AdversarialChallenge` added to `ear/signatures.py`.
+  - `CommandCentre.bind` gained governance-plane specializations: binding
+    AECC attaches envelope enforcement and exposes `runtime.envelope_registry`;
+    binding ATC exposes `runtime.adversarial_review`. `Binding` now reports
+    both. Fixtures `tests/fixtures/command_centres/{aecc,atc}` and
+    `tests/test_authority.py` / `tests/test_adversary.py` (27 tests) cover
+    the gate, immediate revocation, signature tampering, the flag predicate
+    and the offline fallback, plus one live adversarial judgment.
 - `ear/compiler.py` + `ear/mcp_command_centre.py`: **Enterprise AGI Phase 2**
   -- a whole command centre compiles to a runnable EAR stack, and can be
   served out-of-process as a native MCP server.
