@@ -100,6 +100,8 @@ from .examiner import Comparison, CriterionResult, Examination, EvaluationResult
 from .exchange import Exchange
 from .executor import Executor
 from .energy import EnergyBudget, EnergyBudgetExceeded, EnergyMeter, EnergyReading
+from .epistemic import EpistemicAudit, EpistemicAuditor, EpistemicFinding
+from .evolution_loop import LearningLoop, LegitimacyGate, LegitimacyVerdict
 from .experience import Experience
 from .explainer import Explainer
 from .goal import Goal, GoalEvaluation, GoalKeeper, GoalOutcome
@@ -114,6 +116,7 @@ from .kernel import Dispatch, Kernel, Task
 from .judgment import Field, Judgment
 from .llm import LM
 from .knowledge import Knowledge, KnowledgeSource, Passage
+from .knowledge_governance import Admission, KnowledgeGate
 from .learner import Learner
 from .librarian import Librarian, Research
 from .loader import Loader, load_runtime
@@ -331,5 +334,13 @@ __all__ = [
     "GridSignal",
     "CarbonIntensity",
     "carbon_grams",
+    "KnowledgeGate",
+    "Admission",
+    "EpistemicAuditor",
+    "EpistemicAudit",
+    "EpistemicFinding",
+    "LegitimacyGate",
+    "LegitimacyVerdict",
+    "LearningLoop",
     "__version__",
 ]

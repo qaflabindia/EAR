@@ -1,6 +1,6 @@
 # Enterprise AGI — binding constitutions onto the runtime
 
-**Status:** Phases 1–3 shipped (`ear/enterprise.py`, `ear/compiler.py`, `ear/mcp_command_centre.py`, `ear/authority.py`, `ear/adversary.py`) ·
+**Status:** Phases 1–4 shipped — all thirteen command centres bound across the three planes ·
 **Repos:** [`qaflabindia/EAR`](https://github.com/qaflabindia/EAR) ·
 [`qaflabindia/acc-skills`](https://github.com/qaflabindia/acc-skills)
 
@@ -144,8 +144,51 @@ rules *are* runtime policies, judged and recorded exactly like any other.
 | 1 | `CommandCentreBackend` (Store adapter over `state/`), constitutional-rules → `policy.md` compiler, AGCC verdict → gate mapping, bound at runtime scope | **shipped** |
 | 2 | Centre → EAR-stack compiler for one operational centre end-to-end (AFCC), MCP packaging, single audit spine | **shipped** |
 | 3 | AECC capability-envelope enforcement (a runtime-scope policy over `identity`/`signatures`), ATC adversarial-deliberation hook, and the remaining operational centres (HRCC, TAIC, ALGCC, ARCC, AITCC) rolled through the Phase-1 bind / Phase-2 compile machinery | **shipped** |
-| 4 | Cognitive plane: AKC-governed knowledge ingestion, ALCC → evolution loop under AAWDFC/AGCC gates | planned |
+| 4 | Cognitive plane: AKC-governed knowledge ingestion, ARC epistemic audit, ALCC → evolution loop under AAWDFC/AGCC gates | **shipped** |
 | 5 | State migration to canonical per-`Tenant` `Store`; multi-tenant rollout | planned |
+
+## 6d. Phase 4 — the cognitive plane
+
+The governance plane governs the other two; Phase 4 is the third — the plane
+that *learns* — and it is governed like everything else.
+
+**AKC — nothing enters `Knowledge` ungoverned** (`ear/knowledge_governance.py`,
+architecture §6). A claim reaches the corpus only through
+`KnowledgeGate.admit`: it is validated for form and source, scored
+epistemically (`JudgeKnowledgeAdmission`), and checked for contradiction
+(`JudgeContradiction`) — and only a passing claim is chunked in via
+`Knowledge.add_document`. `retire` / `supersede` are the lifecycle events that
+remove or replace a passage. Reason-first above a deterministic floor: offline,
+an unsourced or terse claim is refused and says so; a scored admission the
+model never made is never dressed up as one. Every admission, refusal and
+retirement lands on the spine (stage `ingest`).
+
+**ARC — epistemic audit on the output side** (`ear/epistemic.py`). Where AKC
+governs the input, ARC audits how the runtime *reasons*: `EpistemicAuditor
+.audit` scans the trail's deliberation and decision records for biased premises
+and unsupported assumptions (`JudgeReasoningQuality`), records them as
+**advisories** (it informs, it does not block), and **escalates to AGCC** when
+flags pass a threshold — a one-off is noted, a habit is raised. Offline it makes
+no judgment and records the honest non-audit, never a clean bill of health
+nobody gave.
+
+**ALCC → the evolution loop, under AAWDFC/AGCC gates** (`ear/evolution_loop.py`,
+architecture §7). `LearningLoop.candidates` (ALCC) turns the runtime's distilled
+`Adaptation`s into candidate `EvolutionChange`s, each carrying its provenance as
+the required explanation — *proposing is not applying*. Before any machine-
+created change applies, `LegitimacyGate.judge` (AAWDFC) decides whether it is
+*fit to exist* — explained (an absolute floor), constitutionally compatible, and
+structurally coherent (`JudgeWorkflowLegitimacy`) — and the `Evolver` consults
+`runtime.legitimacy_gate` before it runs `apply`, so an illegitimate change is
+refused on the record, never applied. AGCC's verdicts still gate application
+through the existing `EvolutionPolicy` fences: the system may improve itself,
+but only through the same gate everything else passes through.
+
+Binding wires each automatically: binding `akc` exposes `runtime
+.knowledge_gate`, `arc` → `runtime.epistemic_auditor`, `aawdfc` →
+`runtime.legitimacy_gate`, `alcc` → `runtime.learning_loop`. With this, **all
+thirteen command centres** across the three planes have fixtures, constitutions,
+and bindings — the framework is whole.
 
 ## 6c. Phase 3 — who may act (AECC), and the red team (ATC)
 

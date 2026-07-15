@@ -170,6 +170,86 @@ SynthesizePanel = Judgment(
     outputs=[Field("decision", "The panel's single concluded decision, with its reasoning", "text")],
 )
 
+JudgeKnowledgeAdmission = Judgment(
+    instruction=(
+        "Decide whether a claim should be admitted into the governed "
+        "knowledge base, the way a careful epistemics reviewer would. Judge "
+        "whether it is well-formed, sourced, and plausible on its face; score "
+        "its epistemic quality from 0 (unsupported rumour) to 1 (well-sourced, "
+        "verifiable fact). Admit only what the organization should reason from "
+        "as if it were true; when the claim is unsourced, vague, or "
+        "speculative, do not admit it."
+    ),
+    inputs=[
+        Field("claim", "The claim or document text under consideration"),
+        Field("source", "Where the claim came from, if stated"),
+        Field("existing", "A short summary of what the knowledge base already holds"),
+    ],
+    outputs=[
+        Field("admit", "True to admit the claim into the knowledge base", "bool"),
+        Field("score", "Epistemic quality from 0 to 1", "str"),
+        Field("rationale", "One sentence explaining the judgment", "text"),
+    ],
+)
+
+JudgeContradiction = Judgment(
+    instruction=(
+        "Decide whether a new claim contradicts anything the knowledge base "
+        "already holds. A contradiction is a direct factual conflict, not "
+        "mere difference of topic or emphasis. Name the conflicting passage "
+        "when there is one."
+    ),
+    inputs=[
+        Field("new_claim", "The claim being admitted"),
+        Field("existing_passages", "The passages already held, one per line"),
+    ],
+    outputs=[
+        Field("contradicts", "True if the new claim conflicts with an existing passage", "bool"),
+        Field("passage", "The source of the conflicting passage, if any", "str"),
+        Field("rationale", "One sentence explaining the judgment", "text"),
+    ],
+)
+
+JudgeReasoningQuality = Judgment(
+    instruction=(
+        "Audit a piece of the runtime's own reasoning for epistemic quality, "
+        "the way a rigorous critic would. Flag whether it rests on a biased "
+        "premise (a protected attribute, an unwarranted stereotype, a "
+        "one-sided framing) or on an unsupported assumption stated as fact. Be "
+        "specific and fair -- do not manufacture a flaw where the reasoning is "
+        "sound."
+    ),
+    inputs=[Field("reasoning", "The reasoning excerpt to audit")],
+    outputs=[
+        Field("biased", "True if the reasoning rests on a biased premise", "bool"),
+        Field("unsupported", "True if it rests on an unsupported assumption stated as fact", "bool"),
+        Field("rationale", "One sentence naming the specific concern, or affirming soundness", "text"),
+    ],
+)
+
+JudgeWorkflowLegitimacy = Judgment(
+    instruction=(
+        "Decide whether a machine-created change to the runtime is legitimate "
+        "-- fit to exist before it is applied. A legitimate change carries a "
+        "clear purpose and explanation, stays within the organization's "
+        "constitution, and proposes a sound role topology (it delegates to "
+        "personas that make sense for the work). Reject a change that is "
+        "unexplained, that a constitutional rule forbids, or whose structure "
+        "is incoherent."
+    ),
+    inputs=[
+        Field("kind", "The kind of change (skill prompt, workflow, ...)"),
+        Field("name", "What the change is called"),
+        Field("description", "What the change does"),
+        Field("explanation", "Why the change was proposed"),
+        Field("constitution", "A short summary of the governing constitutional rules"),
+    ],
+    outputs=[
+        Field("legitimate", "True if the change is fit to exist and be applied", "bool"),
+        Field("rationale", "One sentence explaining the judgment", "text"),
+    ],
+)
+
 JudgeTaskComplexity = Judgment(
     instruction=(
         "Decide whether this task genuinely needs a large, expensive model, "

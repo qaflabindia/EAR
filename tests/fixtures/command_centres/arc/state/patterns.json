@@ -1,0 +1,4 @@
+{
+  "escalation_threshold": 3,
+  "known_patterns": ["anchoring", "protected-attribute-leakage", "confirmation", "overconfidence"]
+}

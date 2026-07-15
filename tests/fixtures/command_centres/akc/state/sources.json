@@ -1,0 +1,7 @@
+{
+  "sources": {
+    "world-bank": {"tier": "authoritative", "trust": 0.95},
+    "internal-wiki": {"tier": "operational", "trust": 0.7},
+    "public-forum": {"tier": "unverified", "trust": 0.2}
+  }
+}

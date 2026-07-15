@@ -1,0 +1,4 @@
+{
+  "sanctioned_personas": ["Finance Operator", "Credit Risk Guru", "Customer Advocate"],
+  "max_delegation_depth": 3
+}

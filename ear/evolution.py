@@ -267,6 +267,16 @@ class Evolver:
         if policy.require_evaluation and evaluate is None:
             raise self._deny(runtime, change, "the policy requires an evaluation and none was provided -- an unevaluated change is never promoted")
 
+        # AAWDFC legitimacy gate (framework §7): a machine-created change must
+        # be judged fit to exist -- explained, constitutionally compatible,
+        # coherent -- before it is applied. Attached by binding the AAWDFC
+        # command centre; absent, the loop is unchanged.
+        legitimacy = getattr(runtime, "legitimacy_gate", None)
+        if legitimacy is not None:
+            verdict = legitimacy.judge(change, runtime)
+            if not getattr(verdict, "legitimate", True):
+                raise self._deny(runtime, change, f"AAWDFC judged the change illegitimate -- {verdict.reason}")
+
         try:
             apply()
         except Exception as error:

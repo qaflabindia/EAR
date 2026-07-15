@@ -8,6 +8,37 @@ has not yet made a versioned release, so entries accumulate under
 ## [Unreleased]
 
 ### Added
+- **Enterprise AGI Phase 4 -- the cognitive plane** (`ear/knowledge_governance.py`,
+  `ear/epistemic.py`, `ear/evolution_loop.py`, Evolver wiring, fixtures for
+  ALCC/AKC/ARC/AAWDFC). The plane that learns, governed like everything else.
+  - **AKC-governed ingestion**: `KnowledgeGate.admit` is the only door into
+    `Knowledge` -- a claim is validated for form and source, scored
+    epistemically (`JudgeKnowledgeAdmission`) and checked for contradiction
+    (`JudgeContradiction`), and only a passing claim is chunked in via
+    `Knowledge.add_document`; `retire`/`supersede` are the lifecycle events.
+    Reason-first above a deterministic floor (offline: unsourced/terse claims
+    refused, labelled); every admission/refusal/retirement on the spine
+    (stage `ingest`).
+  - **ARC epistemic audit**: `EpistemicAuditor.audit` scans the trail's
+    deliberation/decision records for biased premises and unsupported
+    assumptions (`JudgeReasoningQuality`), records advisories (it informs, it
+    does not block) and escalates to AGCC past a flag threshold; offline it
+    records an honest non-audit, never a clearance nobody gave.
+  - **ALCC -> evolution loop under AAWDFC/AGCC gates**: `LearningLoop
+    .candidates` (ALCC) turns distilled `Adaptation`s into candidate
+    `EvolutionChange`s carrying provenance; `LegitimacyGate.judge` (AAWDFC)
+    decides whether a machine-created change is fit to exist -- explained (an
+    absolute floor), constitutionally compatible, coherent
+    (`JudgeWorkflowLegitimacy`) -- and the `Evolver` now consults
+    `runtime.legitimacy_gate` before `apply`, refusing an illegitimate change
+    on the record; AGCC's `EvolutionPolicy` fences still gate application.
+  - `CommandCentre.bind` wires each: `akc` -> `runtime.knowledge_gate`, `arc`
+    -> `runtime.epistemic_auditor`, `aawdfc` -> `runtime.legitimacy_gate`,
+    `alcc` -> `runtime.learning_loop`. With the four cognitive/governance
+    fixtures, **all thirteen command centres** across the three planes now
+    have fixtures, constitutions and bindings. `tests/test_cognition.py` (20
+    tests) plus one live AKC judgment test. Four judgments added to
+    `ear/signatures.py`.
 - **Enterprise AGI Phase 3 completed -- the operational plane rolled out.**
   Phase 3's third item (the remaining operational centres, alongside AECC
   envelope enforcement and the ATC adversarial hook already shipped) is now

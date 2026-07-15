@@ -1323,6 +1323,9 @@ ear/
   energy.py        EnergyMeter   — measured RAPL joules or declared watt-hour estimate on the trail; EnergyBudget enforces a prose daily cap before a cycle runs
   thrift.py        ModelThrift   — route each intent to the smallest adequate model, complexity judged on the light model, with a deterministic fallback
   carbon.py        GridSignal    — carbon-aware scheduling: defer heavy work to a clean grid window / off-battery moment; gCO2 on the energy trail (see docs/EFFICIENCY.md)
+  knowledge_governance.py KnowledgeGate — AKC: nothing enters Knowledge ungoverned; admit (epistemic score + contradiction), retire, supersede (see docs/ENTERPRISE_AGI.md)
+  epistemic.py     EpistemicAuditor — ARC: audit reasoning for bias / unsupported assumptions as advisories, escalate a systematic pattern to AGCC
+  evolution_loop.py LegitimacyGate — AAWDFC judges machine-created changes fit to exist; LearningLoop (ALCC) turns Experience into candidate EvolutionChanges
   server.py        Server        — the control plane: a stdlib HTTP service over the Kernel (token auth, confined stack loading), zero deps
   k8s.py           KubeProvider  — run instances as K8s Jobs/CronJobs, spoken natively over the REST API (stdlib, no SDK); the Kernel's execution seam
   run.py           (entrypoint)  — python -m ear.run <stack>: run one cycle in a pod from EAR_INTENT/EAR_CONTEXT, exit code = outcome

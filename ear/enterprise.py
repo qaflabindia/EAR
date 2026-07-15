@@ -504,6 +504,10 @@ class Binding:
     envelope_registry: Any = None
     envelope_policy: Any = None
     adversarial_review: Any = None
+    knowledge_gate: Any = None
+    epistemic_auditor: Any = None
+    legitimacy_gate: Any = None
+    learning_loop: Any = None
 
     def summary(self) -> str:
         line = (
@@ -631,6 +635,30 @@ class CommandCentre:
             review = AdversarialReview()
             binding.adversarial_review = review
             runtime.adversarial_review = review
+        if slug == "akc":
+            from .knowledge_governance import KnowledgeGate
+
+            gate = KnowledgeGate()
+            binding.knowledge_gate = gate
+            runtime.knowledge_gate = gate
+        if slug == "arc":
+            from .epistemic import EpistemicAuditor
+
+            auditor = EpistemicAuditor()
+            binding.epistemic_auditor = auditor
+            runtime.epistemic_auditor = auditor
+        if slug == "aawdfc":
+            from .evolution_loop import LegitimacyGate
+
+            gate = LegitimacyGate()
+            binding.legitimacy_gate = gate
+            runtime.legitimacy_gate = gate
+        if slug == "alcc":
+            from .evolution_loop import LearningLoop
+
+            loop = LearningLoop()
+            binding.learning_loop = loop
+            runtime.learning_loop = loop
 
     @staticmethod
     def _attach(runtime: Any, policy: Policy, scope: str) -> None:
