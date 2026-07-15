@@ -160,15 +160,23 @@ from a centre's `state/authority_envelopes.json` (the Phase-1 backend) and
 owns the state transitions — `certify`, `set_trust`, `probation`,
 `suspend`, `revoke`, `reinstate` — each recorded on the one audit spine and
 persisted back to state. `enforce_envelopes(runtime, registry)` attaches an
-`EnvelopePolicy` (a `Policy` subclass) at runtime scope; its judgment
-consults the **live** registry, so:
+`EnvelopePolicy` (a `Policy` subclass) at runtime scope. It is **reason-first
+above a deterministic floor**, the same division EAR draws everywhere:
 
 - a human-initiated intent (no agent in context) is *not applicable* — the
   same "off unless declared" posture as `Claim`/`Tenant`;
-- an agent-initiated intent blocks unless the agent holds an active,
-  in-scope, in-tier envelope;
-- **revocation is immediate** — `registry.revoke(agent)` updates state, and
-  the very next `Governor.govern` fails the gate, no reload or re-attach.
+- the **floor** — uncertified / revoked / suspended / tampered / no envelope
+  — is absolute and *never model-waivable*, consulted live from the
+  registry, which is what makes **revocation immediate**
+  (`registry.revoke(agent)` updates state and the very next `Governor.govern`
+  fails the gate, no reload). The model is never asked to reconsider a
+  withdrawn credential, exactly as it is never asked to waive a human
+  approval;
+- **above the floor**, whether the envelope's granted scopes and tier
+  authorize the *requested* scope and tier is a judgment: with a model bound
+  the model reasons over the envelope facts (injected into the context) via
+  the base `Policy.judge`; offline it falls back to the deterministic
+  `envelope_authorizes` check and announces it as a fallback.
 
 Each envelope carries a `hashlib` content signature over its
 authority-bearing fields, so a record edited on disk (a standing flipped
@@ -177,10 +185,15 @@ tamper-evidence `identity`/`signatures` backing. A signing secret, when
 used, is named by environment variable only.
 
 **ATC adversarial pass** (`ear/adversary.py`, architecture §5). A *flagged*
-intent takes an adversarial pass before it executes. `is_flagged` triggers
-on a high-stakes/irreversible/adversarial context value, or on an acting
-agent AECC has placed on **probation** (the standing that
-authorizes-but-watches). `AdversarialReview.review` then argues the
+intent takes an adversarial pass before it executes. Flagging is
+**model-judged with a deterministic fallback**: a factual floor (an explicit
+high-stakes/irreversible value, or an acting agent AECC has placed on
+**probation** — the standing that authorizes-but-watches) flags on its own;
+otherwise a bound model decides whether the intent warrants scrutiny
+(`FlagForAdversarialReview`), and offline an unremarkable intent is not
+flagged and says so — never a keyword rule masquerading as a judgment. The
+flag decision (including a decision *not* to review) lands on the one audit
+spine. `AdversarialReview.review` then argues the
 strongest case against the action, argues the defense, and returns a verdict
 — `uphold`, `escalate`, or `overturn` — via the native `AdversarialChallenge`
 judgment when a model is bound, and a conservative deterministic fallback

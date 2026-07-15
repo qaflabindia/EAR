@@ -44,9 +44,11 @@ requires_anthropic_key = pytest.mark.skipif(
 
 
 def test_unflagged_intent_is_not_reviewed():
+    # Offline (no model bound), an intent with no factual high-stakes signal
+    # is not flagged -- and says so, rather than fabricating a judgment.
     flagged, reason = is_flagged(Intent(text="routine", context={"confidence": 0.9}))
     assert not flagged
-    assert reason == ""
+    assert "not flagged" in reason
 
 
 def test_high_stakes_context_flags():
@@ -118,6 +120,16 @@ def test_review_records_on_the_audit_spine():
     assert "ESCALATE" in records[0].output
 
 
+def test_flag_decision_lands_on_the_spine_even_when_not_flagged():
+    # A decision not to review is still on the record (here, deterministic).
+    runtime = Runtime(name="Ent")
+    outcome = AdversarialReview().review_flagged(runtime, Intent(text="routine", context={}))
+    assert outcome is None
+    flag_records = runtime.reasoning_log.for_stage("flag")
+    assert len(flag_records) == 1
+    assert flag_records[0].output == "not flagged"
+
+
 def test_binding_atc_attaches_the_review_hook():
     centre = CommandCentre.load(ATC)
     runtime = Runtime(name="Ent")
@@ -133,6 +145,24 @@ def test_binding_atc_attaches_the_review_hook():
 # ---------------------------------------------------------------------------
 # Live: the adversarial judgment against a real model.
 # ---------------------------------------------------------------------------
+
+
+@requires_anthropic_key
+def test_model_judges_the_flag_when_no_deterministic_signal():
+    # No explicit high-stakes key, but the action is plainly dangerous -- the
+    # model should flag it for review even without a keyword trigger.
+    from ear import ModelBinding
+
+    binding = ModelBinding(provider="anthropic", model=ANTHROPIC_TEST_MODEL)
+    flagged, reason = is_flagged(
+        Intent(
+            text="Delete every backup and the primary database, then disable audit logging.",
+            context={},
+        ),
+        model_binding=binding,
+    )
+    assert flagged
+    assert reason
 
 
 @requires_anthropic_key

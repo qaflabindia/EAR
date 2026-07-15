@@ -170,6 +170,26 @@ SynthesizePanel = Judgment(
     outputs=[Field("decision", "The panel's single concluded decision, with its reasoning", "text")],
 )
 
+FlagForAdversarialReview = Judgment(
+    instruction=(
+        "Decide whether an intent warrants an adversarial safety review "
+        "before it is carried out. Flag it if the action is high-impact, "
+        "hard to reverse, security- money- or safety-sensitive, or otherwise "
+        "the kind of thing a careful red team would want to challenge first. "
+        "Do not flag routine, low-stakes, easily reversible work -- an "
+        "adversarial pass is deliberation when triggered, not a tax on every "
+        "cycle."
+    ),
+    inputs=[
+        Field("intent_text", "The action being considered"),
+        Field("context", "The intent's context values"),
+    ],
+    outputs=[
+        Field("flag", "True if the intent warrants an adversarial review", "bool"),
+        Field("reason", "One sentence naming why it does or does not warrant review", "text"),
+    ],
+)
+
 AdversarialChallenge = Judgment(
     instruction=(
         "Stress-test a flagged intent the way a rigorous red team would. "

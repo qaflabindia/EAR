@@ -125,9 +125,13 @@ class CapabilityEnvelope:
         no longer verifies."""
         return bool(self.signature) and self.signature == self.compute_signature(secret)
 
-    def authorized(self, scope: Any = None, tier: Any = None, secret: str = "") -> tuple[bool, str]:
-        """Whether this envelope authorizes an action, and why not if it
-        does not -- the exact reason the gate records."""
+    def floor(self, secret: str = "") -> tuple[bool, str]:
+        """The absolute, non-waivable authority floor: whether this envelope
+        exists as a certified, un-withdrawn, untampered credential at all.
+        This is the part no reasoning may override -- a revoked envelope
+        authorizes nothing, and the model is never asked to reconsider that,
+        exactly as a human's approval waiver is never the model's to give.
+        Scope and tier (the nuanced part) are judged above this floor."""
         if not self.certified:
             return False, f"agent '{self.agent}' holds no certified envelope"
         standing = normalize(self.status)
@@ -137,10 +141,21 @@ class CapabilityEnvelope:
             return False, f"agent '{self.agent}' envelope is suspended"
         if self.signature and not self.signature_valid(secret):
             return False, f"agent '{self.agent}' envelope signature does not verify -- record tampered"
+        return True, f"agent '{self.agent}' holds a live envelope (standing: {standing})"
+
+    def authorized(self, scope: Any = None, tier: Any = None, secret: str = "") -> tuple[bool, str]:
+        """The full deterministic decision: the floor, then scope and tier.
+        Used as the offline fallback and by out-of-process evaluation; when a
+        model is bound, `EnvelopePolicy` judges scope/tier above the floor
+        instead of calling this."""
+        floor_ok, floor_reason = self.floor(secret)
+        if not floor_ok:
+            return False, floor_reason
         if not self.holds_scope(scope):
             return False, f"agent '{self.agent}' envelope does not hold scope '{scope}'"
         if not self.within_tier(tier):
             return False, f"agent '{self.agent}' envelope tier {self.max_autonomy_tier} is below the required tier {tier}"
+        standing = normalize(self.status)
         # An active envelope authorizes outright; a probationary one is
         # authorized but flagged, so the ATC adversarial pass can pick it up.
         if standing == PROBATION:
@@ -225,11 +240,22 @@ class EnvelopeRegistry:
 
     def authorized(self, agent: str, scope: Any = None, tier: Any = None) -> tuple[bool, str]:
         """Whether `agent` may act, consulting the *live* registry -- so a
-        revocation between two cycles is enforced on the next one."""
+        revocation between two cycles is enforced on the next one. The full
+        deterministic decision (floor + scope + tier); the reason-first gate
+        judges scope/tier above `floor` instead."""
         envelope = self.get(agent)
         if envelope is None:
             return False, f"agent '{agent}' holds no envelope -- uncertified actors may not act"
         return envelope.authorized(scope=scope, tier=tier, secret=self.secret)
+
+    def floor(self, agent: str) -> tuple[bool, str]:
+        """The absolute authority floor for `agent`, live from the registry:
+        does a certified, un-withdrawn, untampered envelope exist at all.
+        Never model-waivable -- this is what makes revocation immediate."""
+        envelope = self.get(agent)
+        if envelope is None:
+            return False, f"agent '{agent}' holds no envelope -- uncertified actors may not act"
+        return envelope.floor(self.secret)
 
     # -- state transitions --------------------------------------------------
 
@@ -314,12 +340,24 @@ class EnvelopePolicy(Policy):
     """The runtime-scope policy that gates a cycle on the acting agent's
     capability envelope. A `Policy` subclass, so it attaches with
     `runtime.add_policy` and is judged by `Governor.govern` exactly like any
-    other policy -- but its judgment consults the live `EnvelopeRegistry`
-    rather than a static statement, which is what makes revocation immediate.
+    other policy.
 
-    A human-initiated intent (no agent named in context) is not applicable;
-    an agent-initiated one blocks unless the agent holds an active, in-scope,
-    in-tier envelope."""
+    Reason-first, above a deterministic floor -- the same division EAR draws
+    everywhere:
+
+    * The **floor** (uncertified / revoked / suspended / tampered / no
+      envelope at all) is absolute and never model-waivable -- consulted
+      live from the registry, which is what makes revocation immediate. The
+      model is never asked to reconsider a withdrawn credential, exactly as
+      it is never asked to waive a human approval.
+    * **Above the floor**, whether the envelope's granted scopes and tier
+      authorize the *requested* scope and tier is a judgment: with a model
+      bound the model reasons over the envelope facts (injected into the
+      context) via the base `Policy.judge`; offline it falls back to the
+      deterministic `envelope_authorizes` check, announced as a fallback.
+
+    A human-initiated intent (no agent named in context) is not applicable --
+    the "off unless declared" posture of `Claim` and `Tenant`."""
 
     registry: Optional[EnvelopeRegistry] = None
 
@@ -329,9 +367,43 @@ class EnvelopePolicy(Policy):
             return True, "no acting agent in context -- envelope policy not applicable (human-initiated)"
         if self.registry is None:
             return True, "no envelope registry bound -- policy inert"
+
+        # The deterministic floor: absolute, never model-waivable.
+        floor_ok, floor_reason = self.registry.floor(str(agent))
+        if not floor_ok:
+            return False, floor_reason
+
+        # Above the floor, scope/tier authorization is judged. The envelope's
+        # granted authority and the requested scope/tier go into the context
+        # the model reasons over; the deterministic result rides as the
+        # `envelope_authorizes` fallback variable for the offline path.
+        envelope = self.registry.get(str(agent))
         scope = _first(context, _SCOPE_KEYS)
         tier = _first(context, _TIER_KEYS)
-        return self.registry.authorized(str(agent), scope=scope, tier=tier)
+        deterministic_ok, deterministic_reason = envelope.authorized(
+            scope=scope, tier=tier, secret=self.registry.secret
+        )
+        enriched = dict(context)
+        enriched.update(
+            {
+                "acting_agent": str(agent),
+                "envelope_scopes": ", ".join(envelope.scopes) or "(none)",
+                "envelope_max_autonomy_tier": envelope.max_autonomy_tier,
+                "envelope_standing": envelope.status,
+                "envelope_trust_score": envelope.trust_score,
+                "requested_scope": scope if scope not in (None, "") else "(none specified)",
+                "requested_tier": tier if tier not in (None, "") else "(none specified)",
+                "envelope_authorizes": deterministic_ok,
+            }
+        )
+        # Delegate to EAR's own model-first / fallback-second machinery: with
+        # a model it judges self.statement over `enriched`; offline it
+        # evaluates self.fallback_expression (`envelope_authorizes`).
+        model_active = model_binding is not None and getattr(model_binding, "lm", None) is not None
+        complies, rationale = super().judge(model_binding=model_binding, **enriched)
+        if not model_active:
+            rationale = f"offline fallback -- {deterministic_reason}"
+        return complies, rationale
 
 
 def enforce_envelopes(
@@ -351,9 +423,16 @@ def enforce_envelopes(
     policy = EnvelopePolicy(
         name=name,
         statement=(
-            "Every non-human actor must hold a certified, active capability envelope "
-            "covering the scope and autonomy tier of the action it attempts."
+            "The acting agent's capability envelope must authorize this action. Given "
+            "the scopes the envelope grants (envelope_scopes) and its maximum autonomy "
+            "tier (envelope_max_autonomy_tier), judge whether it covers the requested "
+            "scope (requested_scope) and tier (requested_tier). The envelope has "
+            "already cleared the certification and revocation floor; decide only "
+            "whether the granted authority reaches this particular action."
         ),
+        # The deterministic offline decision, computed in judge() and injected
+        # as `envelope_authorizes`, is the fallback when no model is bound.
+        fallback_expression="envelope_authorizes",
         registry=registry,
     )
     runtime.add_policy(policy)

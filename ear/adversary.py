@@ -57,21 +57,15 @@ def _truthy(value: Any) -> bool:
     return normalize(str(value)) in {"true", "yes", "y", "1", "high", "critical"}
 
 
-def is_flagged(
-    intent: Intent,
-    registry: Optional[Any] = None,
-    threshold: float = 0.6,
-) -> tuple[bool, str]:
-    """Whether `intent` warrants an adversarial pass, and why. Flags on an
-    explicit high-stakes/adversarial context value, on a low-confidence
-    high-impact action, or on an acting agent that AECC has placed on
-    probation. Returns (False, "") when nothing triggers."""
+def _deterministic_floor(intent: Intent, registry: Optional[Any]) -> tuple[bool, str]:
+    """The factual signals that flag an intent regardless of any judgment: an
+    explicit high-stakes/irreversible/adversarial context value, or an acting
+    agent AECC has placed on probation (authorized-but-watched). These are
+    facts, not opinions, so they flag on their own."""
     context = intent.context
     for key in _STAKES_KEYS:
         if key in context and _truthy(context[key]):
             return True, f"context flags '{key}'"
-    # A probationary agent's actions are flagged for review (the AECC
-    # standing that authorizes-but-watches, see authority.py).
     if registry is not None:
         for key in _ACTOR_KEYS:
             agent = context.get(key)
@@ -80,6 +74,36 @@ def is_flagged(
                 if envelope is not None and normalize(envelope.status) == "probation":
                     return True, f"acting agent '{agent}' is on probation"
     return False, ""
+
+
+def is_flagged(
+    intent: Intent,
+    registry: Optional[Any] = None,
+    model_binding: Any = None,
+    threshold: float = 0.6,
+) -> tuple[bool, str]:
+    """Whether `intent` warrants an adversarial pass, and why -- judged, with
+    a deterministic fallback.
+
+    A factual floor always flags (an explicit high-stakes/irreversible value,
+    or a probationary acting agent). Otherwise the decision -- *does this
+    intent warrant scrutiny?* -- is a judgment: with a model bound, the model
+    reads the intent and decides (the `FlagForAdversarialReview` signature);
+    offline, an unremarkable intent is simply not flagged, and says so. So
+    flagging is model-judged when it can be, never silently hardcoded to
+    keywords, and never fabricates a judgment it did not make."""
+    floored, reason = _deterministic_floor(intent, registry)
+    if floored:
+        return True, reason
+    lm = getattr(model_binding, "lm", None) if model_binding is not None else None
+    if lm is not None:
+        from .signatures import FlagForAdversarialReview
+
+        result = FlagForAdversarialReview.run(lm, intent_text=intent.text, context=dict(intent.context))
+        flag = bool(getattr(result, "flag", False))
+        rationale = str(getattr(result, "reason", "") or ("model flagged for review" if flag else "model saw no need for review"))
+        return flag, rationale
+    return False, "no high-stakes signal and no model to judge -- not flagged"
 
 
 @dataclass
@@ -156,11 +180,27 @@ class AdversarialReview:
         model_binding: Any = None,
     ) -> Optional[ReviewOutcome]:
         """Review `intent` only if it is flagged; otherwise return None so
-        the caller proceeds without a pass. The hook the intent path calls."""
-        flagged, concern = is_flagged(intent, registry=registry, threshold=self.threshold)
+        the caller proceeds without a pass. The hook the intent path calls.
+
+        The flag decision itself is judged (with a deterministic fallback,
+        see `is_flagged`) and recorded on the runtime's one audit spine -- so
+        a decision *not* to review, when a model made it, is on the record
+        too, never a silent skip."""
+        binding = model_binding if model_binding is not None else getattr(runtime, "model_binding", None)
+        flagged, concern = is_flagged(
+            intent, registry=registry, model_binding=binding, threshold=self.threshold
+        )
+        log = getattr(runtime, "reasoning_log", None)
+        if log is not None:
+            log.record(
+                stage="flag",
+                inputs={"intent": intent.text, "context": dict(intent.context)},
+                output="flagged for adversarial review" if flagged else "not flagged",
+                rationale=concern,
+            )
         if not flagged:
             return None
-        return self.review(runtime, intent, decision=decision, concern=concern, model_binding=model_binding)
+        return self.review(runtime, intent, decision=decision, concern=concern, model_binding=binding)
 
     # -- the two paths ------------------------------------------------------
 

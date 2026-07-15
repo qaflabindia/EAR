@@ -9,6 +9,7 @@ against a *copy* of the fixture, never the committed one.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -28,6 +29,14 @@ from ear.authority import ACTIVE, PROBATION, REVOKED, SUSPENDED
 from ear.enterprise import CommandCentreBackend
 
 AECC = Path(__file__).resolve().parent / "fixtures" / "command_centres" / "aecc"
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+ANTHROPIC_TEST_MODEL = os.environ.get("ANTHROPIC_TEST_MODEL", "claude-haiku-4-5")
+
+requires_anthropic_key = pytest.mark.skipif(
+    not ANTHROPIC_API_KEY,
+    reason="ANTHROPIC_API_KEY is not set in the environment -- live-LLM tests are skipped",
+)
 
 
 def _aecc_copy(tmp_path: Path) -> Path:
@@ -207,6 +216,46 @@ def test_binding_aecc_attaches_envelope_enforcement():
     # runtime -- constitution and envelope both attached.
     blocked = Governor().govern(runtime, Intent(text="act", context={"agent": "rogue-agent"}))
     assert any(isinstance(p, EnvelopePolicy) for p in blocked)
+
+
+def test_revocation_floor_is_not_model_waivable():
+    # Even with a model that might "reason" leniently, a revoked envelope is
+    # an absolute floor -- the gate blocks before any judgment is asked for.
+    registry = EnvelopeRegistry.from_backend(CommandCentreBackend(AECC))
+    policy = EnvelopePolicy(name="AECC", statement="...", registry=registry)
+
+    class _StubLM:
+        model = "stub"
+
+        def complete(self, *a, **k):  # never reached for a revoked agent
+            raise AssertionError("the model must not be consulted below the floor")
+
+    class _StubBinding:
+        lm = _StubLM()
+
+        def activate(self):
+            return self
+
+    complies, reason = policy.judge(model_binding=_StubBinding(), agent="rogue-agent")
+    assert not complies
+    assert "revoked" in reason
+
+
+@requires_anthropic_key
+def test_model_judges_scope_authorization_above_the_floor():
+    from ear import ModelBinding
+
+    registry = EnvelopeRegistry.from_backend(CommandCentreBackend(AECC))
+    runtime = Runtime(name="Ent")
+    runtime.model_binding = ModelBinding(provider="anthropic", model=ANTHROPIC_TEST_MODEL)
+    enforce_envelopes(runtime, registry)
+    # credit-risk-guru holds reason:credit at tier 2; a plainly in-scope
+    # request is authorized by the model reasoning over the envelope facts.
+    ok = Governor().govern(
+        runtime,
+        Intent(text="assess this application", context={"agent": "credit-risk-guru", "scope": "reason:credit"}),
+    )
+    assert ok == []
 
 
 def test_transition_records_on_the_audit_spine(tmp_path):

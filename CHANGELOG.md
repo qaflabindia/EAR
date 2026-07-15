@@ -7,6 +7,29 @@ has not yet made a versioned release, so entries accumulate under
 
 ## [Unreleased]
 
+### Changed
+- **Reason-first governance** (correcting Phase 3 to EAR's own rule -- the
+  model judges, code enforces and records, and a deterministic path is only
+  ever an honest fallback):
+  - `EnvelopePolicy` (AECC) is no longer a hardcoded allow-list. It now
+    keeps a *deterministic floor* -- uncertified / revoked / suspended /
+    tampered / no-envelope, which is absolute and never model-waivable (what
+    makes revocation immediate, `CapabilityEnvelope.floor` /
+    `EnvelopeRegistry.floor`) -- and *judges scope/tier authorization above
+    the floor*: with a model bound it reasons over the envelope's granted
+    scopes, tier and standing (injected into the context) via the base
+    `Policy.judge`; offline it falls back to the deterministic
+    `envelope_authorizes` check and says so. Reason-first, exactly like
+    every other policy.
+  - `is_flagged` (ATC) is model-judged with a deterministic fallback. A
+    factual floor (an explicit high-stakes/irreversible value, or a
+    probationary acting agent) still flags on its own; otherwise a bound
+    model decides whether the intent warrants scrutiny
+    (`FlagForAdversarialReview`, new in `ear/signatures.py`), and offline an
+    unremarkable intent is not flagged and announces that -- never a keyword
+    rule masquerading as a judgment. The flag decision (including a decision
+    *not* to review) lands on the one audit spine.
+
 ### Added
 - `ear/authority.py` + `ear/adversary.py`: **Enterprise AGI Phase 3** --
   who may act (AECC capability envelopes), and the red team on the intent
