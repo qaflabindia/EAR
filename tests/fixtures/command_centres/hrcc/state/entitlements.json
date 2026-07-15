@@ -1,0 +1,6 @@
+{
+  "employees": {
+    "e-1042": {"annual_leave_remaining": 12, "sick_leave_remaining": 8, "band": "M3"},
+    "e-2087": {"annual_leave_remaining": 0, "sick_leave_remaining": 10, "band": "L2"}
+  }
+}

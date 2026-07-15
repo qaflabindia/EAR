@@ -1,0 +1,6 @@
+{
+  "accounts": {
+    "acct-500": {"tier": "enterprise", "marketing_consent": true, "renewal_due": "2026-09-01"},
+    "acct-777": {"tier": "standard", "marketing_consent": false, "renewal_due": "2026-08-15"}
+  }
+}

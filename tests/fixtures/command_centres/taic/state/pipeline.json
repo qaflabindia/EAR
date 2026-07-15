@@ -1,0 +1,6 @@
+{
+  "roles": {
+    "eng-staff": {"band_minimum": 180000, "band_maximum": 240000, "open": true},
+    "design-senior": {"band_minimum": 140000, "band_maximum": 185000, "open": true}
+  }
+}

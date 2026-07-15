@@ -1,0 +1,6 @@
+{
+  "warehouses": {
+    "wh-north": {"sku-100": 480, "sku-220": 12},
+    "wh-south": {"sku-100": 60, "sku-220": 0}
+  }
+}

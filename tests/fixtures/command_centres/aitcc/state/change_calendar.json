@@ -1,0 +1,6 @@
+{
+  "freeze_windows": [
+    {"name": "Q2 close", "start": "2026-09-25", "end": "2026-10-02"}
+  ],
+  "environments": {"prod": {"frozen": false}, "staging": {"frozen": false}}
+}

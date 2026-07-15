@@ -8,6 +8,21 @@ has not yet made a versioned release, so entries accumulate under
 ## [Unreleased]
 
 ### Added
+- **Enterprise AGI Phase 3 completed -- the operational plane rolled out.**
+  Phase 3's third item (the remaining operational centres, alongside AECC
+  envelope enforcement and the ATC adversarial hook already shipped) is now
+  done: fixtures for **HRCC, TAIC, ALGCC, ARCC, AITCC** join AFCC, each with
+  its own constitution (`CR-HR-*`, `CR-TA-*`, `CR-LG-*`, `CR-RE-*`,
+  `CR-IT-*`), capabilities, procedures, references and state. Every one binds
+  its rules at runtime scope and compiles to a runnable EAR stack through the
+  *existing* Phase-1 bind / Phase-2 compile machinery -- no new mechanism, the
+  proof that the binding model generalizes across the whole operational plane.
+  `tests/test_operational_plane.py` (23 tests) covers load/bind/compile for
+  each, the domain rules firing (comp-change parks, over-band offer parks,
+  hazmat/high-value shipment, over-discount/consent, change-freeze/least-
+  privilege), and the whole plane through `load_command_centres` /
+  `bind_command_centres` (governance-first). `docs/ENTERPRISE_AGI.md` Phase 3
+  row corrected to reflect this (it had understated the phase).
 - **Resource report** (`ReasoningLog.resource_report`) -- the physical
   counterpart to `usage_report`'s dollars: energy (Wh), carbon (gCO2, counted
   measured/estimated/unmetered) and compute-thrift routing (light vs heavy

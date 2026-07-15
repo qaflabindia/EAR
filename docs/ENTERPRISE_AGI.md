@@ -143,7 +143,7 @@ rules *are* runtime policies, judged and recorded exactly like any other.
 |---|---|---|
 | 1 | `CommandCentreBackend` (Store adapter over `state/`), constitutional-rules → `policy.md` compiler, AGCC verdict → gate mapping, bound at runtime scope | **shipped** |
 | 2 | Centre → EAR-stack compiler for one operational centre end-to-end (AFCC), MCP packaging, single audit spine | **shipped** |
-| 3 | AECC capability-envelope enforcement (a runtime-scope policy over `identity`/`signatures`), ATC adversarial-deliberation hook | **shipped** |
+| 3 | AECC capability-envelope enforcement (a runtime-scope policy over `identity`/`signatures`), ATC adversarial-deliberation hook, and the remaining operational centres (HRCC, TAIC, ALGCC, ARCC, AITCC) rolled through the Phase-1 bind / Phase-2 compile machinery | **shipped** |
 | 4 | Cognitive plane: AKC-governed knowledge ingestion, ALCC → evolution loop under AAWDFC/AGCC gates | planned |
 | 5 | State migration to canonical per-`Tenant` `Store`; multi-tenant rollout | planned |
 
@@ -206,6 +206,16 @@ Binding the governance-plane centres wires both automatically:
 `CommandCentre.load("…/aecc").bind(runtime)` attaches envelope enforcement
 and exposes `runtime.envelope_registry`; binding ATC exposes
 `runtime.adversarial_review`.
+
+**The operational plane, rolled out.** Phase 3's third item is coverage, not
+a new mechanism: the remaining operational centres — **HRCC, TAIC, ALGCC,
+ARCC, AITCC** — join AFCC through the *same* Phase-1 bind and Phase-2 compile
+machinery. Each carries its own constitution (`CR-HR-*`, `CR-TA-*`,
+`CR-LG-*`, `CR-RE-*`, `CR-IT-*`), binds its rules at runtime scope, and
+compiles to a runnable EAR stack — so the whole operational plane
+(`load_command_centres` / `bind_command_centres`, governance-first) is
+governed and runnable, not just AFCC. That the same machinery generalizes
+unchanged across six domains is the proof the binding model was right.
 
 ## 6a. Phase 2 — the whole centre compiles to a stack
 
