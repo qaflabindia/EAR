@@ -7,6 +7,28 @@ has not yet made a versioned release, so entries accumulate under
 
 ## [Unreleased]
 
+### Added
+- **Governed runtime self-coding** (`ear/coder.py`) -- after the model
+  reasons, the runtime can author a *new capability as code* and, once the
+  code clears every gate, bind it for later cycles. One invariant holds
+  absolutely: **model-authored code never runs in the kernel's own process.**
+  The kernel only `ast.parse`s the code (which executes nothing) to reject
+  what is malformed or uses dynamic execution (`exec`/`eval`/`__import__`);
+  every real run -- the trial and every later invocation -- happens as a
+  **subprocess inside the runtime's `Sandbox`** (confined filesystem, timeout,
+  rlimits, stripped env). The path: `Coder.author` (the model writes a
+  stdlib-only script to a fixed JSON-in/JSON-out contract; offline it refuses
+  rather than fabricate code) -> `validate` (the parse floor) -> `trial` (run
+  it in the Sandbox against the author's sample) -> `install` (the existing
+  `Evolver` gate: the `EvolutionPolicy` must allow the `code_capability` kind,
+  AAWDFC judges legitimacy, approval applies where required, the Sandbox is
+  mandatory, the trial is the evaluation, and a rollback removes the file and
+  unbinds) -> bind a `BoundTool` whose handler shells to the sandboxed script.
+  A change whose trial fails is rolled back and never bound. Self-coding is
+  self-*extension*, never self-*injection*. `AuthorCode` judgment added to
+  `ear/signatures.py`; `tests/test_coder.py` (11 tests) plus one live
+  authoring test; all on the audit spine (stage `coder`).
+
 ### Fixed
 - **Hardcoded-content audit -- two reason-first breaches closed.** A hardcoded
   constant must never overrule the model or ignore author-declared config:

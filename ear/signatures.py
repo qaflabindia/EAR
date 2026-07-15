@@ -170,6 +170,30 @@ SynthesizePanel = Judgment(
     outputs=[Field("decision", "The panel's single concluded decision, with its reasoning", "text")],
 )
 
+AuthorCode = Judgment(
+    instruction=(
+        "Write a small, self-contained Python script that provides the "
+        "requested capability. The script MUST follow this contract exactly: "
+        "read one JSON object of arguments from sys.argv[1] (default to an "
+        "empty object when absent), do its work using only the Python "
+        "standard library, and print exactly one JSON object of results to "
+        "stdout. No network access, no reading outside the working directory, "
+        "no shelling out. Keep it short and correct. Also provide a sample "
+        "input and a substring the sample run's output must contain, so the "
+        "script can be trialled before it is trusted."
+    ),
+    inputs=[
+        Field("spec", "What the capability must do, in plain English"),
+    ],
+    outputs=[
+        Field("name", "A short snake_case identifier for the capability", "str"),
+        Field("description", "One line describing what the capability does", "text"),
+        Field("code", "The complete Python script following the contract", "text"),
+        Field("sample_input", "A JSON object to trial the script with", "str"),
+        Field("expected", "A substring the trial output must contain", "str"),
+    ],
+)
+
 JudgeKnowledgeAdmission = Judgment(
     instruction=(
         "Decide whether a claim should be admitted into the governed "

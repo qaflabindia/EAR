@@ -1326,6 +1326,7 @@ ear/
   knowledge_governance.py KnowledgeGate — AKC: nothing enters Knowledge ungoverned; admit (epistemic score + contradiction), retire, supersede (see docs/ENTERPRISE_AGI.md)
   epistemic.py     EpistemicAuditor — ARC: audit reasoning for bias / unsupported assumptions as advisories, escalate a systematic pattern to AGCC
   evolution_loop.py LegitimacyGate — AAWDFC judges machine-created changes fit to exist; LearningLoop (ALCC) turns Experience into candidate EvolutionChanges
+  coder.py         Coder         — governed runtime self-coding: the model authors a capability as code; it is validated, trialled and run ONLY as a Sandbox subprocess (never exec'd in-process), gated by the Evolver, then bound as a tool
   server.py        Server        — the control plane: a stdlib HTTP service over the Kernel (token auth, confined stack loading), zero deps
   k8s.py           KubeProvider  — run instances as K8s Jobs/CronJobs, spoken natively over the REST API (stdlib, no SDK); the Kernel's execution seam
   run.py           (entrypoint)  — python -m ear.run <stack>: run one cycle in a pod from EAR_INTENT/EAR_CONTEXT, exit code = outcome
