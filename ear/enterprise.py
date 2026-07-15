@@ -638,13 +638,21 @@ class CommandCentre:
         if slug == "akc":
             from .knowledge_governance import KnowledgeGate
 
-            gate = KnowledgeGate()
+            # The admission threshold governs only the offline floor; honour
+            # an author-declared value from the centre's state rather than a
+            # baked constant.
+            declared = self._declared_number("sources", "admission_threshold")
+            gate = KnowledgeGate(threshold=declared) if declared is not None else KnowledgeGate()
             binding.knowledge_gate = gate
             runtime.knowledge_gate = gate
         if slug == "arc":
             from .epistemic import EpistemicAuditor
 
-            auditor = EpistemicAuditor()
+            # Honour the escalation threshold the centre declares in its own
+            # state (patterns.json) rather than the code default -- the "how
+            # many flags is systematic?" line is the author's to set.
+            declared = self._declared_number("patterns", "escalation_threshold")
+            auditor = EpistemicAuditor(escalate_threshold=int(declared)) if declared is not None else EpistemicAuditor()
             binding.epistemic_auditor = auditor
             runtime.epistemic_auditor = auditor
         if slug == "aawdfc":
@@ -659,6 +667,20 @@ class CommandCentre:
             loop = LearningLoop()
             binding.learning_loop = loop
             runtime.learning_loop = loop
+
+    def _declared_number(self, state_name: str, key: str) -> Optional[float]:
+        """A number the centre declares in its own state, or None when the
+        centre declared none -- so a threshold that shapes a decision comes
+        from the author, not a code constant. Absent state or a bad value
+        reads as 'not declared', never a guess."""
+        try:
+            if not self.state.exists(state_name):
+                return None
+            data = self.state.read_json(state_name)
+            value = data.get(key) if isinstance(data, dict) else None
+            return float(value) if isinstance(value, (int, float)) else None
+        except Exception:  # noqa: BLE001 -- a malformed state file is 'not declared', not fatal
+            return None
 
     @staticmethod
     def _attach(runtime: Any, policy: Policy, scope: str) -> None:

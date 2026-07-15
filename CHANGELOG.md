@@ -7,6 +7,23 @@ has not yet made a versioned release, so entries accumulate under
 
 ## [Unreleased]
 
+### Fixed
+- **Hardcoded-content audit -- two reason-first breaches closed.** A hardcoded
+  constant must never overrule the model or ignore author-declared config:
+  - `KnowledgeGate` (AKC) admitted a claim only if `model.admit AND score >=
+    0.5` -- the hardcoded threshold could overrule the model's decision to
+    admit. Now the model's admission decision is authoritative; the threshold
+    governs only the deterministic offline floor (where no model judged).
+  - `EpistemicAuditor` (ARC) hardcoded its escalation threshold at 3 while the
+    ARC fixture's own `patterns.json` *declared* it -- a fixture/code
+    disconnect. Binding now reads the escalation threshold (ARC) and the
+    admission threshold (AKC) from each centre's declared state via
+    `CommandCentre._declared_number`, falling back to the code default only
+    when the author declared none. (The remaining hardcoded constants --
+    thrift's word threshold, the adversarial confidence threshold, the carbon
+    backoff -- are offline-only deterministic fallbacks or plumbing, which the
+    principle allows; the model judges when one is bound.)
+
 ### Added
 - **Enterprise AGI Phase 4 -- the cognitive plane** (`ear/knowledge_governance.py`,
   `ear/epistemic.py`, `ear/evolution_loop.py`, Evolver wiring, fixtures for

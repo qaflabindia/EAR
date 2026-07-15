@@ -146,7 +146,12 @@ class KnowledgeGate:
         existing = "; ".join(p.source for p in knowledge.passages[:20]) or "(empty)"
         result = JudgeKnowledgeAdmission.run(lm, claim=text, source=source_name or "(unstated)", existing=existing)
         score = self._read_score(getattr(result, "score", ""))
-        admit = bool(getattr(result, "admit", False)) and score >= self.threshold
+        # The model's admission decision is authoritative -- the score is
+        # recorded, not used to overrule the judgment. (The threshold governs
+        # only the deterministic offline floor, where no model judged.) A
+        # hardcoded number second-guessing the model would be the very
+        # breach reason-first governance forbids.
+        admit = bool(getattr(result, "admit", False))
         rationale = str(getattr(result, "rationale", "") or "judged by the model")
 
         contradiction = ""

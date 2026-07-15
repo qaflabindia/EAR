@@ -1,4 +1,5 @@
 {
+  "admission_threshold": 0.5,
   "sources": {
     "world-bank": {"tier": "authoritative", "trust": 0.95},
     "internal-wiki": {"tier": "operational", "trust": 0.7},

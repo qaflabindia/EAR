@@ -247,3 +247,49 @@ def test_akc_model_refuses_a_speculative_claim_admits_a_fact():
     )
     assert fact.admitted
     assert not rumour.admitted
+
+
+# ---------------------------------------------------------------------------
+# Reason-first: no hardcoded constant overrules the model or the author.
+# ---------------------------------------------------------------------------
+
+
+def test_arc_escalation_threshold_comes_from_declared_state():
+    # The "how many flags is systematic?" line is the author's, read from the
+    # centre's own patterns.json -- not a baked code constant.
+    runtime = Runtime(name="A")
+    CommandCentre.load(FIXTURES / "arc").bind(runtime)
+    assert runtime.epistemic_auditor.escalate_threshold == 3  # declared in patterns.json
+
+
+def test_akc_admission_threshold_comes_from_declared_state():
+    runtime = Runtime(name="K")
+    CommandCentre.load(FIXTURES / "akc").bind(runtime)
+    assert runtime.knowledge_gate.threshold == 0.5  # declared in sources.json
+
+
+def test_model_admission_is_not_overruled_by_a_hardcoded_score():
+    # A stub model that admits with a low score must still admit -- the
+    # model's decision is authoritative; the threshold governs only the
+    # offline floor.
+    from ear import Runtime as _Runtime
+
+    class _StubLM:
+        model = "stub"
+
+        def complete(self, prompt, system="", cache_prefix=""):
+            # JudgeKnowledgeAdmission expects markdown sections back.
+            return "## admit\n\nyes\n\n## score\n\n0.30\n\n## rationale\n\nsound enough"
+
+    class _StubBinding:
+        lm = _StubLM()
+        model_id = "stub"
+
+        def activate(self):
+            return self
+
+    runtime = _Runtime(name="K")
+    admission = KnowledgeGate(threshold=0.9).admit(
+        runtime, "src", "doc.md", "a claim", model_binding=_StubBinding()
+    )
+    assert admission.admitted  # model said yes; score 0.30 < 0.9 did NOT overrule it
