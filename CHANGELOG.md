@@ -8,6 +8,43 @@ has not yet made a versioned release, so entries accumulate under
 ## [Unreleased]
 
 ### Added
+- `ear/compiler.py` + `ear/mcp_command_centre.py`: **Enterprise AGI Phase 2**
+  -- a whole command centre compiles to a runnable EAR stack, and can be
+  served out-of-process as a native MCP server.
+  - **Centre → EAR-stack compiler.** `StackCompiler` /
+    `compile_command_centre` map an acc-skills command centre onto the six
+    natural-language stack files an author would otherwise write by hand
+    (architecture §3.5): `SKILL.md` mission → `persona.md`; `##
+    Capabilities` → `skills.md` (one skill each); `## Procedures` →
+    `workflow.md` (steps delegating to the persona); a process wrapping them
+    → `process.md`; `references/constitutional_rules.md` → `policy.md` (via
+    Phase 1's `Constitution.to_policy_markdown`); the remaining
+    `references/*.md` → `knowledge/`; `SKILL.md` frontmatter org context →
+    `tenant.md`; and an operating strategy → `memory.md` declaring the
+    knowledge sources and one `.ear/reasoning.md` audit spine. Nothing an
+    author wrote is dropped -- an unconsumed `##` section folds into the
+    persona as prose (flattened out of bullets, which the loader would
+    otherwise read as skill references), and `compile(verify=True)` loads
+    the result once so every cross-reference resolves or the loader fails
+    loudly. `CompiledStack.load()` runs the compiled centre as a first-class
+    Runtime; `CompiledStack.mapping` reports which artifact produced each
+    file.
+  - **MCP packaging.** `CommandCentreServer` serves a centre as a native
+    stdio JSON-RPC MCP server (the out-of-process binding, architecture
+    §3.4), exposing its script pentad as tools -- `list_state`,
+    `load_state`, `update_state`, `evaluate`, `audit` -- over the Phase-1
+    `CommandCentreBackend` and `Constitution`. `evaluate` runs the
+    constitution's deterministic fallbacks (a plain subprocess, no model
+    bound), so an out-of-process centre still enforces its mechanically
+    checkable rules. Launch with `python -m ear.mcp_command_centre <dir>`
+    and connect via `Runtime.connect_mcp`; the dispatch (`call`) is pure and
+    synchronous, so it is testable without a subprocess.
+  - Fixture `tests/fixtures/command_centres/afcc` (AFCC, an operational
+    finance centre: mission, `## Capabilities`, `## Procedures`,
+    `CR-FIN-01..05`, taxonomy/matrix references, budget and vendor state)
+    is the worked end-to-end example; `tests/test_compiler.py` compiles it,
+    loads the stack, enforces its constitution, and round-trips the MCP
+    server over EAR's own `McpClient`.
 - `ear/enterprise.py`: the **Enterprise AGI** binding layer -- Phase 1 of
   the framework architecture (`docs/ENTERPRISE_AGI.md`), binding the
   thirteen `acc-skills` constitutional command centres onto EAR's execution

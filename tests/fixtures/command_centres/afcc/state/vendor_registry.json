@@ -1,0 +1,7 @@
+{
+  "approved_vendors": [
+    {"name": "Skyline Travel", "category": "travel", "status": "active"},
+    {"name": "Cloudworks", "category": "software", "status": "active"},
+    {"name": "Ironframe Equipment", "category": "capital", "status": "active"}
+  ]
+}

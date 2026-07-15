@@ -1,0 +1,2 @@
+{"timestamp": "2026-07-13T10:02:00Z", "agent": "finance-operator", "action": "approve-expense", "verdict": "EXECUTE", "rationale": "software category, $4,200 within remaining budget"}
+{"timestamp": "2026-07-14T15:20:00Z", "agent": "finance-operator", "action": "hold-expense", "verdict": "HALT", "rationale": "supporting invoice missing, CR-FIN-04"}

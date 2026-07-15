@@ -1008,7 +1008,16 @@ Governor().govern(runtime, intent)   # -> the CR-AG03 policy, blocked
 
 A constitution compiles to a `policy.md` the existing `Loader` reads
 unchanged (`Constitution.to_policy_markdown`), so English stays the source
-of truth and nothing an author wrote is dropped. See
+of truth and nothing an author wrote is dropped.
+
+And a *whole* centre compiles to a runnable stack —
+`compile_command_centre(centre_dir, out)` maps `SKILL.md` → `persona.md` +
+`skills.md`, procedures → `workflow.md`, references → `knowledge/`, the
+constitution → `policy.md`, org context → `tenant.md` and strategy →
+`memory.md`, then `CompiledStack.load()` runs it as a first-class Runtime. A
+centre can also be served out-of-process as a native MCP server
+(`python -m ear.mcp_command_centre <dir>`, `CommandCentreServer`) and reached
+with `Runtime.connect_mcp`. See
 [`docs/ENTERPRISE_AGI.md`](docs/ENTERPRISE_AGI.md) for the full architecture
 and phasing.
 
@@ -1291,6 +1300,8 @@ ear/
   tenant.py        Tenant        — the org this stack belongs to, stacked from tenant.md: org_id, fiscal year bounds, timezone
   identity.py      Claim         — who is calling and which Tenant org_id(s) they may act as; Runtime.reason/Kernel.submit refuse a Claim not authorized for the instance's tenant
   enterprise.py    CommandCentre  — Enterprise AGI binding: acc-skills constitutions → EAR policies, AGCC verdict → gate, state behind CatalogueBackend (see docs/ENTERPRISE_AGI.md)
+  compiler.py      StackCompiler  — compile a whole command centre into an EAR markdown stack (SKILL.md→persona/skills, procedures→workflow, references→knowledge, constitution→policy)
+  mcp_command_centre.py CommandCentreServer — serve a command centre as a native stdio MCP server (list/load/update_state, evaluate the constitution, audit)
   exchange.py      Exchange      — the markdown boundary: intents/*.md in, decisions/*.md out
   reasoning_log.py ReasoningLog  — the reasoning audit trail (markdown/JSONL); hash-chained + verify(), retention rotation, usage ledger
   dashboard.py     Dashboard     — self-contained HTML runtime board from the trail (TensorBoard-equivalent): render_fleet, live auto-ticking render_gantt, zero deps

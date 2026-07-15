@@ -67,6 +67,7 @@ from .adaptation import Adaptation, AdaptationBank
 from .adapter import Adapter
 from .approval import Approval, ApprovalRequired
 from .auditor import Auditor
+from .compiler import CompiledStack, StackCompiler, compile_command_centre
 from .composer import Composer
 from .contract import Contract, ContractField
 from .dashboard import Dashboard
@@ -109,6 +110,7 @@ from .loader import Loader, load_runtime
 from .mail import Mail, MailError
 from .mcp_client import McpClient, McpError, McpTool
 from .mcp_server import McpServer
+from .mcp_command_centre import CommandCentreServer
 from .memory import Memory, MemoryEntry
 from .monitor import Monitor
 from .model_binding import ModelBinding
@@ -287,5 +289,9 @@ __all__ = [
     "load_command_centres",
     "bind_command_centres",
     "plane_of",
+    "StackCompiler",
+    "CompiledStack",
+    "compile_command_centre",
+    "CommandCentreServer",
     "__version__",
 ]

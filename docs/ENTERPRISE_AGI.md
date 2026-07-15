@@ -1,6 +1,6 @@
 # Enterprise AGI — binding constitutions onto the runtime
 
-**Status:** Phase 1 shipped (`ear/enterprise.py`) ·
+**Status:** Phases 1–2 shipped (`ear/enterprise.py`, `ear/compiler.py`, `ear/mcp_command_centre.py`) ·
 **Repos:** [`qaflabindia/EAR`](https://github.com/qaflabindia/EAR) ·
 [`qaflabindia/acc-skills`](https://github.com/qaflabindia/acc-skills)
 
@@ -142,10 +142,65 @@ rules *are* runtime policies, judged and recorded exactly like any other.
 | Phase | Deliverable | Status |
 |---|---|---|
 | 1 | `CommandCentreBackend` (Store adapter over `state/`), constitutional-rules → `policy.md` compiler, AGCC verdict → gate mapping, bound at runtime scope | **shipped** |
-| 2 | Centre → EAR-stack compiler for one operational centre end-to-end (AFCC), MCP packaging, canonical per-`Tenant` store | planned |
+| 2 | Centre → EAR-stack compiler for one operational centre end-to-end (AFCC), MCP packaging, single audit spine | **shipped** |
 | 3 | AECC capability-envelope enforcement (a runtime-scope policy over `identity`/`signatures`), ATC adversarial-deliberation hook | planned |
 | 4 | Cognitive plane: AKC-governed knowledge ingestion, ALCC → evolution loop under AAWDFC/AGCC gates | planned |
-| 5 | Phase-2 state migration to canonical per-`Tenant` `Store`; multi-tenant rollout | planned |
+| 5 | State migration to canonical per-`Tenant` `Store`; multi-tenant rollout | planned |
+
+## 6a. Phase 2 — the whole centre compiles to a stack
+
+Phase 1 bound a centre's *constitution*. Phase 2 compiles the *whole
+centre* into a runnable EAR stack (`ear/compiler.py`,
+`StackCompiler` / `compile_command_centre`), mapping each acc-skills
+artifact to the stack file an author would otherwise hand-write
+(architecture §3.5):
+
+| acc-skills artifact | EAR stack file |
+|---|---|
+| `SKILL.md` mission prose | `persona.md` (the persona's instructions) |
+| `SKILL.md` `## Capabilities` | `skills.md` (one skill per capability) |
+| `SKILL.md` `## Procedures` | `workflow.md` (steps delegating to the persona) |
+| a process wrapping the workflows | `process.md` (the runtime's title) |
+| `references/constitutional_rules.md` | `policy.md` (via `Constitution.to_policy_markdown`) |
+| `references/*.md` (the rest) | `knowledge/` (documents the Librarian cites) |
+| `SKILL.md` frontmatter org context | `tenant.md` (org id, fiscal year) |
+| operating strategy | `memory.md` (knowledge sources, one audit trail) |
+
+Two invariants hold. **Nothing an author wrote is dropped**: a `##` section
+the compiler does not consume structurally (triggers, scope, notes) folds
+into the persona's instructions as prose, and `compile(verify=True)` loads
+the result once so every cross-reference resolves or the loader fails
+loudly. **English stays the source of truth**: the output is markdown an
+author reads, diffs and edits — the compiler is a starting point, not a
+lock-in. The compiled `memory.md` declares one `.ear/reasoning.md` audit
+trail, so the whole centre writes to the single spine.
+
+`AFCC` is the worked example: `compile_command_centre("…/afcc", out)` writes
+a nine-file stack that `load_runtime` runs as a first-class finance runtime,
+its five `CR-FIN-*` constitutional rules enforcing at runtime scope.
+
+## 6b. Phase 2 — a centre served as an MCP server
+
+The out-of-process binding (architecture §3.4, the operational plane's
+default): `ear/mcp_command_centre.py` packages a centre as a native MCP
+server so any runtime reaches it with `Runtime.connect_mcp` over the same
+stdio JSON-RPC `McpClient` already speaks. It exposes the centre's script
+pentad as tools:
+
+```
+list_state                 the centre's state entries (names)
+load_state(name)           one state entry, as JSON
+update_state(name, value)  write one state entry (value is JSON)
+evaluate(context)          judge the constitution against a context of facts
+audit(entry)               append one line to the centre's ledger
+```
+
+`evaluate` runs the constitution's *deterministic* fallbacks (the server is
+a plain subprocess, no model bound), so an out-of-process centre still
+enforces its mechanically checkable rules; a rule with no fallback reports
+not-applicable, never a silent pass. Run one with
+`python -m ear.mcp_command_centre <centre-dir>` and declare it in a stack's
+`memory.md` MCP section like any other server.
 
 ## 7. Worked example
 
