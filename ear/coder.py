@@ -78,10 +78,30 @@ class CodeCapability:
 
 
 @dataclass
+class CodeReview:
+    """The verdict of the beyond-suspicion review: whether the code is safe to
+    trust, any suspicion that gives pause, and the basis of the ruling."""
+
+    reasonable: bool
+    suspicion: str = ""
+    rationale: str = ""
+    basis: str = ""
+
+
+@dataclass
 class Coder:
     """The runtime's own code author. Standalone, like the Optimizer and the
     Acquirer -- not a per-cycle stage. `install` is the one entry point that
-    materializes and binds; everything before it is proposal."""
+    materializes and binds; everything before it is proposal.
+
+    `require_review` (on by default) demands that a model judge the authored
+    code safe *beyond any reasonable suspicion* before it is installed. It is
+    **fail-closed**: with no reviewer bound, a self-authored capability is
+    refused -- code the runtime wrote for itself is not trusted on a
+    deterministic floor, because 'beyond suspicion' is a judgment nothing
+    deterministic can stand in for."""
+
+    require_review: bool = True
 
     def author(self, runtime: Any, spec: str, model_binding: Any = None) -> Optional[CodeCapability]:
         """The model writes a capability to spec. Authoring is judgment:
@@ -142,6 +162,46 @@ class Coder:
                 return False, "the authored code uses __import__(...) -- dynamic imports are refused"
         return True, "parses and uses no dynamic execution"
 
+    def review(self, runtime: Any, capability: CodeCapability, model_binding: Any = None) -> CodeReview:
+        """Judge the authored code safe beyond any reasonable suspicion. The
+        model reviews it against its stated purpose (`JudgeCodeReasonable`);
+        approval is withheld on any suspicion. Fail-closed: with no reviewer
+        bound, the review does not pass -- self-authored code is never
+        certified beyond suspicion by a deterministic stand-in."""
+        binding = model_binding if model_binding is not None else getattr(runtime, "model_binding", None)
+        lm = getattr(binding, "lm", None) if binding is not None else None
+        if binding is not None:
+            binding.activate()
+            lm = getattr(binding, "lm", None)
+
+        if lm is None:
+            verdict = CodeReview(
+                reasonable=False,
+                suspicion="no reviewer bound",
+                rationale="a self-authored capability cannot be certified beyond suspicion without an LLM reviewer",
+                basis="fail-closed floor (no model)",
+            )
+        else:
+            from .signatures import JudgeCodeReasonable
+
+            result = JudgeCodeReasonable.run(lm, purpose=capability.description or capability.name, code=capability.source)
+            verdict = CodeReview(
+                reasonable=bool(getattr(result, "reasonable", False)),
+                suspicion=str(getattr(result, "suspicion", "") or "none"),
+                rationale=str(getattr(result, "rationale", "") or "reviewed by the model"),
+                basis="judged by the model",
+            )
+        log = getattr(runtime, "reasoning_log", None)
+        if log is not None:
+            log.record(
+                stage="code_review",
+                inputs={"name": capability.name, "suspicion": verdict.suspicion, "basis": verdict.basis},
+                output=("CLEARED beyond suspicion" if verdict.reasonable else "WITHHELD -- not beyond suspicion"),
+                rationale=verdict.rationale,
+                model=model_name(binding) if verdict.basis == "judged by the model" else "",
+            )
+        return verdict
+
     def trial(self, runtime: Any, capability: CodeCapability) -> Any:
         """Write the script into the Sandbox and run it *there* against the
         author's sample input -- never in this process. Returns a small
@@ -161,7 +221,7 @@ class Coder:
             )
         return _TrialResult(passed=passed, result=outcome)
 
-    def install(self, runtime: Any, capability: CodeCapability, approval: Any = None) -> str:
+    def install(self, runtime: Any, capability: CodeCapability, approval: Any = None, model_binding: Any = None) -> str:
         """Materialize and bind the capability -- but only through every gate.
         The validation floor runs first; then the `Evolver` walks the change
         (kind allowed, legitimacy, approval, sandbox, evaluation=trial,
@@ -176,6 +236,16 @@ class Coder:
             if log is not None:
                 log.record(stage="coder", inputs={"name": capability.name}, output=f"REFUSED -- {reason}")
             raise EvolutionDenied(CODE_KIND, reason)
+
+        # Beyond-suspicion review: a model must judge the code safe before it
+        # is installed (fail-closed offline). This is the gate that makes
+        # self-authored code trustworthy, not merely well-formed.
+        if self.require_review:
+            verdict = self.review(runtime, capability, model_binding=model_binding)
+            if not verdict.reasonable:
+                raise EvolutionDenied(
+                    CODE_KIND, f"code review withheld approval -- {verdict.suspicion}: {verdict.rationale}"
+                )
 
         # A Sandbox is non-negotiable here, above whatever the policy says: no
         # self-authored code is materialized or run without one.

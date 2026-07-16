@@ -166,6 +166,13 @@ class Runtime:
     energy_budget: Any = None
     _cycle_energy: Any = None
 
+    # The core the kernel may never rewrite through self-modification (see
+    # ear/evolution.py PROTECTED_CORE). Basename match; a change targeting any
+    # of these is refused before any gate. The scheduler kernel is protected
+    # so a self-editing runtime can never edit away the gates it passes
+    # through. Override to widen the protected set, never to empty it.
+    protected_paths: tuple = ("kernel.py",)
+
     # Live MCP connections opened by connect_mcp, closed by disconnect_mcp.
     _mcp_clients: list = field(default_factory=list)
 

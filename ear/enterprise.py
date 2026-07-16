@@ -508,6 +508,7 @@ class Binding:
     epistemic_auditor: Any = None
     legitimacy_gate: Any = None
     learning_loop: Any = None
+    coder: Any = None
 
     def summary(self) -> str:
         line = (
@@ -656,11 +657,19 @@ class CommandCentre:
             binding.epistemic_auditor = auditor
             runtime.epistemic_auditor = auditor
         if slug == "aawdfc":
+            from .coder import Coder
             from .evolution_loop import LegitimacyGate
 
             gate = LegitimacyGate()
             binding.legitimacy_gate = gate
             runtime.legitimacy_gate = gate
+            # AAWDFC governs workflow *and* code formation: it brings the
+            # governed self-coder online (beyond-suspicion review required),
+            # so a bound governance plane is what lets the runtime write code
+            # for itself -- through the legitimacy gate and the Evolver.
+            coder = Coder()
+            binding.coder = coder
+            runtime.coder = coder
         if slug == "alcc":
             from .evolution_loop import LearningLoop
 

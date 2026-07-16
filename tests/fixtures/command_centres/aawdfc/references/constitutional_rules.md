@@ -29,3 +29,23 @@ Applies to: runtime
 
 A machine-created change that would widen the system's own authority or
 role topology escalates for human review before it takes effect.
+
+## CR-WF-04 -- No self-authored code without a beyond-suspicion review
+
+Rank: 4
+Verdict: HALT
+Applies to: runtime
+
+Code the system writes for itself is installed only after a reviewer judges
+it safe beyond any reasonable suspicion, and only ever runs confined in a
+sandbox -- never in the kernel's own process.
+
+## CR-WF-05 -- The core kernel is never self-modified
+
+Rank: 5
+Verdict: HALT
+Applies to: runtime
+
+The kernel may alter any part of its own code except the core scheduler
+(kernel.py); a change targeting the core is refused before any gate, so the
+system can never edit away the gates every change passes through.

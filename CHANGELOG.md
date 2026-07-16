@@ -8,6 +8,28 @@ has not yet made a versioned release, so entries accumulate under
 ## [Unreleased]
 
 ### Added
+- **Self-coding hardened: beyond-suspicion review, framework wiring, and an
+  absolute core boundary.**
+  - **Beyond-suspicion code review** (`Coder.require_review`, on by default):
+    a model must judge the authored code safe *beyond any reasonable
+    suspicion* (`JudgeCodeReasonable`) before install -- withholding approval
+    on any sign of network access, exfiltration, persistence, obfuscation or
+    privilege escalation. **Fail-closed**: with no reviewer bound a
+    self-authored capability is refused (a `CodeReview` nobody made is never a
+    clearance). On the spine (stage `code_review`).
+  - **Part of Enterprise AGI**: binding the AAWDFC command centre now brings
+    the governed self-coder online (`runtime.coder`), so self-coding comes
+    with the governance plane, gated by the legitimacy gate and the Evolver.
+    AAWDFC fixture gains `CR-WF-04` (no self-authored code without a
+    beyond-suspicion review, sandbox-only) and `CR-WF-05` (the core kernel is
+    never self-modified).
+  - **Absolute core boundary** (`ear/evolution.py` `PROTECTED_CORE`,
+    `Runtime.protected_paths = ("kernel.py",)`): the `Evolver` refuses any
+    change whose `payload['target']` names the protected core, *before any
+    gate* and unwaivable by policy, legitimacy or human approval -- the kernel
+    may alter any part of its own code except the scheduler/gate loop itself,
+    so a self-editing runtime can never edit away the gates every change
+    passes through.
 - **Governed runtime self-coding** (`ear/coder.py`) -- after the model
   reasons, the runtime can author a *new capability as code* and, once the
   code clears every gate, bind it for later cycles. One invariant holds

@@ -76,7 +76,7 @@ from .authority import (
 from .auditor import Auditor
 from .compiler import CompiledStack, StackCompiler, compile_command_centre
 from .carbon import CarbonIntensity, GridSignal, carbon_grams
-from .coder import CodeCapability, Coder
+from .coder import CodeCapability, CodeReview, Coder
 from .composer import Composer
 from .contract import Contract, ContractField
 from .dashboard import Dashboard
@@ -345,5 +345,6 @@ __all__ = [
     "LearningLoop",
     "Coder",
     "CodeCapability",
+    "CodeReview",
     "__version__",
 ]

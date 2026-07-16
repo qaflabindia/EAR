@@ -92,6 +92,30 @@ class EvolutionDenied(PermissionError):
         super().__init__(f"Evolution denied for '{kind}': {reason}")
 
 
+# The core the kernel may never rewrite. Self-modification may alter any part
+# of the runtime's own code *except* these -- the scheduler kernel above all,
+# because a kernel that can edit its own scheduling and gate-walking loop
+# could edit away the very gates every other change passes through. This is an
+# absolute floor: no policy, legitimacy verdict, or human approval waives it.
+PROTECTED_CORE = ("kernel.py",)
+
+
+def _targets_protected_core(change: "EvolutionChange", protected: tuple) -> Optional[str]:
+    """The protected core file a change would alter, or None. A change names
+    its target in `payload['target']` (a source path); the sandbox path a
+    Coder writes to (`payload['relpath']`) is confined and not a source edit,
+    so it is never matched here. Matching is by basename, so any path ending
+    in a protected file -- `ear/kernel.py`, `./ear/kernel.py`, an absolute
+    path -- is caught."""
+    from pathlib import Path
+
+    target = str(change.payload.get("target") or "")
+    if not target:
+        return None
+    protected_names = {Path(name).name for name in protected}
+    return target if Path(target).name in protected_names else None
+
+
 @dataclass
 class EvolutionChange:
     """One proposed self-modification: what kind of change it is, what it
@@ -232,6 +256,20 @@ class Evolver:
         apply) rolls the change back. Returns the promotion note; every
         refusal raises `EvolutionDenied` (or parks as `ApprovalRequired`),
         on the record either way."""
+        # The absolute floor, before any policy or gate: the kernel may alter
+        # any part of its own code except the protected core. No approval,
+        # legitimacy verdict, or policy waives this -- a change that could edit
+        # the gate-walking loop itself is refused outright.
+        protected = getattr(runtime, "protected_paths", None) or PROTECTED_CORE
+        core = _targets_protected_core(change, tuple(protected))
+        if core is not None:
+            raise self._deny(
+                runtime,
+                change,
+                f"'{core}' is protected core -- the kernel never rewrites its own scheduler/gate; "
+                "self-modification may alter any other module, never this one",
+            )
+
         policy = getattr(runtime, "evolution_policy", None)
         if policy is None:
             raise self._deny(runtime, change, "evolution is not enabled on this runtime -- call enable_evolution with an EvolutionPolicy first")
