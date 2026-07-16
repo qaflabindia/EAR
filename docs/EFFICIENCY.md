@@ -203,7 +203,7 @@ intensity, is left out rather than invented.
 - light-tier share: 67%
 ```
 
-## The one rule, extended once more
+## The one rule, in this plane
 
 **The model judges; code measures, enforces, and records.** Complexity is the
 model's call (thrift); the machine reading, the joules, the token-to-watt-hour

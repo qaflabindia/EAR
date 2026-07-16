@@ -100,9 +100,9 @@ atomically). So:
 | Ungoverned fan-out | `Governor.govern` runs **before** any map; each `reason()`-based unit re-enters the gate on its own instance |
 | Non-deterministic trail | results and records are indexed by input position — logical order is stable even as wall-clock order varies |
 
-## The one rule, extended
+## The one rule, in this plane
 
-**The model judges; code enforces, records — and now parallelizes.** The
+**The model judges; code enforces, records — and here, parallelizes.** The
 parallel map, the ordering, the budgets, and the per-instance serialization
 are mechanics in code; the reduce, when it reasons, is the model's, on the
 record; and offline every path degrades to a deterministic, ordered fallback

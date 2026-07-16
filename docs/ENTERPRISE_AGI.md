@@ -29,6 +29,27 @@ planes (§6). Section 6 records each phase and what it delivered; Phase 5
 (canonical per-`Tenant` store migration and multi-tenant rollout) is the one
 remaining planned body of work.
 
+### 1.1 The thirteen command centres
+
+Every acronym in this document is one of the thirteen `acc-skills` command
+centres. They are named once here and used by slug throughout:
+
+| Plane | Slug | Command centre |
+|---|---|---|
+| **Governance** | AGCC | Agentic Governance Command Centre |
+| | ATC | Adversarial Testing Command Centre |
+| | AECC | Agent Envelope & Certification Command Centre |
+| | AAWDFC | Agentic Workflow Design & Formation Command Centre |
+| **Operational** | AFCC | Agentic Finance Command Centre |
+| | HRCC | Agentic HR Command Centre |
+| | TAIC | Talent Acquisition & Intelligence Command Centre |
+| | ALGCC | Agentic Logistics Command Centre |
+| | ARCC | Agentic Relationships Command Centre |
+| | AITCC | Agentic IT Operations Command Centre |
+| **Cognitive** | ALCC | Agentic Learning Command Centre |
+| | AKC | Agentic Knowledge Command Centre |
+| | ARC | Agentic Reasoning Command Centre |
+
 ## 2. The three planes
 
 Command centres bind to EAR subsystems by function. A plane is a binding
@@ -149,55 +170,66 @@ rules *are* runtime policies, judged and recorded exactly like any other.
 | 4 | Cognitive plane: AKC-governed knowledge ingestion, ARC epistemic audit, ALCC → evolution loop under AAWDFC/AGCC gates | **shipped** |
 | 5 | State migration to canonical per-`Tenant` `Store`; multi-tenant rollout | planned |
 
-## 6d. Phase 4 — the cognitive plane
+## 6.1 Phase 2 — the whole centre compiles to a stack
 
-The governance plane governs the other two; Phase 4 is the third — the plane
-that *learns* — and it is governed like everything else.
+Phase 1 bound a centre's *constitution*. Phase 2 compiles the *whole
+centre* into a runnable EAR stack (`ear/compiler.py`,
+`StackCompiler` / `compile_command_centre`), mapping each acc-skills
+artifact to the stack file an author would otherwise hand-write:
 
-**AKC — nothing enters `Knowledge` ungoverned** (`ear/knowledge_governance.py`,
-architecture §6). A claim reaches the corpus only through
-`KnowledgeGate.admit`: it is validated for form and source, scored
-epistemically (`JudgeKnowledgeAdmission`), and checked for contradiction
-(`JudgeContradiction`) — and only a passing claim is chunked in via
-`Knowledge.add_document`. `retire` / `supersede` are the lifecycle events that
-remove or replace a passage. Reason-first above a deterministic floor: offline,
-an unsourced or terse claim is refused and says so; a scored admission the
-model never made is never dressed up as one. Every admission, refusal and
-retirement lands on the spine (stage `ingest`).
+| acc-skills artifact | EAR stack file |
+|---|---|
+| `SKILL.md` mission prose | `persona.md` (the persona's instructions) |
+| `SKILL.md` `## Capabilities` | `skills.md` (one skill per capability) |
+| `SKILL.md` `## Procedures` | `workflow.md` (steps delegating to the persona) |
+| a process wrapping the workflows | `process.md` (the runtime's title) |
+| `references/constitutional_rules.md` | `policy.md` (via `Constitution.to_policy_markdown`) |
+| `references/*.md` (the rest) | `knowledge/` (documents the Librarian cites) |
+| `SKILL.md` frontmatter org context | `tenant.md` (org id, fiscal year) |
+| operating strategy | `memory.md` (knowledge sources, one audit trail) |
 
-**ARC — epistemic audit on the output side** (`ear/epistemic.py`). Where AKC
-governs the input, ARC audits how the runtime *reasons*: `EpistemicAuditor
-.audit` scans the trail's deliberation and decision records for biased premises
-and unsupported assumptions (`JudgeReasoningQuality`), records them as
-**advisories** (it informs, it does not block), and **escalates to AGCC** when
-flags pass a threshold — a one-off is noted, a habit is raised. Offline it makes
-no judgment and records the honest non-audit, never a clean bill of health
-nobody gave.
+Two invariants hold. **Nothing an author wrote is dropped**: a `##` section
+the compiler does not consume structurally (triggers, scope, notes) folds
+into the persona's instructions as prose, and `compile(verify=True)` loads
+the result once so every cross-reference resolves or the loader fails
+loudly. **English stays the source of truth**: the output is markdown an
+author reads, diffs and edits — the compiler is a starting point, not a
+lock-in. The compiled `memory.md` declares one `.ear/reasoning.md` audit
+trail, so the whole centre writes to the single spine.
 
-**ALCC → the evolution loop, under AAWDFC/AGCC gates** (`ear/evolution_loop.py`,
-architecture §7). `LearningLoop.candidates` (ALCC) turns the runtime's distilled
-`Adaptation`s into candidate `EvolutionChange`s, each carrying its provenance as
-the required explanation — *proposing is not applying*. Before any machine-
-created change applies, `LegitimacyGate.judge` (AAWDFC) decides whether it is
-*fit to exist* — explained (an absolute floor), constitutionally compatible, and
-structurally coherent (`JudgeWorkflowLegitimacy`) — and the `Evolver` consults
-`runtime.legitimacy_gate` before it runs `apply`, so an illegitimate change is
-refused on the record, never applied. AGCC's verdicts still gate application
-through the existing `EvolutionPolicy` fences: the system may improve itself,
-but only through the same gate everything else passes through.
+`AFCC` is the worked example: `compile_command_centre("…/afcc", out)` writes
+a nine-file stack that `load_runtime` runs as a first-class finance runtime,
+its five `CR-FIN-*` constitutional rules enforcing at runtime scope.
 
-Binding wires each automatically: binding `akc` exposes `runtime
-.knowledge_gate`, `arc` → `runtime.epistemic_auditor`, `aawdfc` →
-`runtime.legitimacy_gate`, `alcc` → `runtime.learning_loop`. With this, **all
-thirteen command centres** across the three planes have fixtures, constitutions,
-and bindings — the framework is whole.
+## 6.2 Phase 2 — a centre served as an MCP server
 
-## 6c. Phase 3 — who may act (AECC), and the red team (ATC)
+The out-of-process binding (the operational plane's
+default): `ear/mcp_command_centre.py` packages a centre as a native MCP
+server so any runtime reaches it with `Runtime.connect_mcp` over the same
+stdio JSON-RPC `McpClient` already speaks. It exposes the centre's script
+pentad as tools:
+
+```
+list_state                 the centre's state entries (names)
+load_state(name)           one state entry, as JSON
+update_state(name, value)  write one state entry (value is JSON)
+evaluate(context)          judge the constitution against a context of facts
+audit(entry)               append one line to the centre's ledger
+```
+
+`evaluate` runs the constitution's *deterministic* fallbacks (the server is
+a plain subprocess, no model bound), so an out-of-process centre still
+enforces its mechanically checkable rules; a rule with no fallback reports
+not-applicable, never a silent pass. Run one with
+`python -m ear.mcp_command_centre <centre-dir>` and declare it in a stack's
+`memory.md` MCP section like any other server.
+
+## 6.3 Phase 3 — who may act (AECC), and the red team (ATC)
 
 Phase 1 gated *whether* an action is allowed; Phase 3 gates *who may act at
 all*, and stress-tests the actions that warrant it.
 
-**AECC capability envelopes** (`ear/authority.py`, architecture §4). Every
+**AECC capability envelopes** (`ear/authority.py`). Every
 non-human actor — a spawned persona, an MCP-attached centre, an evolved
 workflow — must hold a **certified capability envelope** before
 `Governor.govern` passes its intents. `EnvelopeRegistry` loads the envelopes
@@ -229,7 +261,7 @@ back to `active` by hand) no longer verifies and is refused — the
 tamper-evidence `identity`/`signatures` backing. A signing secret, when
 used, is named by environment variable only.
 
-**ATC adversarial pass** (`ear/adversary.py`, architecture §5). A *flagged*
+**ATC adversarial pass** (`ear/adversary.py`). A *flagged*
 intent takes an adversarial pass before it executes. Flagging is
 **model-judged with a deterministic fallback**: a factual floor (an explicit
 high-stakes/irreversible value, or an acting agent AECC has placed on
@@ -259,63 +291,51 @@ machinery. Each carries its own constitution (`CR-HR-*`, `CR-TA-*`,
 `CR-LG-*`, `CR-RE-*`, `CR-IT-*`), binds its rules at runtime scope, and
 compiles to a runnable EAR stack — so the whole operational plane
 (`load_command_centres` / `bind_command_centres`, governance-first) is
-governed and runnable, not just AFCC. That the same machinery generalizes
-unchanged across six domains is the proof the binding model was right.
+governed and runnable, not just AFCC — the same machinery generalizes
+unchanged across six domains.
 
-## 6a. Phase 2 — the whole centre compiles to a stack
+## 6.4 Phase 4 — the cognitive plane
 
-Phase 1 bound a centre's *constitution*. Phase 2 compiles the *whole
-centre* into a runnable EAR stack (`ear/compiler.py`,
-`StackCompiler` / `compile_command_centre`), mapping each acc-skills
-artifact to the stack file an author would otherwise hand-write
-(architecture §3.5):
+The governance plane governs the other two; Phase 4 is the third — the plane
+that *learns* — and it is governed like everything else.
 
-| acc-skills artifact | EAR stack file |
-|---|---|
-| `SKILL.md` mission prose | `persona.md` (the persona's instructions) |
-| `SKILL.md` `## Capabilities` | `skills.md` (one skill per capability) |
-| `SKILL.md` `## Procedures` | `workflow.md` (steps delegating to the persona) |
-| a process wrapping the workflows | `process.md` (the runtime's title) |
-| `references/constitutional_rules.md` | `policy.md` (via `Constitution.to_policy_markdown`) |
-| `references/*.md` (the rest) | `knowledge/` (documents the Librarian cites) |
-| `SKILL.md` frontmatter org context | `tenant.md` (org id, fiscal year) |
-| operating strategy | `memory.md` (knowledge sources, one audit trail) |
+**AKC — nothing enters `Knowledge` ungoverned** (`ear/knowledge_governance.py`).
+A claim reaches the corpus only through
+`KnowledgeGate.admit`: it is validated for form and source, scored
+epistemically (`JudgeKnowledgeAdmission`), and checked for contradiction
+(`JudgeContradiction`) — and only a passing claim is chunked in via
+`Knowledge.add_document`. `retire` / `supersede` are the lifecycle events that
+remove or replace a passage. Reason-first above a deterministic floor: offline,
+an unsourced or terse claim is refused and says so; a scored admission the
+model never made is never dressed up as one. Every admission, refusal and
+retirement lands on the spine (stage `ingest`).
 
-Two invariants hold. **Nothing an author wrote is dropped**: a `##` section
-the compiler does not consume structurally (triggers, scope, notes) folds
-into the persona's instructions as prose, and `compile(verify=True)` loads
-the result once so every cross-reference resolves or the loader fails
-loudly. **English stays the source of truth**: the output is markdown an
-author reads, diffs and edits — the compiler is a starting point, not a
-lock-in. The compiled `memory.md` declares one `.ear/reasoning.md` audit
-trail, so the whole centre writes to the single spine.
+**ARC — epistemic audit on the output side** (`ear/epistemic.py`). Where AKC
+governs the input, ARC audits how the runtime *reasons*: `EpistemicAuditor
+.audit` scans the trail's deliberation and decision records for biased premises
+and unsupported assumptions (`JudgeReasoningQuality`), records them as
+**advisories** (it informs, it does not block), and **escalates to AGCC** when
+flags pass a threshold — a one-off is noted, a habit is raised. Offline it makes
+no judgment and records the honest non-audit, never a clean bill of health
+nobody gave.
 
-`AFCC` is the worked example: `compile_command_centre("…/afcc", out)` writes
-a nine-file stack that `load_runtime` runs as a first-class finance runtime,
-its five `CR-FIN-*` constitutional rules enforcing at runtime scope.
+**ALCC → the evolution loop, under AAWDFC/AGCC gates** (`ear/evolution_loop.py`).
+`LearningLoop.candidates` (ALCC) turns the runtime's distilled
+`Adaptation`s into candidate `EvolutionChange`s, each carrying its provenance as
+the required explanation — *proposing is not applying*. Before any machine-
+created change applies, `LegitimacyGate.judge` (AAWDFC) decides whether it is
+*fit to exist* — explained (an absolute floor), constitutionally compatible, and
+structurally coherent (`JudgeWorkflowLegitimacy`) — and the `Evolver` consults
+`runtime.legitimacy_gate` before it runs `apply`, so an illegitimate change is
+refused on the record, never applied. AGCC's verdicts still gate application
+through the existing `EvolutionPolicy` fences: the system may improve itself,
+but only through the same gate everything else passes through.
 
-## 6b. Phase 2 — a centre served as an MCP server
-
-The out-of-process binding (architecture §3.4, the operational plane's
-default): `ear/mcp_command_centre.py` packages a centre as a native MCP
-server so any runtime reaches it with `Runtime.connect_mcp` over the same
-stdio JSON-RPC `McpClient` already speaks. It exposes the centre's script
-pentad as tools:
-
-```
-list_state                 the centre's state entries (names)
-load_state(name)           one state entry, as JSON
-update_state(name, value)  write one state entry (value is JSON)
-evaluate(context)          judge the constitution against a context of facts
-audit(entry)               append one line to the centre's ledger
-```
-
-`evaluate` runs the constitution's *deterministic* fallbacks (the server is
-a plain subprocess, no model bound), so an out-of-process centre still
-enforces its mechanically checkable rules; a rule with no fallback reports
-not-applicable, never a silent pass. Run one with
-`python -m ear.mcp_command_centre <centre-dir>` and declare it in a stack's
-`memory.md` MCP section like any other server.
+Binding wires each automatically: binding `akc` exposes `runtime
+.knowledge_gate`, `arc` → `runtime.epistemic_auditor`, `aawdfc` →
+`runtime.legitimacy_gate`, `alcc` → `runtime.learning_loop`. With this, **all
+thirteen command centres** across the three planes have fixtures, constitutions,
+and bindings.
 
 ## 7. Worked example
 

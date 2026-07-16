@@ -1,4 +1,11 @@
-# EAR Native Plan — best-in-class capabilities, built from scratch
+# EAR Native Plan — native capabilities, built from scratch
+
+> **Status: historical build record.** Every phase in this plan (N1–N5) has
+> shipped — see the ✅ marks in the [sequencing table](#sequencing-and-effort).
+> This document records *how the native-parity features were designed and
+> delivered*; it is not a roadmap of pending work. To **use** EAR, start with
+> [GETTING_STARTED.md](GETTING_STARTED.md) and the [README](../README.md); read
+> on here only to understand why each capability was built the way it was.
 
 The capabilities enterprises need exist in isolation on different
 platforms: prompt optimization in DSPy+GEPA, typed agents in PydanticAI,
@@ -18,7 +25,7 @@ never changes shape — six natural-language markdown files, intents in,
 decisions out, every judgment on the audit trail.
 
 Each capability below already exists natively at first depth. This plan
-is the **parity ledger**: what the best-in-class platform genuinely
+is the **parity ledger**: what each reference platform genuinely
 provides beyond our current native feature, and the from-scratch build
 that closes each gap.
 
