@@ -1071,6 +1071,14 @@ it takes you from install to a running, governed agent in a few minutes
 (offline first, no API key needed), then to a markdown-authored stack, a
 live model, the dashboard, and running as a service.
 
+### Documentation
+
+- **[Concepts](docs/CONCEPTS.md)** — the mental model: the stack, the reasoning cycle, the one rule.
+- **[Getting Started](docs/GETTING_STARTED.md)** — install to a running, governed agent.
+- **[Authoring Guide](docs/AUTHORING.md)** — the complete markdown stack reference.
+- **[Governance](docs/GOVERNANCE.md)** — policies, approval gates, budgets, the tamper-evident trail.
+- **[Operations](docs/OPERATIONS.md)** — the Exchange, kernel, server, Kubernetes, tools, journeys, observability.
+
 EAR is an independent package with **zero dependencies**: it speaks to LLM
 providers directly over HTTPS from the Python standard library
 (`ear/llm.py`), and its structured prompting is native (`ear/judgment.py`)
