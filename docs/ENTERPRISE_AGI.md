@@ -24,8 +24,10 @@ centre's state behind **one store abstraction**, and folds every centre's
 ledger onto **one audit spine** — so a human-, agent-, or evolution-
 initiated intent all pass through the same choke point.
 
-This document describes what Phase 1 actually ships. Later phases (§6) are
-sketched, not built.
+Phases 1–4 have shipped — all thirteen command centres bound across the three
+planes (§6). Section 6 records each phase and what it delivered; Phase 5
+(canonical per-`Tenant` store migration and multi-tenant rollout) is the one
+remaining planned body of work.
 
 ## 2. The three planes
 

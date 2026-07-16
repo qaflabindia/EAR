@@ -39,6 +39,19 @@ optional, never required.
 Intent → Skill → Persona → Workflow → Process → Policy → Runtime → Reasoner
 ```
 
+> **EAR has grown into Enterprise AGI.** The runtime above is the *execution*
+> substrate. Bind the thirteen
+> [`acc-skills`](https://github.com/qaflabindia/acc-skills) constitutional
+> command centres onto it and you have **Enterprise AGI** — every constitution
+> enforced as a runtime `Policy` through one `Governor.govern` choke point,
+> every centre's state behind one store abstraction, and every ledger folded
+> onto one audit spine, across three planes: **governance**, **operational**
+> and **cognitive** (the plane that learns, governed like the rest). Phases 1–4
+> have shipped — all thirteen command centres bound. See the
+> [Enterprise AGI](#enterprise-agi--constitutions-become-policies) section
+> below and [`docs/ENTERPRISE_AGI.md`](docs/ENTERPRISE_AGI.md) for the full
+> architecture and phasing.
+
 ## Author the whole runtime in Markdown — no code at all
 
 The stack above can be written entirely as natural-language markdown files
@@ -1026,9 +1039,25 @@ agent's live capability envelope — and `registry.revoke(agent)` takes effect
 on the very next cycle. A flagged intent (high-stakes, or an agent on
 probation) takes an ATC adversarial pass — `AdversarialReview` argues the
 case against, the defense, and a verdict of uphold / escalate / overturn.
-Binding the `aecc` and `atc` centres wires both automatically. See
-[`docs/ENTERPRISE_AGI.md`](docs/ENTERPRISE_AGI.md) for the full architecture
-and phasing.
+Binding the `aecc` and `atc` centres wires both automatically.
+
+And the third plane — the one that *learns* — is governed like the other two.
+Nothing enters `Knowledge` ungoverned: AKC's `KnowledgeGate.admit`
+(`ear/knowledge_governance.py`) validates, scores and contradiction-checks a
+claim before it reaches the corpus. ARC audits the *output* side —
+`EpistemicAuditor.audit` (`ear/epistemic.py`) scans the trail for biased
+premises and unsupported assumptions, records advisories, and escalates a
+habit to AGCC. And ALCC closes the self-improvement loop:
+`LearningLoop.candidates` (`ear/evolution_loop.py`) turns distilled
+`Adaptation`s into candidate `EvolutionChange`s, each judged *fit to exist* by
+AAWDFC's `LegitimacyGate` and still gated by AGCC's `EvolutionPolicy` fences
+before the `Evolver` applies it — the system may improve itself, only through
+the same gate everything else clears. Binding `akc`, `arc`, `aawdfc` and
+`alcc` wires each automatically. With this, **all thirteen command centres
+across the three planes are bound** — the framework is whole.
+
+See [`docs/ENTERPRISE_AGI.md`](docs/ENTERPRISE_AGI.md) for the full
+architecture and phasing.
 
 ## Roadmap
 
