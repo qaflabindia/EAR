@@ -298,8 +298,6 @@ changes from before this existed.
   the server, Kubernetes).
 - **[examples/credit_risk_stack/](../examples/credit_risk_stack)** — a
   complete, runnable stack with knowledge and evaluations.
-- **[docs/IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)** — how the native
-  parity features were designed and built.
 
 ## The one rule to remember
 

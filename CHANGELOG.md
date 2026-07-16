@@ -113,8 +113,7 @@ has not yet made a versioned release, so entries accumulate under
   each, the domain rules firing (comp-change parks, over-band offer parks,
   hazmat/high-value shipment, over-discount/consent, change-freeze/least-
   privilege), and the whole plane through `load_command_centres` /
-  `bind_command_centres` (governance-first). `docs/ENTERPRISE_AGI.md` Phase 3
-  row corrected to reflect this (it had understated the phase).
+  `bind_command_centres` (governance-first).
 - **Resource report** (`ReasoningLog.resource_report`) -- the physical
   counterpart to `usage_report`'s dollars: energy (Wh), carbon (gCO2, counted
   measured/estimated/unmetered) and compute-thrift routing (light vs heavy
@@ -125,7 +124,7 @@ has not yet made a versioned release, so entries accumulate under
   `carbon_grams` / `tier` fields for this.
 - **Carbon-aware scheduling** (`ear/carbon.py`, the `## Carbon` strategy
   section, Kernel task deferral) -- run heavy work when the energy is clean
-  and plentiful (`docs/EFFICIENCY.md`).
+  and plentiful.
   - `GridSignal` answers "is now clean enough to run deferrable work?" from a
     live grid `provider` seam (gCO2/kWh, wired in code), a declared clean-hours
     window and/or gCO2/kWh threshold and/or fixed intensity (from `## Carbon`
@@ -144,7 +143,7 @@ has not yet made a versioned release, so entries accumulate under
     ._read_carbon` / `grid_signal()`; the Loader wires the grid onto the meter.
 - **Hardware, energy & compute efficiency** (`ear/hardware.py`,
   `ear/energy.py`, `ear/thrift.py`, the `## Energy` strategy section, Kernel
-  auto-sizing) -- the physical resource plane (`docs/EFFICIENCY.md`). Honest
+  auto-sizing) -- the physical resource plane. Honest
   throughout: a figure nobody measured or declared is never invented.
   - `ear/hardware.py`: `HardwareProfile.detect()` reads what the process may
     *actually* use -- CPU confined by cgroup quota (v2 `cpu.max`, v1
@@ -191,7 +190,7 @@ has not yet made a versioned release, so entries accumulate under
     `Runtime.enable_thrift(light, heavy)` attaches the model ladder.
 - **Concurrency & parallelism** (`ear/parallel.py`, Kernel fleet pool) --
   the decided model is *single-writer actors, thread parallelism, one ordered
-  spine* (`docs/CONCURRENCY.md`).
+  spine*.
   - `ear/parallel.py`: a native, dependency-free `joblib`-shaped engine over
     `concurrent.futures.ThreadPoolExecutor` (threads because a cycle is
     I/O-bound on the model call, which releases the GIL). `parallel_map(fn,
@@ -312,7 +311,7 @@ has not yet made a versioned release, so entries accumulate under
     loads the stack, enforces its constitution, and round-trips the MCP
     server over EAR's own `McpClient`.
 - `ear/enterprise.py`: the **Enterprise AGI** binding layer -- Phase 1 of
-  the framework architecture (`docs/ENTERPRISE_AGI.md`), binding the
+  the framework architecture, binding the
   thirteen `acc-skills` constitutional command centres onto EAR's execution
   substrate, "least invasion first."
   - **Constitutions become policies.** `Constitution.from_directory` reads a
@@ -537,7 +536,7 @@ has not yet made a versioned release, so entries accumulate under
 ## [0.1.0] - initial native parity milestone
 
 The first complete pass of the native-parity plan
-(`docs/IMPLEMENTATION_PLAN.md`, phases N1-N4), plus the runtime substrate
+(phases N1-N4), plus the runtime substrate
 it stands on. Highlights:
 
 ### Core authoring & runtime

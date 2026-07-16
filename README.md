@@ -49,8 +49,7 @@ Intent → Skill → Persona → Workflow → Process → Policy → Runtime →
 > and **cognitive** (the plane that learns, governed like the rest). Phases 1–4
 > have shipped — all thirteen command centres bound. See the
 > [Enterprise AGI](#enterprise-agi--constitutions-become-policies) section
-> below and [`docs/ENTERPRISE_AGI.md`](docs/ENTERPRISE_AGI.md) for the full
-> architecture and phasing.
+> below for the architecture and phasing.
 
 ## Author the whole runtime in Markdown — no code at all
 
@@ -1054,21 +1053,9 @@ AAWDFC's `LegitimacyGate` and still gated by AGCC's `EvolutionPolicy` fences
 before the `Evolver` applies it — the system may improve itself, only through
 the same gate everything else clears. Binding `akc`, `arc`, `aawdfc` and
 `alcc` wires each automatically. With this, **all thirteen command centres
-across the three planes are bound** — the framework is whole.
-
-See [`docs/ENTERPRISE_AGI.md`](docs/ENTERPRISE_AGI.md) for the full
-architecture and phasing.
+across the three planes are bound**.
 
 ## Roadmap
-
-[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) is the native
-parity plan: for each capability that exists in isolation on other
-platforms — prompt optimization, typed agents, durable workflows, agent
-graphs, multi-agent deliberation, RAG, structured outputs, evaluation,
-observability, tool connectivity, enterprise governance — it records what
-EAR already ships natively, the honest gap to best-in-class depth, and the
-from-scratch build that closes it. Zero dependencies throughout; the
-authored stack never changes shape.
 
 [`CHANGELOG.md`](CHANGELOG.md) tracks what actually shipped, release by
 release.
@@ -1337,7 +1324,7 @@ ear/
   strategy.py      Strategy      — the memory.md operating strategy, read from plain English
   tenant.py        Tenant        — the org this stack belongs to, stacked from tenant.md: org_id, fiscal year bounds, timezone
   identity.py      Claim         — who is calling and which Tenant org_id(s) they may act as; Runtime.reason/Kernel.submit refuse a Claim not authorized for the instance's tenant
-  enterprise.py    CommandCentre  — Enterprise AGI binding: acc-skills constitutions → EAR policies, AGCC verdict → gate, state behind CatalogueBackend (see docs/ENTERPRISE_AGI.md)
+  enterprise.py    CommandCentre  — Enterprise AGI binding: acc-skills constitutions → EAR policies, AGCC verdict → gate, state behind CatalogueBackend
   compiler.py      StackCompiler  — compile a whole command centre into an EAR markdown stack (SKILL.md→persona/skills, procedures→workflow, references→knowledge, constitution→policy)
   mcp_command_centre.py CommandCentreServer — serve a command centre as a native stdio MCP server (list/load/update_state, evaluate the constitution, audit)
   authority.py     EnvelopeRegistry — AECC capability envelopes: certify/probation/suspend/revoke non-human actors; EnvelopePolicy gates Governor.govern on the live envelope (revocation immediate)
@@ -1347,12 +1334,12 @@ ear/
   dashboard.py     Dashboard     — self-contained HTML runtime board from the trail (TensorBoard-equivalent): render_fleet, live auto-ticking render_gantt, zero deps
   monitor.py       Monitor       — the premium live TUI: the whole fleet as a factory assembly line, pure ANSI truecolor, zero deps
   kernel.py        Kernel        — EAR as an OS scheduler: process table of instances, a run queue, the run-or-sleep idle loop; max_workers>1 runs instances concurrently (one cycle per instance)
-  parallel.py      parallel_map  — native joblib-shaped parallel map / map_reduce over ThreadPoolExecutor: input-ordered results, per-unit isolation, judged reduce (see docs/CONCURRENCY.md)
-  hardware.py      HardwareProfile — honest host reading: cgroup CPU/memory limits, load, battery, RAPL, GPUs; recommended_workers() (see docs/EFFICIENCY.md)
+  parallel.py      parallel_map  — native joblib-shaped parallel map / map_reduce over ThreadPoolExecutor: input-ordered results, per-unit isolation, judged reduce
+  hardware.py      HardwareProfile — honest host reading: cgroup CPU/memory limits, load, battery, RAPL, GPUs; recommended_workers()
   energy.py        EnergyMeter   — measured RAPL joules or declared watt-hour estimate on the trail; EnergyBudget enforces a prose daily cap before a cycle runs
   thrift.py        ModelThrift   — route each intent to the smallest adequate model, complexity judged on the light model, with a deterministic fallback
-  carbon.py        GridSignal    — carbon-aware scheduling: defer heavy work to a clean grid window / off-battery moment; gCO2 on the energy trail (see docs/EFFICIENCY.md)
-  knowledge_governance.py KnowledgeGate — AKC: nothing enters Knowledge ungoverned; admit (epistemic score + contradiction), retire, supersede (see docs/ENTERPRISE_AGI.md)
+  carbon.py        GridSignal    — carbon-aware scheduling: defer heavy work to a clean grid window / off-battery moment; gCO2 on the energy trail
+  knowledge_governance.py KnowledgeGate — AKC: nothing enters Knowledge ungoverned; admit (epistemic score + contradiction), retire, supersede
   epistemic.py     EpistemicAuditor — ARC: audit reasoning for bias / unsupported assumptions as advisories, escalate a systematic pattern to AGCC
   evolution_loop.py LegitimacyGate — AAWDFC judges machine-created changes fit to exist; LearningLoop (ALCC) turns Experience into candidate EvolutionChanges
   coder.py         Coder         — governed runtime self-coding: the model authors a capability as code; it is validated, trialled and run ONLY as a Sandbox subprocess (never exec'd in-process), gated by the Evolver, then bound as a tool
